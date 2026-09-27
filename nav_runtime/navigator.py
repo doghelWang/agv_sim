@@ -1530,7 +1530,27 @@ class Navigator:
                     return
                 if res == "SUCCEEDED":
                     break
-                # 段起点原地转向受阻 (车头前方空间不够转，如贴墙拓扑节点/工位)：先用 Nav2 BackUp 后退一点再重试转向
+                # 终点对位转向受阻: 已到工位 (≤ 3 cm) 只差停靠朝向 —— Nav2 (RPP) 按 5 cm 栅格 + 激光噪声判定的碰撞预测
+                # 在贴墙工位 (车角离墙约 5 cm) 不肯转；改由执行进程的精确原地转向 (实测激光点、rotate_margin 余量) 完成对位
+                if res == "ABORTED" and k == len(segs) - 1 and self._near_goal_heading_only(poses[-1]):
+                    r = self._rotate_to(mission_id, poses[-1][2], 0.0, 0.5)
+                    if r == "abort":
+                        return
+                    if r == "done":
+                        self.event_hub.emit("navigation", "NAV2_ALIGN", "info", "终点对位转向由执行进程完成",
+                                            "Nav2 控制器拒绝贴墙原地转向 (碰撞预测)，改用执行进程原地转向", {"mission_id": mission_id})
+                        break
+                # 段起点原地转向受阻 (如贴墙拓扑节点): 先由执行进程精确原地转向；也转不了 (空间确实不够) 再用
+                # Nav2 BackUp 后退一点 (0.2 / 0.35 m) 再试
+                if res == "ABORTED" and self._turn_blocked_at(poses):
+                    p0, j = poses[0], min(len(poses) - 1, 6)
+                    r = self._rotate_to(mission_id, math.atan2(poses[j][1] - p0[1], poses[j][0] - p0[0]), 0.0, 0.5)
+                    if r == "abort":
+                        return
+                    if r == "done":
+                        self.event_hub.emit("navigation", "NAV2_ALIGN", "info", "段起点转向由执行进程完成",
+                                            f"第 {k + 1}/{len(segs)} 段: Nav2 控制器拒绝原地转向，改用执行进程原地转向", {"mission_id": mission_id})
+                        continue
                 if res == "ABORTED" and backups < len(BACKUP_STEPS) and self._turn_blocked_at(poses):
                     d = BACKUP_STEPS[backups]
                     backups += 1
@@ -1562,6 +1582,13 @@ class Navigator:
                         return
                     self.telemetry["nav_status"] = "NAVIGATING"
         on_result(mission_id, "SUCCEEDED")
+
+    def _near_goal_heading_only(self, goal) -> bool:
+        """已到终点位置 (≤ 3 cm)，只差朝向 (> 1°)"""
+        with self.lock:
+            x, y, yaw = self.telemetry.get("x", 0.0), self.telemetry.get("y", 0.0), self.telemetry.get("yaw", 0.0)
+        err = abs(math.atan2(math.sin(yaw - goal[2]), math.cos(yaw - goal[2])))
+        return math.hypot(x - goal[0], y - goal[1]) <= 0.03 and err > math.radians(1.0)
 
     def _turn_blocked_at(self, poses) -> bool:
         """车在本段起点附近 (≤ 0.6 m) 且车头与路径方向相差 > 0.2 rad —— 说明卡在段起点的原地转向上"""
