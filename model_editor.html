@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模型补全与传感器安装 · AMR Studio</title>
+<style>
+  :root {
+    --bg: #f1f5f9; --panel: #ffffff; --line: #e2e8f0; --ink: #0f172a; --ink2: #475569; --ink3: #94a3b8;
+    --accent: #2563eb; --accent-bg: #eff6ff; --ok: #059669; --ok-bg: #ecfdf5; --info: #0369a1; --info-bg: #f0f9ff;
+    --warn: #b45309; --warn-bg: #fffbeb; --miss: #be123c; --miss-bg: #fff1f2; --manual: #7c3aed; --manual-bg: #f5f3ff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 10; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+  header .sub { color: var(--ink2); font-size: 12px; }
+  .spacer { flex: 1; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
+  .s-ok { color: var(--ok); background: var(--ok-bg); border-color: #a7f3d0; }
+  .s-info { color: var(--info); background: var(--info-bg); border-color: #bae6fd; }
+  .s-warn { color: var(--warn); background: var(--warn-bg); border-color: #fde68a; }
+  .s-missing { color: var(--miss); background: var(--miss-bg); border-color: #fecdd3; }
+  .src-cmodel { color: #334155; background: #f1f5f9; border-color: #cbd5e1; }
+  .src-library { color: var(--info); background: var(--info-bg); border-color: #bae6fd; }
+  .src-inferred, .src-default { color: var(--warn); background: var(--warn-bg); border-color: #fde68a; }
+  .src-manual, .src-added { color: var(--manual); background: var(--manual-bg); border-color: #ddd6fe; }
+  .src-missing, .src-removed { color: var(--miss); background: var(--miss-bg); border-color: #fecdd3; }
+  button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--line); background: #fff; padding: 5px 12px; color: var(--ink); }
+  button:hover { background: #f8fafc; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { background: #1d4ed8; }
+  button.primary:disabled { background: #93c5fd; border-color: #93c5fd; cursor: default; }
+  button.danger { color: var(--miss); border-color: #fecdd3; }
+  button.small { padding: 2px 8px; font-size: 12px; }
+  a { color: var(--accent); text-decoration: none; }
+  main { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 12px; padding: 12px 16px 40px; max-width: 1600px; margin: 0 auto; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .panel > h2 { font-size: 13px; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+  .panel > .body { padding: 12px 14px; }
+  .tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tab { padding: 7px 12px; border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--ink2); font-weight: 600; white-space: nowrap; }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .n { font-size: 10px; margin-left: 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11px; color: var(--ink2); font-weight: 600; background: #f8fafc; position: sticky; top: 0; }
+  td.v { font-family: var(--mono); font-size: 12px; }
+  tr.grp td { background: #f8fafc; font-weight: 700; color: var(--ink2); font-size: 12px; }
+  tr.clickable:hover td { background: #f8fafc; cursor: pointer; }
+  .note { color: var(--ink2); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px 10px; }
+  label.f { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--ink2); }
+  label.f input, label.f select { font: 12px var(--mono); padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: #fff; min-width: 0; }
+  label.f input:focus, label.f select:focus { outline: 2px solid #bfdbfe; border-color: var(--accent); }
+  label.f.changed input, label.f.changed select { border-color: #c4b5fd; background: var(--manual-bg); }
+  label.f .u { color: var(--ink3); }
+  .section-title { font-weight: 700; margin: 14px 0 8px; font-size: 12px; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .section-title:first-child { margin-top: 0; }
+  .sensor-row { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: center; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+  .sensor-row:hover { border-color: #cbd5e1; }
+  .sensor-row.sel { border-color: var(--accent); background: var(--accent-bg); }
+  .sensor-row.removed { opacity: .55; text-decoration: line-through; }
+  .dot { width: 10px; height: 10px; border-radius: 3px; }
+  .sensor-row .meta { font-size: 11px; color: var(--ink2); font-family: var(--mono); }
+  .editor { border: 1px solid #bfdbfe; background: #f8fbff; border-radius: 8px; padding: 12px; margin-top: 10px; }
+  .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  svg { display: block; width: 100%; background: #fbfdff; border-radius: 8px; border: 1px solid var(--line); touch-action: none; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--ink2); margin-top: 6px; }
+  .legend span { display: inline-flex; gap: 4px; align-items: center; }
+  .cam-view { display: grid; gap: 6px; }
+  .cam-view img { width: 100%; border-radius: 6px; background: #0f172a; min-height: 120px; image-rendering: auto; }
+  pre { font: 11px/1.45 var(--mono); background: #0f172a; color: #e2e8f0; padding: 10px; border-radius: 8px; overflow: auto; max-height: 320px; margin: 0; }
+  .toast { position: fixed; right: 16px; bottom: 16px; background: #0f172a; color: #fff; padding: 9px 14px; border-radius: 8px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 420px; }
+  .toast.show { opacity: .95; }
+  .empty { color: var(--ink3); text-align: center; padding: 20px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
+  .kv b { color: var(--ink2); font-weight: 500; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" id="back-link" title="返回调度台">← 调度台</a>
+  <div>
+    <h1>模型补全与传感器安装</h1>
+    <div class="sub" id="hdr-sub">加载中…</div>
+  </div>
+  <div id="hdr-chips" class="toolbar"></div>
+  <div class="spacer"></div>
+  <span id="dirty" class="chip s-warn" style="display:none">未保存的修改</span>
+  <button id="btn-urdf" title="按当前编辑内容生成 URDF 并下载">下载 URDF</button>
+  <button id="btn-reset">放弃修改</button>
+  <button id="btn-apply" class="primary" disabled>保存并应用</button>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="audit">完整度检查</button>
+      <button class="tab" data-tab="body">车体与轮组</button>
+      <button class="tab" data-tab="lift">顶升机构</button>
+      <button class="tab" data-tab="sensors">传感器安装</button>
+      <button class="tab" data-tab="prot">保护空间</button>
+      <button class="tab" data-tab="json">覆盖文件</button>
+    </div>
+    <div class="body" id="tab-body"></div>
+  </section>
+
+  <section style="display:grid; gap:12px; align-content:start">
+    <div class="panel">
+      <h2>安装布局 <span class="note">俯视图 (x 向前) · 可拖动选中的传感器</span></h2>
+      <div class="body">
+        <svg id="top" viewBox="0 0 600 420"></svg>
+        <div class="legend" id="legend"></div>
+        <svg id="side" viewBox="0 0 600 170" style="margin-top:8px"></svg>
+      </div>
+    </div>
+    <div class="panel" id="cam-panel" style="display:none">
+      <h2>仿真图像 <span class="note" id="cam-title"></span></h2>
+      <div class="body">
+        <div class="toolbar" id="cam-streams" style="margin-bottom:6px"></div>
+        <div class="cam-view"><img id="cam-img" alt="相机仿真图像"></div>
+        <div class="note" id="cam-meta" style="margin-top:4px"></div>
+      </div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const _Q = new URLSearchParams(location.search);
+const API = _Q.get("api") || "/sim/api/v1";   // 平台仓库离线编辑: /api/hub/models/<id>/versions/<v>/api/v1
+if (_Q.get("api")) document.addEventListener("DOMContentLoaded", () => { const a = document.getElementById("back-link"); if (window.top !== window) a.style.display = "none"; else { a.href = "/#/platform/models"; a.textContent = "← 资源平台"; } });
+const COLORS = { lidar2d: "#0891b2", lidar3d: "#7c3aed", camera: "#db2777", stereo: "#ea580c", tof: "#16a34a", photoelectric: "#ca8a04", codeReader: "#475569" };
+const SRC_LABEL = { cmodel: "cmodel", library: "型号库", inferred: "推断", default: "默认", manual: "人工", added: "人工新增", missing: "缺失", removed: "已删除" };
+const SEV_LABEL = { ok: "完整", info: "提示", warn: "待确认", missing: "缺失" };
+const DEG = Math.PI / 180;
+const PARAMS = {
+  lidar2d: [["model", "型号", "text"], ["fov_deg", "水平视场", "num", "°"], ["resolution_deg", "角分辨率", "num", "°"], ["min_range", "最小量程", "num", "m"], ["max_range", "最大量程", "num", "m"], ["freq_hz", "扫描频率", "num", "Hz"], ["range_noise_std", "测距噪声 σ", "num", "m"]],
+  lidar3d: [["model", "型号", "text"], ["vfov_min_deg", "垂直视场下限", "num", "°"], ["vfov_max_deg", "垂直视场上限", "num", "°"], ["min_range", "最小量程", "num", "m"], ["max_range", "最大量程", "num", "m"], ["freq_hz", "帧率", "num", "Hz"], ["point_rate", "点频", "num", "pts/s"], ["range_noise_std", "测距噪声 σ", "num", "m"]],
+  camera: [["model", "型号", "text"], ["width", "宽 (仿真分辨率)", "int", "px"], ["height", "高", "int", "px"], ["hfov_deg", "水平视场", "num", "°"], ["fps", "帧率", "num", "Hz"], ["range_max", "最远可见", "num", "m"], ["pixel_noise", "像素噪声 σ", "num", "DN"]],
+  stereo: [["model", "型号", "text"], ["width", "宽 (仿真分辨率)", "int", "px"], ["height", "高", "int", "px"], ["hfov_deg", "水平视场", "num", "°"], ["baseline_m", "基线", "num", "m"], ["range_min", "最小深度", "num", "m"], ["range_max", "最大深度", "num", "m"], ["fps", "帧率", "num", "Hz"], ["subpixel_px", "视差噪声", "num", "px"]],
+  tof: [["model", "型号", "text"], ["width", "宽", "int", "px"], ["height", "高", "int", "px"], ["hfov_deg", "水平视场", "num", "°"], ["range_min", "最小距离", "num", "m"], ["range_max", "最大距离", "num", "m"], ["fps", "帧率", "num", "Hz"], ["noise_abs_m", "绝对噪声", "num", "m"], ["noise_rel", "相对噪声", "num", ""]],
+  photoelectric: [["model", "型号", "text"], ["trigger_m", "触发距离", "num", "m"], ["range_m", "最大检测", "num", "m"], ["beam_half_deg", "光束半角", "num", "°"]],
+  codeReader: [["model", "型号", "text"], ["orientation", "朝向", "sel", "", ["LENS_DIR_DOWN", "LENS_DIR_UP", "LENS_DIR_FRONT"]], ["read_window_m", "读码窗口", "num", "m"]],
+};
+
+let S = { server: null, ov: null, view: null, tab: "audit", sel: null, preview: null, dirty: false, camStream: null };
+const $ = (id) => document.getElementById(id);
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const fmt = (v, d = 3) => (v === null || v === undefined) ? "—" : (typeof v === "number" ? (+v.toFixed(d)).toString() : (Array.isArray(v) ? "[" + v.map(x => fmt(x, d)).join(", ") + "]" : (typeof v === "object" ? JSON.stringify(v) : String(v))));
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2800); }
+
+async function api(path, method = "GET", body) {
+  const hdr = { "Content-Type": "application/json" };
+  const lk = _Q.get("lockkey"); if (lk) { try { const t = localStorage.getItem(lk); if (t) hdr["X-Lock-Token"] = t; } catch (e) { } }
+  const r = await fetch(API + path, { method, headers: hdr, body: body === undefined ? undefined : JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((j.error && j.error.message) || r.statusText);
+  return j;
+}
+
+async function load() {
+  const d = await api("/model/editor");
+  S.server = d; S.ov = clone(d.overrides); S.view = { spec: d.spec, audit: d.audit, sensors: d.sensors };
+  for (const k of ["chassis", "wheels", "motors", "sensors", "lift", "imu"]) S.ov[k] = S.ov[k] || {};
+  setDirty(false); render();
+}
+const PROT_COLORS = ["#16a34a", "#f59e0b", "#dc2626", "#7c3aed", "#0891b2"];
+
+function setDirty(v) { S.dirty = v; $("dirty").style.display = v ? "" : "none"; $("btn-apply").disabled = !v; }
+
+let _pv = null;
+function changed() {
+  setDirty(true);
+  clearTimeout(_pv);
+  _pv = setTimeout(async () => {
+    try { const p = await api("/model/preview", "POST", S.ov); S.view = { spec: p.spec, audit: p.audit, sensors: p.sensors }; S.preview = p; render(true); }
+    catch (e) { toast("参数有误: " + e.message); }
+  }, 250);
+  drawLayout();
+}
+
+// ------------------------------------------------------------------ header
+function renderHeader() {
+  const sp = S.view.spec, a = S.view.audit.summary;
+  $("hdr-sub").textContent = `${sp.model_file || "未命名"} · 底盘 ${sp.chassis.type} · ${sp.chassis.length_m}×${sp.chassis.width_m}×${sp.chassis.height_m} m · 基线 ${S.server.base_file}`;
+  const b = a.by_severity || {};
+  $("hdr-chips").innerHTML = ["missing", "warn", "info", "ok"].filter(k => b[k]).map(k => `<span class="chip s-${k}">${SEV_LABEL[k]} ${b[k]}</span>`).join("") +
+    `<span class="chip src-manual">人工 ${a.manual}</span>`;
+}
+
+// ------------------------------------------------------------------ tabs
+function render(fromPreview) {
+  renderHeader();
+  const body = $("tab-body");
+  const keepScroll = body.scrollTop;
+  const active = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.k;
+  if (fromPreview && active && S.tab !== "audit" && S.tab !== "json") { drawLayout(); renderCam(); return; }   // 输入中不重绘表单
+  ({ audit: tabAudit, body: tabBody, lift: tabLift, sensors: tabSensors, prot: tabProt, json: tabJson })[S.tab](body);
+  body.scrollTop = keepScroll;
+  drawLayout(); renderCam();
+}
+
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === t));
+  S.tab = t.dataset.tab; render();
+});
+function goTab(tab) { document.querySelector(`.tab[data-tab="${tab}"]`).click(); }
+
+function tabAudit(el) {
+  const items = S.view.audit.items;
+  let html = `<p class="note" style="margin-top:0">逐项核对 cmodel → URDF / 仿真所需参数。<b>待确认/缺失</b> 项已按默认值填入，可点击跳转修改；修改后来源变为 <span class="chip src-manual">人工</span>。</p>
+  <table><thead><tr><th>参数</th><th>当前值</th><th>来源</th><th>状态</th><th>说明</th></tr></thead><tbody>`;
+  let g = null;
+  for (const it of items) {
+    if (it.group !== g) { g = it.group; html += `<tr class="grp"><td colspan="5">${esc(g)}</td></tr>`; }
+    html += `<tr class="clickable" data-path="${esc(it.path)}"><td>${esc(it.label)}</td><td class="v">${esc(fmt(it.value))}${it.unit ? ' <span class="note">' + esc(it.unit) + "</span>" : ""}</td>
+      <td><span class="chip src-${it.source}">${SRC_LABEL[it.source] || it.source}</span></td><td><span class="chip s-${it.severity}">${SEV_LABEL[it.severity]}</span></td>
+      <td class="note">${esc(it.note || "")}${it.editable ? "" : ' <span class="note">(只读)</span>'}</td></tr>`;
+  }
+  el.innerHTML = html + "</tbody></table>";
+  el.querySelectorAll("tr.clickable").forEach(tr => tr.onclick = () => {
+    const p = tr.dataset.path;
+    if (p.startsWith("sensors.")) { const n = p.split(".")[1]; if (!n.startsWith("__")) S.sel = n; goTab("sensors"); if (n === "__camera") addSensor("camera"); }
+    else if (p.startsWith("lift")) goTab("lift");
+    else if (p.startsWith("protection")) goTab("prot");
+    else if (p !== "urdf") goTab("body");
+  });
+}
+
+// ------------------------------------------------------------------ 表单工具
+function field(k, label, value, type = "num", unit = "", opts, isChanged) {
+  const v = value === undefined || value === null ? "" : value;
+  let input;
+  if (type === "sel") input = `<select data-k="${k}">${opts.map(o => `<option ${o == v ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  else if (type === "bool") input = `<select data-k="${k}"><option value="1" ${v ? "selected" : ""}>是</option><option value="0" ${!v ? "selected" : ""}>否</option></select>`;
+  else input = `<input data-k="${k}" type="${type === "text" ? "text" : "number"}" step="any" value="${esc(type === "num" && typeof v === "number" ? +v.toFixed(5) : v)}">`;
+  return `<label class="f ${isChanged ? "changed" : ""}"><span>${esc(label)} ${unit ? `<span class="u">${esc(unit)}</span>` : ""}</span>${input}</label>`;
+}
+function readVal(inp, type) {
+  if (type === "text" || type === "sel") return inp.value;
+  if (type === "bool") return inp.value === "1";
+  if (inp.value === "") return null;
+  const n = parseFloat(inp.value); return type === "int" ? Math.round(n) : n;
+}
+function bind(el, handler) { el.querySelectorAll("[data-k]").forEach(inp => inp.addEventListener(inp.tagName === "SELECT" ? "change" : "input", () => handler(inp.dataset.k, inp))); }
+
+// ------------------------------------------------------------------ 车体与轮组
+function tabBody(el) {
+  const ch = S.view.spec.chassis, oc = S.ov.chassis;
+  const com = ch.com || [((ch.head_offset_m - ch.tail_offset_m) / 2), ((ch.left_offset_m - ch.right_offset_m) / 2), ch.height_m / 4];
+  let h = `<div class="section-title">车体</div><div class="grid" id="f-ch">
+    ${field("mass_kg", "整车质量", ch.mass_kg, "num", "kg", null, "mass_kg" in oc)}
+    ${field("max_load_kg", "额定载荷", ch.max_load_kg, "num", "kg", null, "max_load_kg" in oc)}
+    ${field("height_m", "车体高度", ch.height_m, "num", "m", null, "height_m" in oc)}
+    ${field("com_x", "质心 x", com[0], "num", "m", null, "com" in oc)}${field("com_y", "质心 y", com[1], "num", "m", null, "com" in oc)}${field("com_z", "质心 z", com[2], "num", "m", null, "com" in oc)}
+    ${field("head_offset_m", "车头偏移", ch.head_offset_m, "num", "m", null, "head_offset_m" in oc)}${field("tail_offset_m", "车尾偏移", ch.tail_offset_m, "num", "m", null, "tail_offset_m" in oc)}
+    ${field("left_offset_m", "左侧偏移", ch.left_offset_m, "num", "m", null, "left_offset_m" in oc)}${field("right_offset_m", "右侧偏移", ch.right_offset_m, "num", "m", null, "right_offset_m" in oc)}
+  </div>`;
+  for (const w of S.view.spec.wheels) {
+    const ow = S.ov.wheels[w.name] || {};
+    h += `<div class="section-title">${esc(w.name)} <span class="chip ${w.source === "inferred" ? "src-inferred" : "src-cmodel"}">${w.source === "inferred" ? "推断" : "cmodel"}</span><span class="note">${w.kind}</span></div>
+    <div class="grid" data-wheel="${esc(w.name)}">
+      ${field("x", "x", w.x, "num", "m", null, "x" in ow)}${field("y", "y", w.y, "num", "m", null, "y" in ow)}
+      ${field("radius_m", "轮半径", w.radius_m, "num", "m", null, "radius_m" in ow)}${field("width_m", "轮宽", w.width_m, "num", "m", null, "width_m" in ow)}
+      ${field("mass_kg", "轮质量", w.mass_kg ?? 5, "num", "kg", null, "mass_kg" in ow)}${field("friction", "摩擦系数", w.friction ?? 1.2, "num", "", null, "friction" in ow)}
+    </div>`;
+    for (const mk of ["drive_motor", "steer_motor"]) {
+      const m = w[mk]; if (!m) continue;
+      const om = S.ov.motors[m.name] || {};
+      h += `<div class="grid" data-motor="${esc(m.name)}" style="margin-top:6px">
+        <label class="f"><span>${mk === "drive_motor" ? "行走电机" : "转向电机"}</span><input disabled value="${esc(m.name + " · " + (m.model || ""))}"></label>
+        ${field("rated_torque_nm", "额定转矩", m.rated_torque_nm, "num", "N·m", null, "rated_torque_nm" in om)}
+        ${field("rated_current_a", "额定电流", m.rated_current_a, "num", "A", null, "rated_current_a" in om)}
+      </div>`;
+    }
+  }
+  el.innerHTML = h;
+  bind($("f-ch"), (k, inp) => {
+    const v = readVal(inp, "num");
+    if (k.startsWith("com_")) { const c = (S.ov.chassis.com || com).slice(); c["xyz".indexOf(k[4])] = v; S.ov.chassis.com = c; }
+    else S.ov.chassis[k] = v;
+    inp.parentElement.classList.add("changed"); changed();
+  });
+  el.querySelectorAll("[data-wheel]").forEach(g => bind(g, (k, inp) => { (S.ov.wheels[g.dataset.wheel] ||= {})[k] = readVal(inp, "num"); inp.parentElement.classList.add("changed"); changed(); }));
+  el.querySelectorAll("[data-motor]").forEach(g => bind(g, (k, inp) => { (S.ov.motors[g.dataset.motor] ||= {})[k] = readVal(inp, "num"); inp.parentElement.classList.add("changed"); changed(); }));
+}
+
+// ------------------------------------------------------------------ 顶升
+function tabLift(el) {
+  const motor = (S.view.spec.other_actuators || []).find(m => /lift/i.test(m.name));
+  const L = Object.assign({ enabled: !!motor, stroke_m: 0.08, speed_mps: 0.02, x: 0.4, y: 0, z: 0.3, size: [1.0, 0.7, 0.04], mass_kg: 20 }, S.view.spec.lift || {}, S.ov.lift || {});
+  el.innerHTML = `<p class="note" style="margin-top:0">${motor ? `cmodel 含顶升电机 <b>${esc(motor.name)}</b> (${esc(motor.model || "")})，但没有机构几何与行程。以下为默认值，确认后写入 URDF (lift_joint，prismatic)。` : "cmodel 未包含顶升电机，可按需添加顶升机构。"}</p>
+  <div class="grid" id="f-lift">
+    ${field("enabled", "启用顶升", L.enabled, "bool")}
+    ${field("stroke_m", "行程", L.stroke_m, "num", "m")}${field("speed_mps", "升降速度", L.speed_mps, "num", "m/s")}${field("mass_kg", "托盘质量", L.mass_kg, "num", "kg")}
+    ${field("x", "中心 x", L.x, "num", "m")}${field("y", "中心 y", L.y, "num", "m")}${field("z", "初始高度 z", L.z, "num", "m")}
+    ${field("size_0", "托盘长", L.size[0], "num", "m")}${field("size_1", "托盘宽", L.size[1], "num", "m")}${field("size_2", "托盘厚", L.size[2], "num", "m")}
+  </div>`;
+  bind($("f-lift"), (k, inp) => {
+    const lift = S.ov.lift && Object.keys(S.ov.lift).length ? S.ov.lift : (S.ov.lift = clone(L));
+    if (k.startsWith("size_")) { lift.size = (lift.size || L.size).slice(); lift.size[+k[5]] = readVal(inp, "num"); }
+    else lift[k] = readVal(inp, k === "enabled" ? "bool" : "num");
+    changed();
+  });
+}
+
+// ------------------------------------------------------------------ 保护空间
+function protEff() { return S.view.spec.protection_effective || {}; }
+function tabProt(el) {
+  const P = protEff(), op = S.ov.protection || {}, ch = S.view.spec.chassis, pl = P.payload || {};
+  const fields = P.fields || [];
+  const checks = (S.view.audit.items || []).filter(i => i.group === "保护空间");
+  let h = `<p class="note" style="margin-top:0">车辆保护空间随模型版本保存，部署时下发给执行进程：<b>防护区</b> (按速度分档的停车距离，决定降速/停车)、<b>车体净空</b> (拐点转向与规划可行性)、<b>带载外形</b> (顶升到位后生效)、<b>进站放宽</b>。未配置防护区时按车型减速度 ${ch.max_decel_mps2 ?? "?"} m/s² 自动生成。</p>
+  <div class="section-title">基本</div><div class="grid" id="f-prot">
+    ${field("body_margin", "车体净空 (规划/过弯)", P.body_margin, "num", "m", null, "body_margin" in op)}
+    ${field("rotate_margin", "转向防护外扩", P.rotate_margin, "num", "m", null, "rotate_margin" in op)}
+    ${field("corner_mode", "拐点过弯方式", P.corner_mode, "sel", "", ["auto", "rotate", "arc"], "corner_mode" in op)}
+    ${field("slow_ratio", "预警区倍数", P.slow_ratio, "num", "×", null, "slow_ratio" in op)}
+    ${field("reaction_s", "系统反应时间", P.reaction_s, "num", "s", null, "reaction_s" in op)}
+    ${field("dock_front", "进站前方余量", (P.docking || {}).front, "num", "m", null, !!(op.docking && "front" in op.docking))}
+    ${field("dock_tol", "进站受限到位容差", (P.docking || {}).arrive_tolerance, "num", "m", null, !!(op.docking && "arrive_tolerance" in op.docking))}
+    ${field("enabled", "启用防护区", P.enabled !== false, "bool", "", null, "enabled" in op)}
+  </div>
+  <p class="note">过弯方式: <b>auto</b> 能原地转向的拐点停车转向 (车头始终与线路一致)，转不开的拐点用圆弧过渡；<b>rotate</b> 只允许原地转向 (转不开则规划失败)；<b>arc</b> 优先圆弧 (效率优先)。</p>
+  <div class="section-title">行驶防护区 (按速度分档) ${P.fields_auto ? '<span class="chip s-info">按动力学自动生成</span>' : '<span class="chip src-manual">人工</span>'}
+    <span class="spacer"></span><button class="small" data-fadd>+ 档位</button><button class="small" data-fauto>按车型重新生成</button></div>
+  <table><thead><tr><th>名称</th><th>速度上限 m/s</th><th>前向停车 m</th><th>后向停车 m</th><th>两侧外扩 m</th><th></th></tr></thead><tbody id="f-fields">
+    ${fields.map((f, i) => `<tr data-i="${i}"><td><input data-f="name" value="${esc(f.name)}" style="width:70px"></td>${["v_max", "front", "rear", "side"].map(k => `<td><input data-f="${k}" type="number" step="any" value="${+(+f[k]).toFixed(3)}" style="width:80px;font-family:var(--mono)"></td>`).join("")}<td><button class="small danger" data-fdel="${i}">删除</button></td></tr>`).join("")}
+  </tbody></table>
+  <div class="section-title">光电保护包络</div>
+  <p class="note" style="margin-top:0">光电触发时按检测点位置决定是否响应：检测点落在包络内才停车/禁止朝该侧运动 (斜向角部光电扫到通道侧墙不再误停)。<b>field</b> 包络随速度档取停车区 (与激光防护区同一组区域)；<b>custom</b> 为外形外扩下列距离；<b>always</b> 任何触发都响应。</p>
+  <div class="grid" id="f-photo">
+    ${field("mode", "包络方式", (P.photo || {}).mode || "field", "sel", "", ["field", "custom", "always"])}
+    ${field("front", "前向 (custom)", (P.photo || {}).front, "num", "m")}${field("rear", "后向 (custom)", (P.photo || {}).rear, "num", "m")}${field("side", "两侧 (custom)", (P.photo || {}).side, "num", "m")}
+    ${field("mute_near_stop", "停车点前屏蔽距离", (P.photo || {}).mute_near_stop, "num", "m")}
+  </div>
+  <div class="section-title">带载外形 (相对运动中心)</div><div class="grid" id="f-pl">
+    ${field("enabled", "启用", !!pl.enabled, "bool")}
+    ${field("head", "车头方向", pl.head, "num", "m")}${field("tail", "车尾方向", pl.tail, "num", "m")}${field("left", "左侧", pl.left, "num", "m")}${field("right", "右侧", pl.right, "num", "m")}
+  </div>
+  <div class="section-title">校核</div><table><tbody>${checks.map(c => `<tr><td>${esc(c.label)}</td><td class="v">${esc(fmt(c.value))}</td><td><span class="chip s-${c.severity}">${SEV_LABEL[c.severity]}</span></td><td class="note">${esc(c.note || "")}</td></tr>`).join("")}</tbody></table>`;
+  el.innerHTML = h;
+  const ensure = () => (S.ov.protection ||= {});
+  bind($("f-prot"), (k, inp) => {
+    const o = ensure();
+    if (k === "dock_front") (o.docking ||= {}).front = readVal(inp, "num");
+    else if (k === "dock_tol") (o.docking ||= {}).arrive_tolerance = readVal(inp, "num");
+    else o[k] = readVal(inp, k === "corner_mode" ? "sel" : k === "enabled" ? "bool" : "num");
+    inp.parentElement.classList.add("changed"); changed();
+  });
+  bind($("f-photo"), (k, inp) => { const o = ensure(); o.photo = Object.assign({}, P.photo || {}, o.photo || {}); o.photo[k] = readVal(inp, k === "mode" ? "sel" : "num"); changed(); });
+  bind($("f-pl"), (k, inp) => { const o = ensure(); o.payload = Object.assign({}, pl, o.payload || {}); o.payload[k] = readVal(inp, k === "enabled" ? "bool" : "num"); changed(); });
+  const setFields = (fs) => { ensure().fields = fs; changed(); };
+  el.querySelectorAll("#f-fields input").forEach(inp => inp.addEventListener("change", () => {
+    const fs = clone(fields); const i = +inp.closest("tr").dataset.i; fs[i][inp.dataset.f] = inp.dataset.f === "name" ? inp.value : parseFloat(inp.value); setFields(fs);
+  }));
+  el.querySelectorAll("[data-fdel]").forEach(b => b.onclick = () => { const fs = clone(fields); fs.splice(+b.dataset.fdel, 1); if (fs.length) setFields(fs); });
+  el.querySelector("[data-fadd]").onclick = () => { const fs = clone(fields); const l = fs[fs.length - 1] || { v_max: 1, front: 1, rear: 0.4, side: 0.1 }; fs.push({ name: "新档", v_max: +(l.v_max + 0.3).toFixed(2), front: +(l.front + 0.5).toFixed(2), rear: l.rear, side: l.side }); setFields(fs); };
+  el.querySelector("[data-fauto]").onclick = () => { const o = ensure(); delete o.fields; changed(); toast("已按车型动力学重新生成防护区"); };
+}
+
+// ------------------------------------------------------------------ 传感器
+function sensorsAll() {
+  // 当前视图中的传感器 + 覆盖中标记删除的 cmodel 传感器 (显示为删除线，可恢复)
+  const list = S.view.sensors.slice();
+  for (const [n, p] of Object.entries(S.ov.sensors)) if (p._removed && !list.find(s => s.name === n)) {
+    const orig = S.server.sensors.find(s => s.name === n);
+    if (orig) list.push(Object.assign(clone(orig), { source: "removed" }));
+  }
+  return list;
+}
+
+function tabSensors(el) {
+  const list = sensorsAll();
+  const types = S.server.sensor_types;
+  let h = `<div class="toolbar" style="margin-bottom:10px"><b>安装新传感器:</b>${Object.entries(types).map(([t, l]) => `<button class="small" data-add="${t}"><span class="dot" style="display:inline-block;background:${COLORS[t]};margin-right:4px"></span>${l}</button>`).join("")}</div>`;
+  if (!list.length) h += `<div class="empty">暂无传感器</div>`;
+  for (const s of list) {
+    const p = s.pose;
+    h += `<div class="sensor-row ${S.sel === s.name ? "sel" : ""} ${s.source === "removed" ? "removed" : ""}" data-name="${esc(s.name)}">
+      <span class="dot" style="background:${COLORS[s.stype] || "#64748b"}"></span>
+      <div><b>${esc(s.name)}</b> <span class="note">${esc(s.type_label)} · ${esc(s.model || "")}</span>
+        <div class="meta">xyz ${fmt(p.x, 3)}, ${fmt(p.y, 3)}, ${fmt(p.z, 3)} · rpy ${fmt(p.roll / DEG, 1)}°, ${fmt(p.pitch / DEG, 1)}°, ${fmt(p.yaw / DEG, 1)}°</div></div>
+      <span class="chip src-${s.source}">${SRC_LABEL[s.source] || s.source}</span></div>`;
+    if (S.sel === s.name && s.source !== "removed") h += sensorEditor(s);
+    if (S.sel === s.name && s.source === "removed") h += `<div class="editor"><button data-restore="${esc(s.name)}">恢复该传感器</button></div>`;
+  }
+  el.innerHTML = h;
+  el.querySelectorAll("[data-add]").forEach(b => b.onclick = () => addSensor(b.dataset.add));
+  el.querySelectorAll(".sensor-row").forEach(r => r.onclick = () => { S.sel = S.sel === r.dataset.name ? null : r.dataset.name; render(); });
+  el.querySelectorAll("[data-restore]").forEach(b => b.onclick = () => { delete S.ov.sensors[b.dataset.restore]; changed(); });
+  const ed = el.querySelector(".editor[data-sensor]");
+  if (ed) bindSensorEditor(ed);
+}
+
+function sensorEditor(s) {
+  const P = PARAMS[s.stype] || [];
+  const o = S.ov.sensors[s.name] || {};
+  const isNew = s.source === "added" || (o._added);
+  const p = s.pose;
+  let h = `<div class="editor" data-sensor="${esc(s.name)}" data-stype="${s.stype}">
+    <div class="grid">
+      ${isNew ? field("_name", "名称", s.name, "text") : `<label class="f"><span>名称</span><input disabled value="${esc(s.name)}"></label>`}
+      <label class="f"><span>类型</span><input disabled value="${esc(s.type_label)}"></label>
+    </div>
+    <div class="section-title">安装位姿 <span class="note">base_link 系，x 前 y 左 z 上；光轴/扫描零位沿传感器 x 轴</span></div>
+    <div class="grid">
+      ${field("x", "x", p.x, "num", "m", null, "x" in o)}${field("y", "y", p.y, "num", "m", null, "y" in o)}${field("z", "z", p.z, "num", "m", null, "z" in o)}
+      ${field("roll", "横滚 roll", +(p.roll / DEG).toFixed(2), "num", "°", null, "roll" in o)}${field("pitch", "俯仰 pitch (+ 向下)", +(p.pitch / DEG).toFixed(2), "num", "°", null, "pitch" in o)}${field("yaw", "偏航 yaw", +(p.yaw / DEG).toFixed(2), "num", "°", null, "yaw" in o)}
+    </div>
+    <div class="section-title">型号参数</div><div class="grid">`;
+  for (const [k, label, type, unit, opts] of P) h += field(k, label, s.params[k] ?? "", type, unit, opts, k in o);
+  h += `</div><div class="toolbar" style="margin-top:10px">
+      ${s.stype === "lidar2d" || s.stype === "lidar3d" ? `<label class="f" style="flex-direction:row;align-items:center;gap:6px"><span>套用型号库</span><select data-lib><option value="">—</option><option>mid-360s</option><option>mid-360</option><option>r2000</option><option>mr-ls-07h</option><option>ls-05h</option><option>nanoscan</option><option>sick</option></select></label>` : ""}
+      <span class="spacer"></span>
+      ${isNew || s.source === "manual" && S.server.sensors.find(x => x.name === s.name && x.source !== "manual") ? `<button class="small" data-revert>撤销修改</button>` : ""}
+      <button class="small danger" data-del>${isNew ? "删除" : "移除该传感器"}</button></div></div>`;
+  return h;
+}
+
+function ensurePhotoDefaults() {
+  // 首次编辑/新增光电: 把引擎缺省的 4 个角部光电固化为人工配置，避免被整体替换
+  const spec = S.view.spec;
+  if ((spec.photoelectric || []).length || Object.values(S.ov.sensors).some(p => p.type === "photoelectric")) return;
+  for (const s of S.view.sensors.filter(x => x.stype === "photoelectric" && x.source === "default"))
+    S.ov.sensors[s.name] = Object.assign({ type: "photoelectric", _added: true }, s.pose, s.params);
+}
+
+function sensorPatch(name, stype) {
+  if (!S.ov.sensors[name]) {
+    const s = S.view.sensors.find(x => x.name === name);
+    if (stype === "photoelectric" && s && s.source === "default") ensurePhotoDefaults();
+    S.ov.sensors[name] = S.ov.sensors[name] || {};
+  }
+  return S.ov.sensors[name];
+}
+
+function bindSensorEditor(ed) {
+  const name = ed.dataset.sensor, stype = ed.dataset.stype;
+  const types = Object.fromEntries((PARAMS[stype] || []).map(x => [x[0], x[2]]));
+  bind(ed, (k, inp) => {
+    if (k === "_name") return;
+    const patch = sensorPatch(name, stype);
+    let v = readVal(inp, types[k] || "num");
+    if (["roll", "pitch", "yaw"].includes(k) && v !== null) v = v * DEG;
+    patch[k] = v; inp.parentElement.classList.add("changed"); changed();
+  });
+  const nm = ed.querySelector('[data-k="_name"]');
+  if (nm) nm.addEventListener("change", () => {
+    const nn = nm.value.trim().replace(/[^\w\-]/g, "_");
+    if (!nn || nn === name || S.ov.sensors[nn] || S.view.sensors.find(s => s.name === nn)) { nm.value = name; toast("名称无效或重复"); return; }
+    S.ov.sensors[nn] = S.ov.sensors[name]; delete S.ov.sensors[name]; S.sel = nn; changed();
+  });
+  const lib = ed.querySelector("[data-lib]");
+  if (lib) lib.onchange = () => { if (lib.value) { sensorPatch(name, stype).library = lib.value; changed(); } };
+  const del = ed.querySelector("[data-del]");
+  del.onclick = (e) => {
+    e.stopPropagation();
+    const o = S.ov.sensors[name];
+    if (o && o._added) delete S.ov.sensors[name];
+    else { if (stype === "photoelectric") ensurePhotoDefaults(); if (S.ov.sensors[name] && S.ov.sensors[name]._added) delete S.ov.sensors[name]; else S.ov.sensors[name] = { _removed: true }; }
+    S.sel = null; changed(); render();
+  };
+  const rv = ed.querySelector("[data-revert]");
+  if (rv) rv.onclick = (e) => { e.stopPropagation(); delete S.ov.sensors[name]; changed(); };
+}
+
+async function addSensor(stype) {
+  try {
+    const t = await api("/model/sensor_template?type=" + stype);
+    if (stype === "photoelectric") ensurePhotoDefaults();
+    let i = 1, base = { lidar2d: "laser_new", lidar3d: "lidar3d", camera: "cam", stereo: "stereo", tof: "tof", photoelectric: "pe", codeReader: "code_reader" }[stype];
+    while (S.ov.sensors[`${base}${i}`] || S.view.sensors.find(s => s.name === `${base}${i}`)) i++;
+    const name = `${base}${i}`;
+    const ch = S.view.spec.chassis;
+    t.x = +(ch.head_offset_m - 0.02).toFixed(3);
+    if (stype === "lidar3d") { t.x = +((ch.head_offset_m - ch.tail_offset_m) / 2).toFixed(3); t.z = ch.height_m + 0.05; }
+    S.ov.sensors[name] = Object.assign({ _added: true, stype }, t);
+    S.sel = name; goTab("sensors"); changed();
+    toast(`已添加 ${name}，拖动俯视图或填写位姿调整安装位置`);
+  } catch (e) { toast("添加失败: " + e.message); }
+}
+
+function tabJson(el) {
+  el.innerHTML = `<p class="note" style="margin-top:0">保存后写入 <code>model_overrides.json</code>。cmodel 重新解析时这些人工补全会自动叠加。</p><pre>${esc(JSON.stringify(S.ov, null, 2))}</pre>
+    ${S.preview ? `<div class="section-title">URDF 预览 (${S.preview.urdf.length} 字节)</div><pre>${esc(S.preview.urdf)}</pre>` : ""}`;
+}
+
+// ------------------------------------------------------------------ 俯视 / 侧视布局
+function drawLayout() {
+  const sp = S.view.spec, ch = sp.chassis;
+  const sensors = sensorsAll().filter(s => s.source !== "removed");
+  const W = 600, H = 420;
+  const xs = [-ch.tail_offset_m, ch.head_offset_m], ys = [-ch.right_offset_m, ch.left_offset_m];
+  const PF = (S.tab === "prot" && (protEff().fields || []).length) ? protEff().fields : null;
+  const ext = PF ? Math.max(ch.head_offset_m + Math.max(...PF.map(f => f.front)), ch.tail_offset_m + Math.max(...PF.map(f => f.rear))) * 0.55 + 0.6
+                 : Math.max(xs[1] - xs[0], ys[1] - ys[0]) * 0.5 + 0.9;
+  const cx = PF ? (ch.head_offset_m + Math.max(...PF.map(f => f.front)) - ch.tail_offset_m - Math.max(...PF.map(f => f.rear))) / 2 : (xs[0] + xs[1]) / 2, cy = (ys[0] + ys[1]) / 2;
+  const sc = Math.min(W, H) / (2 * ext);
+  const X = (x, y) => W / 2 - (y - cy) * sc, Y = (x, y) => H / 2 - (x - cx) * sc;   // 车头朝上
+  const P = (x, y) => `${X(x, y).toFixed(1)},${Y(x, y).toFixed(1)}`;
+  let g = `<defs><pattern id="grid" width="${sc * 0.25}" height="${sc * 0.25}" patternUnits="userSpaceOnUse"><path d="M ${sc * 0.25} 0 L 0 0 0 ${sc * 0.25}" fill="none" stroke="#eef2f7" stroke-width="1"/></pattern></defs>
+    <rect width="${W}" height="${H}" fill="url(#grid)"/>`;
+  // FOV
+  for (const s of sensors) {
+    const col = COLORS[s.stype] || "#64748b", p = s.pose, sel = S.sel === s.name;
+    let fov = 0, r = 0.6;
+    if (s.stype === "lidar2d") { fov = (s.params.fov_deg || 270) * DEG; r = 0.9; }
+    else if (s.stype === "lidar3d") { fov = 2 * Math.PI; r = 1.0; }
+    else if (["camera", "stereo", "tof"].includes(s.stype)) { fov = (s.params.hfov_deg || 70) * DEG; r = 0.8; }
+    else if (s.stype === "photoelectric") { fov = 4 * DEG; r = s.params.trigger_m || 0.35; }
+    if (fov > 0) {
+      const inv = s.stype === "lidar2d" && Math.cos(p.roll) < -0.5 ? -1 : 1;
+      if (fov >= 2 * Math.PI - 1e-3) g += `<circle cx="${X(p.x, p.y)}" cy="${Y(p.x, p.y)}" r="${r * sc}" fill="${col}" fill-opacity="${sel ? .14 : .06}" stroke="${col}" stroke-opacity=".4" stroke-dasharray="4 3"/>`;
+      else {
+        const a0 = p.yaw - inv * fov / 2, a1 = p.yaw + inv * fov / 2, n = 24;
+        let d = `M ${P(p.x, p.y)}`;
+        for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; d += ` L ${P(p.x + r * Math.cos(a), p.y + r * Math.sin(a))}`; }
+        g += `<path d="${d} Z" fill="${col}" fill-opacity="${sel ? .18 : .07}" stroke="${col}" stroke-opacity="${sel ? .8 : .35}"/>`;
+      }
+    }
+  }
+  // 车体
+  // 保护空间: 各档停车区 (虚线) + 带载外形
+  const PE = protEff();
+  if (PE.fields && (S.tab === "prot" || S.tab === "audit")) {
+    const h0 = ch.head_offset_m, t0 = ch.tail_offset_m, l0 = ch.left_offset_m, r0 = ch.right_offset_m;
+    const pl = PE.payload || {};
+    const H = Math.max(h0, pl.enabled ? pl.head : 0), T = Math.max(t0, pl.enabled ? pl.tail : 0), Lf = Math.max(l0, pl.enabled ? pl.left : 0), Rt = Math.max(r0, pl.enabled ? pl.right : 0);
+    PE.fields.forEach((f, i) => {
+      const c = PROT_COLORS[i % PROT_COLORS.length];
+      const pts = [[H + f.front, Lf + f.side], [H + f.front, -Rt - f.side], [-T - f.rear, -Rt - f.side], [-T - f.rear, Lf + f.side]];
+      g += `<polygon points="${pts.map(q => P(q[0], q[1])).join(" ")}" fill="${c}" fill-opacity=".05" stroke="${c}" stroke-width="1.3" stroke-dasharray="6 4"/>
+        <text x="${X(H + f.front, 0) + 4}" y="${Y(H + f.front, 0) - 3}" font-size="10" fill="${c}">${esc(f.name)} ≤${f.v_max > 5 ? "∞" : f.v_max} · ${f.front} m</text>`;
+    });
+    if (pl.enabled) g += `<polygon points="${[[pl.head, pl.left], [pl.head, -pl.right], [-pl.tail, -pl.right], [-pl.tail, pl.left]].map(q => P(q[0], q[1])).join(" ")}" fill="#7c3aed" fill-opacity=".08" stroke="#7c3aed" stroke-width="1.5"/>`;
+    const rr = Math.max(Math.hypot(H, Math.max(Lf, Rt)), Math.hypot(T, Math.max(Lf, Rt))) + (PE.rotate_margin || 0);
+    g += `<circle cx="${X(0, 0)}" cy="${Y(0, 0)}" r="${rr * sc}" fill="none" stroke="#64748b" stroke-dasharray="2 4" stroke-width="1"/><text x="${X(0, 0) + rr * sc * 0.72}" y="${Y(0, 0) - rr * sc * 0.72}" font-size="10" fill="#64748b">原地转向扫掠 R=${rr.toFixed(2)} m</text>`;
+  }
+  g += `<polygon points="${ch.footprint.map(q => P(q[0], q[1])).join(" ")}" fill="#fed7aa" fill-opacity=".55" stroke="#9a3412" stroke-width="1.5"/>`;
+  const lift = Object.assign({}, sp.lift || {}, S.ov.lift || {});
+  if (lift.enabled && lift.size) { const [lx, ly] = lift.size, x0 = lift.x || 0, y0 = lift.y || 0;
+    g += `<polygon points="${[[x0 + lx / 2, y0 + ly / 2], [x0 + lx / 2, y0 - ly / 2], [x0 - lx / 2, y0 - ly / 2], [x0 - lx / 2, y0 + ly / 2]].map(q => P(q[0], q[1])).join(" ")}" fill="#94a3b8" fill-opacity=".25" stroke="#64748b" stroke-dasharray="5 3"/>`; }
+  for (const w of sp.wheels) {
+    const r = w.radius_m * sc, wd = Math.max(4, (w.width_m || 0.06) * sc);
+    g += `<rect x="${X(w.x, w.y) - wd / 2}" y="${Y(w.x, w.y) - r}" width="${wd}" height="${2 * r}" rx="2" fill="${w.kind === "steer" ? "#dc2626" : w.source === "inferred" ? "#f59e0b" : "#111827"}" opacity=".85"><title>${esc(w.name)}</title></rect>`;
+  }
+  const com = ch.com; if (com) g += `<g stroke="#0f172a" stroke-width="1.5"><circle cx="${X(com[0], com[1])}" cy="${Y(com[0], com[1])}" r="6" fill="#fff"/><path d="M ${X(com[0], com[1]) - 6} ${Y(com[0], com[1])} h 12 M ${X(com[0], com[1])} ${Y(com[0], com[1]) - 6} v 12"/></g>`;
+  g += `<circle cx="${X(0, 0)}" cy="${Y(0, 0)}" r="3.5" fill="#0f172a"/><path d="M ${X(0, 0)} ${Y(0, 0)} L ${X(0.35, 0)} ${Y(0.35, 0)}" stroke="#dc2626" stroke-width="2" marker-end=""/>
+    <text x="${X(0.38, 0)}" y="${Y(0.38, 0) - 2}" font-size="10" fill="#dc2626" text-anchor="middle">x</text>`;
+  // 传感器
+  for (const s of sensors) {
+    const col = COLORS[s.stype] || "#64748b", p = s.pose, sel = S.sel === s.name;
+    g += `<g class="sn" data-name="${esc(s.name)}" style="cursor:${sel ? "move" : "pointer"}"><circle cx="${X(p.x, p.y)}" cy="${Y(p.x, p.y)}" r="${sel ? 8 : 6}" fill="${col}" stroke="#fff" stroke-width="2"/>
+      <text x="${X(p.x, p.y) + 9}" y="${Y(p.x, p.y) - 7}" font-size="10.5" fill="${col}" font-weight="${sel ? 700 : 500}">${esc(s.name)}</text></g>`;
+  }
+  g += `<text x="8" y="${H - 8}" font-size="10" fill="#94a3b8">网格 0.25 m · 车头朝上</text>`;
+  const svg = $("top"); svg.innerHTML = g;
+  // 拖动
+  svg.querySelectorAll(".sn").forEach(n => n.onpointerdown = (e) => {
+    const name = n.dataset.name;
+    if (S.sel !== name) { S.sel = name; if (S.tab !== "sensors") goTab("sensors"); else render(); return; }
+    const s = sensorsAll().find(x => x.name === name); if (!s) return;
+    svg.setPointerCapture(e.pointerId);
+    const pt = svg.createSVGPoint();
+    const move = (ev) => {
+      pt.x = ev.clientX; pt.y = ev.clientY; const q = pt.matrixTransform(svg.getScreenCTM().inverse());
+      const x = +(cx + (H / 2 - q.y) / sc).toFixed(3), y = +(cy + (W / 2 - q.x) / sc).toFixed(3);
+      const patch = sensorPatch(name, s.stype); patch.x = x; patch.y = y;
+      const v = S.view.sensors.find(t => t.name === name); if (v) { v.pose.x = x; v.pose.y = y; }
+      drawLayout(); const ed = document.querySelector(`.editor[data-sensor="${name}"]`);
+      if (ed) { ed.querySelector('[data-k="x"]').value = x; ed.querySelector('[data-k="y"]').value = y; }
+    };
+    const up = () => { svg.removeEventListener("pointermove", move); svg.removeEventListener("pointerup", up); changed(); };
+    svg.addEventListener("pointermove", move); svg.addEventListener("pointerup", up);
+  });
+  $("legend").innerHTML = Object.entries(S.server.sensor_types).map(([t, l]) => `<span><span class="dot" style="background:${COLORS[t]}"></span>${l}</span>`).join("") +
+    `<span><span class="dot" style="background:#dc2626"></span>舵轮</span><span><span class="dot" style="background:#f59e0b"></span>推断轮</span>`;
+  drawSide(sensors);
+}
+
+function drawSide(sensors) {
+  const ch = S.view.spec.chassis, W = 600, H = 170;
+  const x0 = -ch.tail_offset_m - 0.4, x1 = ch.head_offset_m + 0.4, zmax = Math.max(ch.height_m + 0.4, ...sensors.map(s => s.pose.z + 0.2));
+  const sc = Math.min((W - 40) / (x1 - x0), (H - 24) / zmax);
+  const X = (x) => 20 + (x - x0) * sc, Z = (z) => H - 12 - z * sc;
+  let g = `<line x1="0" x2="${W}" y1="${Z(0)}" y2="${Z(0)}" stroke="#cbd5e1"/>`;
+  const base_h = ch.height_m > 0.6 ? Math.min(ch.height_m, 0.35) : ch.height_m;
+  g += `<rect x="${X(-ch.tail_offset_m)}" y="${Z(base_h + 0.05)}" width="${(ch.tail_offset_m + ch.head_offset_m) * sc}" height="${base_h * sc}" fill="#fed7aa" stroke="#9a3412"/>`;
+  if (ch.height_m > 0.6) g += `<rect x="${X(-ch.tail_offset_m)}" y="${Z(ch.height_m)}" width="${(ch.tail_offset_m + ch.head_offset_m) * sc}" height="${(ch.height_m - base_h - 0.05) * sc}" fill="#e2e8f0" fill-opacity=".6" stroke="#94a3b8" stroke-dasharray="4 3"/>`;
+  for (const s of sensors) {
+    const col = COLORS[s.stype] || "#64748b", p = s.pose, sel = S.sel === s.name;
+    if (["camera", "stereo", "tof"].includes(s.stype) && Math.abs(Math.cos(p.yaw)) > 0.5) {
+      const vf = (s.params.hfov_deg || 60) * DEG * (s.params.height || 3) / (s.params.width || 4), r = 0.9, dir = Math.sign(Math.cos(p.yaw)) || 1;
+      const a0 = -p.pitch - vf / 2, a1 = -p.pitch + vf / 2;
+      g += `<path d="M ${X(p.x)} ${Z(p.z)} L ${X(p.x + dir * r * Math.cos(a0))} ${Z(p.z + r * Math.sin(a0))} L ${X(p.x + dir * r * Math.cos(a1))} ${Z(p.z + r * Math.sin(a1))} Z" fill="${col}" fill-opacity="${sel ? .2 : .07}" stroke="${col}" stroke-opacity=".4"/>`;
+    }
+    g += `<circle cx="${X(p.x)}" cy="${Z(p.z)}" r="${sel ? 6 : 4.5}" fill="${col}" stroke="#fff" stroke-width="1.5"><title>${esc(s.name)} z=${p.z}</title></circle>`;
+  }
+  g += `<text x="6" y="12" font-size="10" fill="#94a3b8">侧视图 (安装高度)</text>`;
+  $("side").innerHTML = g;
+}
+
+// ------------------------------------------------------------------ 相机预览 (已应用的相机)
+let camTimer = null;
+function renderCam() {
+  const s = S.sel && S.view.sensors.find(x => x.name === S.sel);
+  const live = s && ["camera", "stereo", "tof"].includes(s.stype) && S.server.sensors.find(x => x.name === s.name);
+  $("cam-panel").style.display = s && ["camera", "stereo", "tof"].includes(s.stype) ? "" : "none";
+  clearInterval(camTimer);
+  if (!s || !["camera", "stereo", "tof"].includes(s.stype)) return;
+  $("cam-title").textContent = `${s.name} · ${s.type_label}`;
+  if (!live) { $("cam-streams").innerHTML = ""; $("cam-img").removeAttribute("src"); $("cam-meta").textContent = "新传感器需「保存并应用」后才会生成仿真图像"; return; }
+  const streams = { camera: ["rgb"], stereo: ["left", "right", "depth"], tof: ["depth", "amplitude"] }[s.stype];
+  if (!streams.includes(S.camStream)) S.camStream = streams[0];
+  $("cam-streams").innerHTML = streams.map(t => `<button class="small ${t === S.camStream ? "primary" : ""}" data-st="${t}">${{ rgb: "RGB", left: "左目", right: "右目", depth: "深度 (伪彩)", amplitude: "幅度" }[t]}</button>`).join("");
+  $("cam-streams").querySelectorAll("[data-st]").forEach(b => b.onclick = () => { S.camStream = b.dataset.st; renderCam(); });
+  const tick = async () => {
+    try {
+      const r = await fetch(`${API}/sensors/cameras/${encodeURIComponent(s.name)}?stream=${S.camStream}&format=jpeg`);
+      if (!r.ok) throw new Error(r.status);
+      const meta = JSON.parse(r.headers.get("x-meta") || "{}");
+      const url = URL.createObjectURL(await r.blob());
+      const img = $("cam-img"); const old = img.src; img.src = url; if (old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+      $("cam-meta").textContent = `帧 #${r.headers.get("x-seq")} · ${meta.width}×${meta.height} · fx=${meta.K ? meta.K[0].toFixed(1) : "?"} · ${meta.frame_id}`;
+    } catch (e) { $("cam-meta").textContent = "暂无图像 (" + e.message + ")"; }
+  };
+  tick(); camTimer = setInterval(tick, 400);
+}
+
+// ------------------------------------------------------------------ 顶部按钮
+$("btn-apply").onclick = async () => {
+  $("btn-apply").disabled = true;
+  try {
+    const d = await api("/model/overrides", "PUT", S.ov);
+    S.server = d; S.ov = clone(d.overrides); S.view = { spec: d.spec, audit: d.audit, sensors: d.sensors };
+    for (const k of ["chassis", "wheels", "motors", "sensors", "lift", "imu"]) S.ov[k] = S.ov[k] || {};
+    setDirty(false); render();
+    toast("已保存并应用: robot_config.json / robot.urdf 已更新，仿真已重建");
+  } catch (e) { toast("应用失败: " + e.message); $("btn-apply").disabled = false; }
+};
+$("btn-reset").onclick = () => { if (!S.dirty || confirm("放弃所有未保存的修改？")) load(); };
+$("btn-urdf").onclick = async () => {
+  try {
+    const p = await api("/model/preview", "POST", S.ov);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([p.urdf], { type: "application/xml" }));
+    a.download = (p.spec.robot_name || "robot") + ".urdf"; a.click();
+  } catch (e) { toast("生成失败: " + e.message); }
+};
+window.addEventListener("beforeunload", (e) => { if (S.dirty) { e.preventDefault(); e.returnValue = ""; } });
+load().catch(e => { $("hdr-sub").textContent = "加载失败: " + e.message; });
+</script>
+</body>
+</html>

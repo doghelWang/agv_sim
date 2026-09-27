@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+# 运行数据 / 测试产物 (设备本地)
+data/
+records/
+_to_delete_*/
+verify_*.log
+verify_run*.out
+precision_*.json
+*.tar.gz
+*.bundle
+.agv_version
+.deploy.env
+.DS_Store
+*.log
+perf_matrix/
+phone_probe_*.txt

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AMR 仿真平台</title>
+  <link rel="stylesheet" href="css/app.css">
+  <script src="/vendor/lucide.min.js"></script>
+  <script src="/vendor/three.min.js"></script>
+  <script src="/vendor/OrbitControls.js"></script>
+  <script src="/vendor/amr_model3d.js"></script>
+</head>
+<body class="h-screen flex flex-col antialiased bg-slate-50 text-slate-800">
+
+  <!-- ==================== 顶部全局导航栏 ==================== -->
+  <header class="h-14 bg-white border-b border-slate-200 px-6 flex items-center justify-between shrink-0 z-30 shadow-sm">
+    <div class="flex items-center gap-6">
+      <a href="#/platform/overview" class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-sm"><i data-lucide="cpu" class="w-4 h-4"></i></div>
+        <span class="text-sm font-bold tracking-tight text-slate-800">AMR 仿真平台</span>
+      </a>
+      <nav class="flex items-center space-x-1">
+        <a id="nav-platform" href="#/platform/overview" class="nav-top"><i data-lucide="layout-grid" class="w-3.5 h-3.5"></i>仿真资源管理平台</a>
+        <a id="nav-workbench" href="#/wb" class="nav-top"><i data-lucide="terminal" class="w-3.5 h-3.5"></i>设备端仿真工作台</a>
+      </nav>
+    </div>
+    <div class="flex items-center gap-4 text-xs">
+      <div id="hub-pill" class="flex items-center gap-2 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600 font-mono">
+        <span class="w-2 h-2 rounded-full bg-slate-400"></span> 平台连接中…
+      </div>
+      <div class="h-5 w-px bg-slate-200"></div>
+      <button id="user-btn" class="flex items-center gap-2 hover:bg-slate-50 rounded-lg px-1.5 py-1" title="切换使用人">
+        <div id="user-avatar" class="w-7 h-7 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center justify-center font-bold text-xs">?</div>
+        <span id="user-name" class="font-medium text-slate-700">未登录</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ==================== 资源管理平台 ==================== -->
+  <div id="view-platform" class="flex-1 flex min-h-0">
+    <aside class="w-60 bg-white border-r border-slate-200 flex flex-col shrink-0">
+      <div class="p-3 border-b border-slate-100">
+        <button id="btn-new-sim" class="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm">
+          <i data-lucide="plus-circle" class="w-4 h-4"></i> 新建仿真环境
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto py-3 text-xs">
+        <div class="px-4 pb-1.5 text-[11px] font-semibold text-slate-400">仿真运行</div>
+        <a href="#/platform/overview" data-page="overview" class="nav-item"><i data-lucide="activity" class="w-4 h-4"></i><span class="flex-1">仿真运行列表</span><span class="cnt" data-cnt="instances">0</span></a>
+        <a href="#/platform/records" data-page="records" class="nav-item"><i data-lucide="archive" class="w-4 h-4 text-slate-500"></i><span class="flex-1">仿真记录归档</span><span class="cnt" data-cnt="records"></span></a>
+        <div class="px-4 pt-4 pb-1.5 text-[11px] font-semibold text-slate-400">资源池管理</div>
+        <a href="#/platform/compute" data-page="compute" class="nav-item"><i data-lucide="server" class="w-4 h-4 text-blue-600"></i><span class="flex-1">计算资源</span><span class="cnt" data-cnt="nodes">0</span></a>
+        <a href="#/platform/models" data-page="models" class="nav-item"><i data-lucide="truck" class="w-4 h-4 text-purple-600"></i><span class="flex-1">车辆模型</span><span class="cnt" data-cnt="models">0</span></a>
+        <a href="#/platform/scenes" data-page="scenes" class="nav-item"><i data-lucide="map" class="w-4 h-4 text-emerald-600"></i><span class="flex-1">仿真场景</span><span class="cnt" data-cnt="scenes">0</span></a>
+        <a href="#/platform/software" data-page="software" class="nav-item"><i data-lucide="package" class="w-4 h-4 text-amber-600"></i><span class="flex-1">软件程序包</span><span class="cnt" data-cnt="packages">0</span></a>
+      </div>
+      <div class="p-3 border-t border-slate-100 text-[10px] text-slate-400 leading-relaxed">
+        仿真引擎 MuJoCo · 执行 ROS 2 / Nav2<br>仿真与执行经 REST 通信，可分机部署
+      </div>
+    </aside>
+    <main id="platform-main" class="flex-1 overflow-y-auto p-6 min-w-0"></main>
+  </div>
+
+  <!-- ==================== 设备端仿真工作台 ==================== -->
+  <div id="view-workbench" class="flex-1 flex flex-col min-h-0 hidden"></div>
+
+  <div id="toast-box" class="fixed top-16 right-6 z-[70] flex flex-col gap-2 items-end"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

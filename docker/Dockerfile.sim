@@ -1,0 +1,49 @@
+# ============================================================================
+# agv-sim —— 仿真镜像 (不含 ROS)
+#   仿真进程 sim_server  :8090  cmodel 解析/模型补全/MuJoCo 物理/激光·相机·ToF·光电·触边·IO 数据产生
+#   Web 网关 web_gateway :8088  浏览器调度台 + 模型补全页 (/model)，经 REST 访问两进程
+# 持久化数据: /data (robot_config*.json、model_overrides.json、robot.urdf、*.cmodel)
+# 构建: docker build -f docker/Dockerfile.sim -t agv-sim:latest .
+# ============================================================================
+ARG PY_BASE=python:3.10-slim-bookworm
+FROM ${PY_BASE}
+
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG http_proxy
+ARG https_proxy
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    AGV_DATA=/data \
+    SIM_API_PORT=8090 \
+    WEB_PORT=8088 \
+    SIM_PHYSICS=mujoco \
+    SIM_CAMERA_RENDER=ray
+
+# 纯 pip 依赖 (均有 aarch64 wheel): MuJoCo 引擎 / numpy / Pillow(相机 JPEG) / psutil(性能监控) / protobuf(cmodel 解码)
+RUN (pip install --no-cache-dir ${PIP_INDEX:+-i $PIP_INDEX} "numpy<2" "mujoco>=3.3" pillow psutil "protobuf>=3.12" \
+     || pip install --no-cache-dir "numpy<2" "mujoco>=3.3" pillow psutil "protobuf>=3.12") \
+    && python -c "import mujoco, numpy, PIL, psutil, google.protobuf; print('mujoco', mujoco.__version__, 'numpy', numpy.__version__)"
+
+ARG AGV_VERSION=1.0
+LABEL org.agv.kind=sim org.agv.api=v1 org.agv.version=${AGV_VERSION}
+WORKDIR /opt/agv
+# 只复制仿真侧代码 (不含 nav_runtime / Nav2)
+COPY common/ common/
+COPY sim_server/ sim_server/
+COPY sim_core/ sim_core/
+COPY sensors/ sensors/
+COPY planning/ planning/
+COPY tools/ tools/
+COPY cmodel_proto/ cmodel_proto/
+COPY cmodel_parser.py model_overrides.py web_gateway.py gateway_v2.py index.html model_editor.html ./
+COPY vendor/ vendor/
+# 首次运行时拷入 /data 的默认模型
+COPY robot_config.json sensor_overrides.json robot.urdf defaults/
+COPY tests/data/ defaults/cmodel/
+COPY docker/sim_entrypoint.sh /usr/local/bin/agv-sim-entrypoint
+
+VOLUME ["/data"]
+EXPOSE 8090 8088
+HEALTHCHECK --interval=15s --timeout=4s --start-period=30s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/v1/health' % os.environ.get('SIM_API_PORT','8090'), timeout=3)"
+ENTRYPOINT ["bash", "/usr/local/bin/agv-sim-entrypoint"]

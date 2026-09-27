@@ -1,0 +1,17 @@
+# 两个镜像共用的构建上下文排除项 (Dockerfile 中按需 COPY)
+.git
+**/__pycache__
+**/*.pyc
+_backup*
+scratch
+generated
+data
+maps
+*.tar
+*.tar.gz
+*.bak
+*.new
+tests/*
+!tests/data
+.deploy.env
+.hub.env

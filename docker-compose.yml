@@ -1,0 +1,56 @@
+# ============================================================================
+# AMR Studio V4 · 仿真与导航执行分离部署 (两个镜像)
+#
+#   agv-sim  仿真镜像 (无 ROS)      :8090 仿真 REST  :8088 Web 调度台/模型补全
+#   agv-nav  导航执行镜像 (ROS+Nav2) :8091 执行 REST
+#   两容器之间只有 HTTP REST；可同机，也可分机部署:
+#     同机:   docker compose up -d --build
+#     分机:   仿真机  NAV_API=http://<导航机IP>:8091 docker compose up -d agv-sim
+#             导航机  SIM_API=http://<仿真机IP>:8090 docker compose up -d agv-nav
+#   无 compose 插件时用 ./deploy.sh (等价的 docker build/run)
+# ============================================================================
+services:
+  agv-sim:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sim
+      args:
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: agv-sim:latest
+    container_name: agv-sim
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      - SIM_API_PORT=${SIM_API_PORT:-8090}
+      - WEB_PORT=${WEB_PORT:-8088}
+      - NAV_API=${NAV_API:-http://127.0.0.1:8091}
+      - SIM_PHYSICS=${SIM_PHYSICS:-mujoco}
+      - SIM_CAMERA_RENDER=${SIM_CAMERA_RENDER:-ray}
+      - SIM_CAMERA_MAX_HZ=${SIM_CAMERA_MAX_HZ:-10}
+      - CMODEL_FILE=${CMODEL_FILE:-}
+
+  agv-nav:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.nav
+      args:
+        APT_MIRROR: ${APT_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn}
+    image: agv-nav:latest
+    container_name: agv-nav
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/data          # SLAM 地图 (data/slam_maps)
+    environment:
+      - SIM_API=${SIM_API:-http://127.0.0.1:8090}
+      - NAV_API_PORT=${NAV_API_PORT:-8091}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-1}   # ROS 只在本机通信，避免同一局域网的其它设备 (手机/树莓派) 串话
+      - NAV_USE_ROS=${NAV_USE_ROS:-1}
+      - NAV2_AUTOSTART=${NAV2_AUTOSTART:-1}
+      - SIM_LOCALIZATION=${SIM_LOCALIZATION:-slam}
+      - NAV_LOCALIZATION=${NAV_LOCALIZATION:-slam}
+      - LOC_ENGINE=${LOC_ENGINE:-auto}         # auto: 有 slam_toolbox 就用；builtin: 内置 SLAM
+      - SLAM_MAP_DIR=/data/slam_maps

@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 与原型一致的白色工业风；字体用系统字体栈 (离线可用) */
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+.font-mono { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+@layer components {
+  .nav-top { @apply px-3.5 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-all text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent; }
+  .nav-top.active { @apply text-blue-600 bg-blue-50 border-blue-200 font-semibold; }
+  .nav-item { @apply flex items-center gap-2.5 px-4 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors; }
+  .nav-item.active { background-color: #eff6ff; color: #2563eb; font-weight: 600; border-right: 3px solid #2563eb; }
+  .cnt { @apply px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-mono text-slate-500; }
+  .nav-item.active .cnt { @apply bg-blue-100 text-blue-700; }
+  .card { @apply bg-white border border-slate-200 rounded-xl shadow-sm; }
+  .btn { @apply px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-40 disabled:cursor-not-allowed; }
+  .btn-primary { @apply btn bg-blue-600 hover:bg-blue-700 text-white shadow-sm; }
+  .btn-ghost { @apply btn bg-white border border-slate-200 hover:bg-slate-50 text-slate-700; }
+  .btn-soft { @apply btn bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700; }
+  .btn-danger { @apply btn bg-white border border-rose-200 hover:bg-rose-50 text-rose-600; }
+  .inp { @apply w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400; }
+  .lbl { @apply block text-xs text-slate-500 mb-1.5; }
+  .kv { @apply flex justify-between gap-3 py-1.5 border-b border-slate-100 last:border-0 text-xs; }
+  .kv > span:first-child { @apply text-slate-500 shrink-0; }
+  .kv > span:last-child { @apply font-mono text-slate-700 text-right; }
+  .tag { @apply px-1.5 py-0.5 rounded text-[10px] font-bold border font-mono; }
+  .wb-tab { @apply px-3 py-2.5 text-xs font-medium text-slate-500 hover:text-slate-800 flex items-center gap-1.5 border-b-2 border-transparent; }
+  .wb-tab.active { @apply text-blue-600 border-blue-600 font-semibold; }
+  .seg { @apply inline-flex bg-slate-100 rounded-lg p-0.5 border border-slate-200; }
+  .seg > button { @apply px-2.5 py-1 text-xs rounded-md text-slate-600; }
+  .seg > button.on { @apply bg-white text-blue-600 shadow-sm font-semibold; }
+  .panel-title { @apply text-xs font-bold text-slate-800 flex items-center gap-1.5; }
+}
+.fade-in { animation: fadeIn 0.15s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+.pulse-dot { animation: pulse 1.4s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+input[type=range] { accent-color: #2563eb; }

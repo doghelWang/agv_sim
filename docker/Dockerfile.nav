@@ -1,0 +1,59 @@
+# ============================================================================
+# agv-nav —— 导航执行镜像 (ROS 2 Humble + Nav2 + slam_toolbox + robot_localization)
+#   执行进程 nav_runtime :8091  经 REST 从仿真进程拉取状态/激光/相机/IO/模型/地图，驱动 Nav2，回馈控制量
+#   镜像内不含任何仿真代码；场景定义、URDF、Nav2 限速、栅格地图全部来自仿真进程 REST
+# 构建: docker build -f docker/Dockerfile.nav -t agv-nav:latest .
+# ============================================================================
+ARG ROS_BASE=ros:humble-ros-base
+FROM ${ROS_BASE}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    NAV_API_PORT=8091 \
+    SIM_API=http://127.0.0.1:8090 \
+    NAV_USE_ROS=1 \
+    ROS_DOMAIN_ID=0
+ARG http_proxy
+ARG https_proxy
+# APT 国内镜像 (清华 TUNA，直连)；去掉 ROS 源 deb-src (镜像站未同步，会 404)
+ARG APT_MIRROR=""
+RUN set -e; \
+    if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|http://ports.ubuntu.com/ubuntu-ports|$APT_MIRROR/ubuntu-ports|g; s|http://archive.ubuntu.com/ubuntu|$APT_MIRROR/ubuntu|g; s|http://security.ubuntu.com/ubuntu|$APT_MIRROR/ubuntu|g" /etc/apt/sources.list; \
+        for f in /etc/apt/sources.list.d/*; do if [ -f "$f" ]; then sed -i "s|http://packages.ros.org/ros2/ubuntu|$APT_MIRROR/ros2/ubuntu|g" "$f"; fi; done; \
+    fi; \
+    for f in /etc/apt/sources.list.d/*; do if [ -f "$f" ]; then sed -i -E '/^deb-src /d; s/^Types:[[:space:]]*deb[[:space:]]+deb-src[[:space:]]*$/Types: deb/; s/^Types:[[:space:]]*deb-src[[:space:]]+deb[[:space:]]*$/Types: deb/' "$f"; fi; done; \
+    printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99net; \
+    if [ -n "$http_proxy" ]; then \
+        printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' "$http_proxy" "$https_proxy" > /etc/apt/apt.conf.d/99proxy; \
+        if [ -n "$APT_MIRROR" ]; then h=$(echo "$APT_MIRROR" | sed -E 's|https?://([^/]+).*|\1|'); \
+            printf 'Acquire::http::Proxy::%s "DIRECT";\nAcquire::https::Proxy::%s "DIRECT";\n' "$h" "$h" >> /etc/apt/apt.conf.d/99proxy; fi; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        ros-humble-navigation2 \
+        ros-humble-nav2-bringup \
+        ros-humble-robot-state-publisher \
+        ros-humble-slam-toolbox \
+        ros-humble-robot-localization \
+        python3-numpy \
+        curl \
+    && rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99proxy /etc/apt/apt.conf.d/99net
+
+ARG AGV_VERSION=1.0
+LABEL org.agv.kind=nav org.agv.api=v1 org.agv.version=${AGV_VERSION}
+WORKDIR /opt/agv
+# 只复制执行侧代码 (不含 sim_core / sim_server / cmodel 解析)
+COPY common/ common/
+COPY nav_runtime/ nav_runtime/
+COPY planning/ planning/
+COPY nav2_bridge.py ./
+COPY nav2/nav2_launch.py nav2/loc_launch.py nav2/ekf.yaml nav2/slam_toolbox.yaml nav2/
+COPY tools/__init__.py tools/gen_nav2_params.py tools/
+COPY docker/nav_entrypoint.sh /usr/local/bin/agv-nav-entrypoint
+RUN mkdir -p maps /data/slam_maps
+
+EXPOSE 8091
+HEALTHCHECK --interval=15s --timeout=4s --start-period=60s --retries=3 \
+    CMD python3 -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/v1/health' % os.environ.get('NAV_API_PORT','8091'), timeout=3)" || exit 1
+ENTRYPOINT ["bash", "/usr/local/bin/agv-nav-entrypoint"]

@@ -1,0 +1,6 @@
+{
+  "_comment": "cmodel 未包含/需替换的传感器参数。laser = 顶部激光 → Livox Mid-360S (非重复扫描 3D 激光)。修改后重新运行 cmodel_parser.py 生效",
+  "lidars": {
+    "laser": {"library": "mid-360s", "model": "Livox Mid-360S"}
+  }
+}

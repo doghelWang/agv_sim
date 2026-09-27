@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Android (Termux + proot) 用的 Fast DDS 配置，替代 ROS_LOCALHOST_ONLY=1
+  问题: Android 的回环网卡不支持组播，ROS_LOCALHOST_ONLY 下 Fast DDS 只能靠单播 "初始对端" 发现，
+        默认只探测参与者编号 0..3 (maxInitialPeersRange=4)。一个实例有 10+ 个 ROS 进程 (Nav2 每个服务器一个进程)，
+        编号 ≥4 的进程之间互相发现不了 —— bt_navigator 找不到 controller，velocity_smoother 收不到 cmd_vel_nav …
+  做法: 只用 127.0.0.1 (与局域网内树莓派等其它设备隔离，作用同 ROS_LOCALHOST_ONLY)，初始对端探测 0..119 号参与者；
+        不用共享内存传输 (跨 proot 会话的进程间共享内存锁行为未验证，UDP 回环已验证可用)
+  用法: ROS_LOCALHOST_ONLY=0  FASTRTPS_DEFAULT_PROFILES_FILE=<本文件>  (nav_entrypoint.sh 在 Android 上自动设置)
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>agv_udp_lo</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList><address>127.0.0.1</address></interfaceWhiteList>
+      <maxInitialPeersRange>120</maxInitialPeersRange>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>agv_shm</transport_id>
+      <type>SHM</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="agv_android_localhost" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>agv_udp_lo</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <builtin>
+        <initialPeersList>
+          <locator><udpv4><address>127.0.0.1</address></udpv4></locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>

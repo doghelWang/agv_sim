@@ -1,0 +1,303 @@
+{
+  "schema_version": 2,
+  "model_file": "测试车模型(1).cmodel",
+  "robot_name": "cmodel_agv",
+  "load_state": "full",
+  "chassis": {
+    "type": "single_steer",
+    "cmodel_type": "steerChassis",
+    "cmodel_name": "chassis",
+    "length_m": 1.788,
+    "width_m": 0.994,
+    "height_m": 2.03,
+    "head_offset_m": 1.308,
+    "tail_offset_m": 0.48,
+    "left_offset_m": 0.497,
+    "right_offset_m": 0.497,
+    "footprint": [
+      [
+        1.308,
+        0.497
+      ],
+      [
+        1.308,
+        -0.497
+      ],
+      [
+        -0.48,
+        -0.497
+      ],
+      [
+        -0.48,
+        0.497
+      ]
+    ],
+    "rotate_diameter_m": 3.56,
+    "max_climb_deg": 0.0,
+    "self_weight_kg": 0.0,
+    "mass_kg": 266.6,
+    "max_load_kg": 0.0,
+    "max_speed_mps": 1.8,
+    "max_accel_mps2": 0.5,
+    "max_decel_mps2": 0.4,
+    "max_ang_speed_radps": 3.4907,
+    "max_ang_accel_radps2": 1.7453,
+    "max_ang_decel_radps2": 1.7453,
+    "avoid_max_decel_mps2": 0.5,
+    "motion_idle": {
+      "max_speed_mps": 2.0,
+      "max_accel_mps2": 1.0,
+      "max_decel_mps2": 0.8,
+      "max_ang_speed_radps": 3.4907,
+      "max_ang_accel_radps2": 1.7453,
+      "max_ang_decel_radps2": 1.7453,
+      "avoid_max_decel_mps2": 0.5
+    },
+    "motion_full_load": {
+      "max_speed_mps": 1.8,
+      "max_accel_mps2": 0.5,
+      "max_decel_mps2": 0.4,
+      "max_ang_speed_radps": 3.4907,
+      "max_ang_accel_radps2": 1.7453,
+      "max_ang_decel_radps2": 1.7453,
+      "avoid_max_decel_mps2": 0.5
+    }
+  },
+  "wheels": [
+    {
+      "name": "Steerwheel",
+      "cmodel_name": "Steerwheel",
+      "cmodel_subtype": "verticalSteerWheel",
+      "x": 1.09,
+      "y": 0.0,
+      "z": 0.115,
+      "radius_m": 0.115,
+      "width_m": 0.069,
+      "kind": "steer",
+      "steer_min_rad": -2.0944,
+      "steer_max_rad": 2.0944,
+      "drive_motor": {
+        "name": "walk-motor",
+        "model": "ZAPI-ZPJ1.6-90L-Z2",
+        "rated_rpm": 2560.0,
+        "gear_ratio": 22.07,
+        "reverse": false,
+        "holding_brake": true,
+        "encoder": "ENCODER_INC"
+      },
+      "steer_motor": {
+        "name": "steer-motor",
+        "model": "KINCO-SMC60S-0040",
+        "rated_rpm": 3000.0,
+        "gear_ratio": 268.72,
+        "reverse": false,
+        "holding_brake": false,
+        "encoder": "ENCODER_MULTI_TURN_ABS"
+      },
+      "max_speed_mps": 1.3969,
+      "steer_rate_radps": 1.1691,
+      "angle_sensor": "GROUP_CALI_ABS_INTERNAL"
+    },
+    {
+      "name": "rear_left_load_wheel",
+      "kind": "fixed",
+      "x": 0.0,
+      "y": 0.377,
+      "z": 0.0863,
+      "radius_m": 0.0863,
+      "width_m": 0.08,
+      "source": "inferred"
+    },
+    {
+      "name": "rear_right_load_wheel",
+      "kind": "fixed",
+      "x": 0.0,
+      "y": -0.377,
+      "z": 0.0863,
+      "radius_m": 0.0863,
+      "width_m": 0.08,
+      "source": "inferred"
+    }
+  ],
+  "drive_wheels": {
+    "radius_m": 0.115,
+    "track_width_m": 0.7952,
+    "wheel_width_m": 0.069,
+    "x_offset_m": 1.09
+  },
+  "lidars": [
+    {
+      "name": "laser",
+      "cmodel_name": "laser",
+      "type": "3d",
+      "model": "Livox Mid-360S",
+      "x": 1.09,
+      "y": 0.0,
+      "z": 2.03,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0,
+      "inverted": false,
+      "scan_direction": "SCAN_COUNTERCLOCKWISE",
+      "usage": "PClOUD_LASER",
+      "wavelength_nm": 0.0,
+      "anti_light_klux": 0.0,
+      "angle_min": -3.141593,
+      "angle_max": 3.141593,
+      "fov_deg": 360.0,
+      "min_range": 0.1,
+      "max_range": 40.0,
+      "resolution_deg": 0.5,
+      "freq_hz": 10.0,
+      "range_noise_std": 0.02,
+      "vendor_model": "Livox Mid-360S",
+      "spec_source": "override:mid-360s",
+      "housing": {
+        "box": [
+          0.065,
+          0.065,
+          0.06
+        ]
+      },
+      "vfov_min_deg": -7.0,
+      "vfov_max_deg": 52.0,
+      "range_cutoff_m": 100.0,
+      "point_rate": 200000,
+      "angular_noise_deg": 0.15,
+      "lines": 4,
+      "scan_pattern": "non_repetitive",
+      "imu": "ICM40609",
+      "housing_box": [
+        0.065,
+        0.065,
+        0.06
+      ],
+      "topic": "/livox/lidar",
+      "imu_topic": "/livox/imu"
+    },
+    {
+      "name": "laser1",
+      "cmodel_name": "laser1",
+      "type": "2d",
+      "model": "MR-LS-07H-S2025(1-6C)",
+      "x": 1.25,
+      "y": -0.45,
+      "z": 0.4,
+      "roll": 3.141593,
+      "pitch": 0.0,
+      "yaw": -0.925025,
+      "inverted": true,
+      "scan_direction": "SCAN_COUNTERCLOCKWISE",
+      "usage": "PClOUD_LASER",
+      "wavelength_nm": 905.0,
+      "anti_light_klux": 50.0,
+      "angle_min": -2.356194,
+      "angle_max": 2.356194,
+      "fov_deg": 270.0,
+      "min_range": 0.05,
+      "max_range": 20.0,
+      "resolution_deg": 0.33,
+      "freq_hz": 25.0,
+      "range_noise_std": 0.02,
+      "vendor_model": "MR-LS-07H 安全激光",
+      "spec_source": "library:mr-ls-07h",
+      "housing": {
+        "box": [
+          0.055,
+          0.055,
+          0.077
+        ]
+      }
+    },
+    {
+      "name": "laser0",
+      "cmodel_name": "laser0",
+      "type": "2d",
+      "model": "MR-LS-07H-S2025(1-6C)",
+      "x": 1.25,
+      "y": 0.45,
+      "z": 0.4,
+      "roll": 3.141593,
+      "pitch": 0.0,
+      "yaw": 0.925025,
+      "inverted": true,
+      "scan_direction": "SCAN_COUNTERCLOCKWISE",
+      "usage": "PClOUD_LASER",
+      "wavelength_nm": 905.0,
+      "anti_light_klux": 50.0,
+      "angle_min": -2.356194,
+      "angle_max": 2.356194,
+      "fov_deg": 270.0,
+      "min_range": 0.05,
+      "max_range": 20.0,
+      "resolution_deg": 0.33,
+      "freq_hz": 25.0,
+      "range_noise_std": 0.02,
+      "vendor_model": "MR-LS-07H 安全激光",
+      "spec_source": "library:mr-ls-07h",
+      "housing": {
+        "box": [
+          0.055,
+          0.055,
+          0.077
+        ]
+      }
+    }
+  ],
+  "cameras": [],
+  "imu": {
+    "name": "gyro",
+    "x": 0.0,
+    "y": 0.0,
+    "z": 0.0,
+    "angular_resolution": 0.0,
+    "source": "sensor/gyro"
+  },
+  "io": {
+    "inputs": [],
+    "outputs": [],
+    "buttons": [
+      {
+        "name": "button",
+        "type": "BUTTON_COMP_EMCY",
+        "self_lock": true
+      }
+    ]
+  },
+  "battery": {
+    "name": "battery",
+    "voltage_v": 48.0,
+    "capacity_ah": 24.0,
+    "max_discharge_a": 24.0,
+    "std_discharge_a": 8.0,
+    "max_power_w": 1152.0
+  },
+  "other_actuators": [
+    {
+      "name": "lift-motor",
+      "model": "ZAPI-ZPJ1.6-90L-Z2",
+      "rated_rpm": 2560.0,
+      "gear_ratio": 22.07,
+      "reverse": false,
+      "holding_brake": true,
+      "encoder": "ENCODER_NULL"
+    },
+    {
+      "name": "lift_motor_bdc",
+      "model": "BDCMotor-Common",
+      "rated_rpm": 3000.0,
+      "gear_ratio": 0.0,
+      "reverse": false,
+      "holding_brake": true,
+      "encoder": "ENCODER_NULL"
+    }
+  ],
+  "assumptions": [
+    "单舵轮: 在运动中心(后桥)两侧推断 2 个定向承重轮",
+    "自重缺失，按投影面积估算 266.6 kg",
+    "已应用 overrides 覆盖参数"
+  ],
+  "warnings": [
+    "电机额定转速/减速比限制轮端最高 1.397 m/s，低于底盘设定 1.800 m/s；仿真按轮端能力限速"
+  ]
+}

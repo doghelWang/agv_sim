@@ -1,0 +1,3799 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AMR Studio V4 · 工业级全栈机器人调度与仿真工作台</title>
+  
+  <!-- Local Vendor Dependencies (Zero external CDN dependency) -->
+  <link rel="stylesheet" href="/vendor/tailwind.css">
+  <script src="/vendor/lucide.min.js"></script>
+  <script src="/vendor/three.min.js"></script>
+  <script src="/vendor/OrbitControls.js"></script>
+  <script src="/vendor/amr_model3d.js?v=8"></script>
+
+  <style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    /* Custom range slider styling */
+    input[type=range] {
+      accent-color: #2563eb;
+    }
+
+    /* Font monospace for numerical readouts */
+    .font-mono-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Tab active styles */
+    .tab-btn.active {
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+      background-color: #ffffff;
+      font-weight: 600;
+    }
+
+    /* Joystick Canvas */
+    #joystickCanvas {
+      touch-action: none;
+      user-select: none;
+    }
+  </style>
+</head>
+<body class="h-screen w-screen flex flex-col bg-slate-50 text-slate-800 font-sans select-none overflow-hidden text-xs">
+
+  <!-- ============================================================== -->
+  <!-- 1. 顶栏 HEADER (高保真原型风格，紧凑素雅)                          -->
+  <!-- ============================================================== -->
+  <header class="h-12 bg-white border-b border-slate-200 px-4 flex items-center justify-between shrink-0 shadow-sm z-30">
+    <!-- 左侧 Logo 与物理内核状态 -->
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white font-black text-sm shadow-sm">
+          A
+        </div>
+        <div>
+          <div class="text-xs font-bold text-slate-900 leading-tight">AMR Studio V4</div>
+          <div class="text-[10px] text-slate-500 leading-tight">工业级全栈机器人调度与仿真工作台</div>
+        </div>
+      </div>
+
+      <div class="h-4 w-[1px] bg-slate-200 mx-1"></div>
+
+      <!-- 实时物理内核标志 -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
+        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+        <span id="engine-badge-text">SimCore 仿真引擎 (cmodel 驱动)</span>
+      </div>
+
+      <!-- 调度状态 Pill -->
+      <span id="header-nav-badge" class="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+        ● 空闲 (IDLE)
+      </span>
+    </div>
+
+    <!-- 中间：控制权与操作者 -->
+    <div class="hidden md:flex items-center gap-2">
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-50 border border-blue-200 text-blue-800 text-[11px] font-medium">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5 text-blue-600"></i>
+        <span>控制令牌: <b>当前控制台</b></span>
+      </div>
+      <div class="text-[11px] text-slate-500 font-mono">
+        <span>节点: </span><span class="text-slate-700 font-semibold" id="hdr-node-addr">-</span>
+      </div>
+    </div>
+
+    <!-- 右侧：快捷监控停靠标签 (切换右侧面板 Tab) -->
+    <div class="flex items-center gap-1.5">
+      <button onclick="switchSidebarTab('topics')" id="quick-btn-topics" class="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded text-[11px] font-medium flex items-center gap-1.5 shadow-sm transition-all">
+        <i data-lucide="activity" class="w-3.5 h-3.5 text-blue-600"></i>
+        <span>ROS 2 话题</span>
+        <span id="badge-topic-count" class="px-1.5 py-0.2 text-[9px] font-bold rounded-full bg-blue-100 text-blue-800">7</span>
+      </button>
+
+      <button onclick="switchSidebarTab('perf')" id="quick-btn-perf" class="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded text-[11px] font-medium flex items-center gap-1.5 shadow-sm transition-all">
+        <i data-lucide="cpu" class="w-3.5 h-3.5 text-emerald-600"></i>
+        <span>硬件与性能</span>
+        <span id="badge-cpu-pct" class="px-1.5 py-0.2 text-[9px] font-bold rounded-full bg-emerald-100 text-emerald-800 font-mono">CPU --%</span>
+      </button>
+
+      <button onclick="switchSidebarTab('events')" id="quick-btn-events" class="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded text-[11px] font-medium flex items-center gap-1.5 shadow-sm transition-all">
+        <i data-lucide="message-square" class="w-3.5 h-3.5 text-purple-600"></i>
+        <span>实时事件</span>
+        <span id="badge-event-count" class="px-1.5 py-0.2 text-[9px] font-bold rounded-full bg-purple-100 text-purple-800 font-mono">0</span>
+      </button>
+
+      <button onclick="switchSidebarTab('safety')" id="quick-btn-safety" class="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded text-[11px] font-medium flex items-center gap-1.5 shadow-sm transition-all">
+        <i data-lucide="shield-alert" class="w-3.5 h-3.5 text-amber-600"></i>
+        <span>安全与遥控</span>
+      </button>
+
+      <a href="/model" target="_blank" title="cmodel→URDF 缺失项人工补齐 · 安装激光/相机/双目/ToF" class="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded text-[11px] font-medium flex items-center gap-1.5 shadow-sm transition-all">
+        <i data-lucide="wrench" class="w-3.5 h-3.5 text-indigo-600"></i>
+        <span>模型补全</span>
+      </a>
+
+      <button onclick="switchSidebarTab('replay')" id="quick-btn-replay" class="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded text-[11px] font-medium flex items-center gap-1.5 shadow-sm transition-all">
+        <i data-lucide="film" class="w-3.5 h-3.5 text-rose-600"></i>
+        <span>仿真记录</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============================================================== -->
+  <!-- 2. 控制工具栏 TOOLBAR (场景、底盘、规划器、工位导航、视角控制)      -->
+  <!-- ============================================================== -->
+  <div class="h-10 bg-white/95 backdrop-blur border-b border-slate-200 px-3 flex items-center justify-between shrink-0 z-20 shadow-xs overflow-x-auto whitespace-nowrap text-xs">
+    <!-- 左侧：场景选择与时钟控制 -->
+    <div class="flex items-center gap-2 shrink-0">
+      <!-- 场景 -->
+      <div class="flex items-center gap-1">
+        <span class="text-[11px] font-bold text-slate-600">场景:</span>
+        <select id="sel-scenario" onchange="switchScenario(this.value)" class="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-xs text-slate-800 font-medium focus:bg-white focus:border-blue-500">
+          <option value="grid_9_square">正方形九宫格智能仓</option>
+          <option value="standard_cross">标准十字仓储中心</option>
+          <option value="narrow_aisle">高密多巷道立体库</option>
+          <option value="rect_loop">长方形环线车间</option>
+          <option value="fms_workshop">柔性制造车间</option>
+        </select>
+      </div>
+
+      <!-- 底盘 -->
+      <div class="flex items-center gap-1">
+        <span class="text-[11px] font-bold text-slate-600">底盘:</span>
+        <select id="sel-chassis" onchange="switchChassis(this.value)" class="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-xs text-slate-800 font-medium focus:bg-white focus:border-blue-500">
+          <option value="single_steer">单舵轮 (叉车)</option>
+          <option value="diff_drive">两轮差速</option>
+          <option value="dual_steer">双舵全向</option>
+        </select>
+      </div>
+
+      <!-- 规划器 -->
+      <div class="flex items-center gap-1">
+        <span class="text-[11px] font-bold text-slate-600">规划器:</span>
+        <select id="sel-planner" onchange="switchPlanner(this.value)" class="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-xs text-slate-800 font-medium focus:bg-white focus:border-blue-500">
+          <option value="dijkstra">Dijkstra 拓扑</option>
+          <option value="straight">直连导航</option>
+          <option value="astar">A* 栅格</option>
+          <option value="nav2">Nav2 自主导航</option>
+        </select>
+        <span id="nav2-badge" title="Nav2 状态" class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-400">Nav2 …</span>
+      </div>
+
+      <div class="h-3 w-[1px] bg-slate-200 mx-0.5"></div>
+
+      <!-- 仿真物理时钟控制 -->
+      <button id="btn-pause-resume" onclick="toggleSimPauseResume()" class="px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-xs font-semibold flex items-center gap-1 transition-all shrink-0">
+        <i id="icon-pause-resume" data-lucide="pause" class="w-3 h-3"></i>
+        <span id="txt-pause-resume">暂停物理</span>
+      </button>
+
+      <button onclick="resetSimulation()" class="px-2 py-0.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded text-xs font-semibold flex items-center gap-1 shadow-xs transition-all shrink-0">
+        <i data-lucide="rotate-ccw" class="w-3 h-3 text-slate-600"></i>
+        <span>重置环境</span>
+      </button>
+    </div>
+
+    <!-- 中间：快捷工位下发 Pills (根据当前场景元数据动态渲染) -->
+    <div id="station-pills-container" class="flex items-center gap-1 mx-2 overflow-x-auto" style="flex:1 1 auto;min-width:0;max-width:520px;overflow-x:auto;scrollbar-width:thin">
+      <span class="text-[11px] font-bold text-slate-500 mr-0.5 shrink-0">工位:</span>
+      <div id="station-pills-list" class="flex items-center gap-1 shrink-0">
+        <button onclick="dispatchStation('S1')" class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-medium text-[11px] whitespace-nowrap">S1 拣选</button>
+        <button onclick="dispatchStation('S2')" class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-medium text-[11px] whitespace-nowrap">S2 入库</button>
+        <button onclick="dispatchStation('S3')" class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-medium text-[11px] whitespace-nowrap">S3 质检</button>
+        <button onclick="dispatchStation('S4')" class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-medium text-[11px] whitespace-nowrap">S4 充电</button>
+        <button onclick="dispatchStation('P0')" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-medium text-[11px] whitespace-nowrap">P0 待命</button>
+      </div>
+      <button onclick="cancelNavigation()" class="px-1.5 py-0.5 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-medium text-[11px] flex items-center gap-0.5 shrink-0">
+        <i data-lucide="x-circle" class="w-3 h-3"></i> 取消
+      </button>
+    </div>
+
+    <!-- 右侧：视角切换 (固定在工具栏右端，不随工位按钮增多被挤出屏幕) -->
+    <div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 border border-slate-200 text-xs shrink-0" style="flex:0 0 auto;position:sticky;right:0;z-index:5">
+      <button id="cam-btn-2d" onclick="setCameraView('2d')" class="px-2 py-0.5 rounded text-xs font-semibold text-blue-600 bg-white shadow-xs">2D 地图</button>
+      <button id="cam-btn-free" onclick="setCameraView('free')" class="px-2 py-0.5 rounded text-xs font-medium text-slate-600 hover:text-slate-900">3D 自由</button>
+      <button id="cam-btn-top" onclick="setCameraView('top')" class="px-2 py-0.5 rounded text-xs font-medium text-slate-600 hover:text-slate-900">3D 俯瞰</button>
+      <button id="cam-btn-follow" onclick="setCameraView('follow')" class="px-2 py-0.5 rounded text-xs font-medium text-slate-600 hover:text-slate-900">3D 跟随</button>
+      <button id="cam-btn-inspect" onclick="setCameraView('inspect')" class="px-2 py-0.5 rounded text-xs font-medium text-slate-600 hover:text-slate-900" title="围绕车体查看 cmodel 部件构成">3D 构成</button>
+    </div>
+  </div>
+
+  <!-- ============================================================== -->
+  <!-- 3. 主工作区域 MAIN VIEWPORT & SIDEBAR DOCK                     -->
+  <!-- ============================================================== -->
+  <div class="flex-1 flex overflow-hidden relative">
+
+    <!-- 左侧 / 主视口画布区域 -->
+    <div class="flex-1 relative bg-slate-100 overflow-hidden flex flex-col">
+      <!-- 2D Canvas (SLAM 栅格、激光雷达命中线、车身底盘、路径) -->
+      <canvas id="canvas-2d" class="w-full h-full block cursor-grab bg-slate-50"></canvas>
+
+      <!-- 3D Three.js Canvas (立体车身、货架障碍物、3D 动态激光雷达点云) -->
+      <canvas id="canvas-3d" class="w-full h-full block hidden bg-slate-100"></canvas>
+      <div id="amr3d-overlay" class="hidden" style="position:absolute;left:12px;bottom:12px;z-index:10;max-width:460px;max-height:58%;overflow:auto;background:rgba(255,255,255,0.95);border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;font-size:11px;line-height:1.5;color:#334155;box-shadow:0 4px 14px rgba(15,23,42,0.08)"></div>
+
+      <!-- 2D 视图图层与信息显示控制器 (右上角悬浮胶囊栏) -->
+      <div id="canvas-2d-toolbar" class="absolute top-3 right-3 flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg p-1 shadow-md z-10 text-[11px]">
+        <button id="layer-btn-topo" onclick="toggleLayer('topology')" class="px-2 py-0.5 rounded font-medium bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1 transition-all shadow-xs" title="显示/隐藏 拓扑导轨路网">
+          <i data-lucide="git-commit" class="w-3 h-3"></i> 拓扑线
+        </button>
+        <button id="layer-btn-env" onclick="toggleLayer('environment')" class="px-2 py-0.5 rounded font-medium bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1 transition-all shadow-xs" title="显示/隐藏 仓库墙体与货架轮廓">
+          <i data-lucide="warehouse" class="w-3 h-3"></i> 环境轮廓
+        </button>
+        <button id="layer-btn-laser" onclick="toggleLayer('laser')" class="px-2 py-0.5 rounded font-medium bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1 transition-all shadow-xs" title="显示/隐藏 激光雷达扫描视场与轮廓">
+          <i data-lucide="radar" class="w-3 h-3"></i> 激光轮廓
+        </button>
+        <button id="layer-btn-path" onclick="toggleLayer('path')" class="px-2 py-0.5 rounded font-medium bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1 transition-all shadow-xs" title="显示/隐藏 实时规划导航路径">
+          <i data-lucide="route" class="w-3 h-3"></i> 规划路径
+        </button>
+        <button id="layer-btn-stations" onclick="toggleLayer('stations')" class="px-2 py-0.5 rounded font-medium bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1 transition-all shadow-xs" title="显示/隐藏 仓储工位与对齐标">
+          <i data-lucide="map-pin" class="w-3 h-3"></i> 工位标注
+        </button>
+        <div class="h-3 w-[1px] bg-slate-200 mx-0.5"></div>
+        <button onclick="reset2DView()" title="视角自适应居中" class="p-1 rounded hover:bg-slate-100 text-slate-600 transition-colors">
+          <i data-lucide="maximize" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      <!-- 激光雷达点云图例 (实体轮廓 vs 开阔空扫) -->
+      <div id="laser-legend-pill" class="absolute top-12 right-3 flex items-center gap-2.5 bg-white/95 backdrop-blur border border-slate-200 rounded-md px-2 py-0.5 shadow-xs z-10 text-[10px] text-slate-600 font-medium">
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>实体轮廓命中</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-slate-400 inline-block"></span>开阔空扫极值</span>
+      </div>
+
+      <!-- 规划路径信息卡片 (右下角悬浮，有活动路径时展示) -->
+      <div id="path-info-card" class="absolute bottom-3 right-3 bg-white/95 backdrop-blur border border-blue-200 rounded-xl p-2.5 shadow-md z-10 hidden min-w-[250px] text-xs transition-all">
+        <div class="flex items-center justify-between pb-1.5 border-b border-slate-100 mb-1.5">
+          <span class="font-bold text-blue-800 flex items-center gap-1">
+            <i data-lucide="route" class="w-3.5 h-3.5 text-blue-600"></i>
+            实时路径规划与导引信息
+          </span>
+          <span id="path-card-status" class="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800 font-mono">
+            ● 执行中
+          </span>
+        </div>
+        <div class="space-y-1 text-[11px] text-slate-600 font-mono-num">
+          <div class="flex justify-between"><span>规划引擎:</span><span id="path-card-engine" class="font-bold text-slate-800">Dijkstra 拓扑路网</span></div>
+          <div class="flex justify-between"><span>规划航点总数:</span><span id="path-card-waypoints" class="font-bold text-slate-800">0 个航点</span></div>
+          <div class="flex justify-between"><span>剩余里程估算:</span><span id="path-card-dist" class="font-bold text-blue-700">0.00 m</span></div>
+          <div class="flex justify-between"><span>目标工位坐标:</span><span id="path-card-goal" class="font-bold text-slate-800 truncate max-w-[140px]">(0.0, 0.0)</span></div>
+        </div>
+      </div>
+
+      <!-- 悬浮遥测 HUD (左上角) -->
+      <div class="absolute top-3 left-3 flex flex-col gap-2 z-10 pointer-events-none">
+        <div class="p-3 rounded-xl bg-white/95 backdrop-blur border border-slate-200 shadow-md pointer-events-auto min-w-[280px]">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <i data-lucide="navigation-2" class="w-3.5 h-3.5 text-blue-600"></i>
+              实时遥测与工步
+            </span>
+            <span id="hud-nav-status" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              ● 空闲巡航
+            </span>
+          </div>
+
+          <div class="space-y-1.5 text-xs text-slate-600">
+            <div class="p-1.5 rounded bg-blue-50/70 border border-blue-100 flex items-center justify-between">
+              <span class="text-slate-600 font-medium">当前目标:</span>
+              <span id="hud-current-step" class="font-bold text-blue-700 text-right truncate max-w-[160px]">等待工位派发</span>
+            </div>
+
+            <div class="flex justify-between items-center">
+              <span>当前位姿 (X, Y, θ):</span>
+              <span id="hud-pose" class="font-mono-num font-semibold text-slate-900">X: 0.00m Y: 0.00m θ: 0.0°</span>
+            </div>
+
+            <div class="flex justify-between items-center">
+              <span>线速度 / 角速度:</span>
+              <span id="hud-vel" class="font-mono-num text-blue-600 font-semibold">0.00 m/s | 0.00 rad/s</span>
+            </div>
+
+            <div class="flex justify-between items-center">
+              <span>2D 激光射线命中:</span>
+              <span id="hud-laser-pts" class="font-mono-num text-emerald-700 font-semibold">720 pts (10.0 Hz)</span>
+            </div>
+
+            <div class="flex justify-between items-center">
+              <span>前向最近障碍物:</span>
+              <span id="hud-obstacle-dist" class="font-mono-num text-slate-800 font-semibold">> 2.5 m (安全)</span>
+            </div>
+
+            <div class="flex justify-between items-center">
+              <span>货叉机构高度:</span>
+              <span id="hud-fork-height" class="font-mono-num text-slate-800 font-semibold">0 mm</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 仿真暂停提示横幅 (右上角) -->
+      <div id="paused-banner" class="absolute top-3 right-3 bg-amber-500/95 backdrop-blur text-white px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-lg hidden z-10">
+        <i data-lucide="pause-circle" class="w-4 h-4"></i>
+        <span>物理仿真已暂停：可在右侧「扰动注入」标签添加路障</span>
+      </div>
+
+      <!-- 2D 画布底部缩放提示 -->
+      <div class="absolute bottom-2 left-3 text-[11px] text-slate-400 bg-white/80 px-2 py-1 rounded border border-slate-200 pointer-events-none">
+        鼠标拖拽平移 | 滚轮缩放 | 点击空白设定导航目标
+      </div>
+    </div>
+
+    <!-- 右侧多功能控制与检视抽屉 DOCK (380px) -->
+    <div class="w-[380px] bg-white border-l border-slate-200 flex flex-col h-full shrink-0 shadow-sm overflow-hidden z-20">
+
+      <!-- Tab 切换标签栏 -->
+      <div class="h-10 bg-slate-50 border-b border-slate-200 flex items-center px-1.5 justify-between shrink-0">
+        <button onclick="switchSidebarTab('topics')" id="tab-btn-topics" class="tab-btn active flex-1 py-2 text-[11px] font-medium text-slate-600 hover:text-slate-900 border-b-2 border-transparent flex items-center justify-center gap-1">
+          <i data-lucide="activity" class="w-3.5 h-3.5"></i> 话题
+        </button>
+        <button onclick="switchSidebarTab('perf')" id="tab-btn-perf" class="tab-btn flex-1 py-2 text-[11px] font-medium text-slate-600 hover:text-slate-900 border-b-2 border-transparent flex items-center justify-center gap-1">
+          <i data-lucide="cpu" class="w-3.5 h-3.5"></i> 性能
+        </button>
+        <button onclick="switchSidebarTab('events')" id="tab-btn-events" class="tab-btn flex-1 py-2 text-[11px] font-medium text-slate-600 hover:text-slate-900 border-b-2 border-transparent flex items-center justify-center gap-1">
+          <i data-lucide="message-square" class="w-3.5 h-3.5"></i> 事件
+        </button>
+        <button onclick="switchSidebarTab('safety')" id="tab-btn-safety" class="tab-btn flex-1 py-2 text-[11px] font-medium text-slate-600 hover:text-slate-900 border-b-2 border-transparent flex items-center justify-center gap-1">
+          <i data-lucide="shield-alert" class="w-3.5 h-3.5"></i> 安全
+        </button>
+        <button onclick="switchSidebarTab('perturb')" id="tab-btn-perturb" class="tab-btn flex-1 py-2 text-[11px] font-medium text-slate-600 hover:text-slate-900 border-b-2 border-transparent flex items-center justify-center gap-1">
+          <i data-lucide="box" class="w-3.5 h-3.5"></i> 扰动
+        </button>
+        <button onclick="switchSidebarTab('replay')" id="tab-btn-replay" class="tab-btn flex-1 py-2 text-[11px] font-medium text-slate-600 hover:text-slate-900 border-b-2 border-transparent flex items-center justify-center gap-1">
+          <i data-lucide="film" class="w-3.5 h-3.5"></i> 回放
+        </button>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 1: 📊 ROS 2 话题监视器 (TOPIC INSPECTOR)                   -->
+      <!-- ============================================================ -->
+      <div id="tab-panel-topics" class="flex-1 p-3 overflow-y-auto space-y-2.5">
+        <div class="flex items-center justify-between pb-1 border-b border-slate-100">
+          <div class="font-bold text-slate-800 flex items-center gap-1.5">
+            <i data-lucide="radio" class="w-3.5 h-3.5 text-blue-600 animate-pulse"></i>
+            仿真数据监视器 (REST v1)
+          </div>
+          <span class="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+            ● 10.0 Hz 采样活跃
+          </span>
+        </div>
+
+        <!-- 话题 1: /cmd_vel -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/cmd_vel</span>
+            <span class="text-[10px] text-slate-400 font-mono">geometry_msgs/Twist</span>
+          </div>
+          <div class="grid grid-cols-3 gap-1.5 text-[11px]">
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <div class="text-slate-400 text-[10px]">线速度 Vx</div>
+              <div id="insp-cmd-vx" class="font-mono-num font-bold text-blue-700">0.00 m/s</div>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <div class="text-slate-400 text-[10px]">横移 Vy</div>
+              <div id="insp-cmd-vy" class="font-mono-num font-bold text-slate-700">0.00 m/s</div>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <div class="text-slate-400 text-[10px]">角速度 Wz</div>
+              <div id="insp-cmd-wz" class="font-mono-num font-bold text-purple-700">0.00 rad/s</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 话题 2: /odom -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/odom</span>
+            <span class="text-[10px] text-slate-400 font-mono">nav_msgs/Odometry</span>
+          </div>
+          <div class="space-y-1 text-[11px] bg-white p-2 rounded border border-slate-200 font-mono-num">
+            <div class="flex justify-between text-slate-600">
+              <span>坐标 (X, Y):</span>
+              <span class="font-semibold text-slate-800"><span id="insp-odom-x">0.00 m</span>, <span id="insp-odom-y">0.00 m</span></span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>航向角 (Yaw):</span>
+              <span class="font-semibold text-slate-800"><span id="insp-odom-yaw">0.0°</span> (<span id="insp-odom-yaw-rad">0.000 rad</span>)</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>正交/廊道对齐:</span>
+              <span id="insp-odom-align" class="font-semibold text-emerald-600">✅ 严格平行/垂直</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>反馈线速 / 角速:</span>
+              <span><span id="insp-odom-vx">0.00</span> m/s | <span id="insp-odom-wz">0.00</span> rad/s</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 话题 3: /scan -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/scan</span>
+            <span class="text-[10px] text-slate-400 font-mono">sensor_msgs/LaserScan</span>
+          </div>
+          <div class="space-y-1 text-[11px] bg-white p-2 rounded border border-slate-200">
+            <div class="flex justify-between text-slate-600">
+              <span>最近障碍物距离:</span>
+              <span id="insp-scan-min" class="font-mono-num font-bold text-slate-800">> 12.0 m (安全)</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>防撞安全状态:</span>
+              <span id="insp-scan-safety" class="font-semibold text-emerald-600">✅ 畅通安全通道</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>激光线束 / 角分辨率:</span>
+              <span class="font-mono-num text-slate-800"><span id="insp-scan-rays">720</span> 束 / <span id="insp-scan-res">0.5°</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 话题 4: /joint_states -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/joint_states</span>
+            <span class="text-[10px] text-slate-400 font-mono">sensor_msgs/JointState</span>
+          </div>
+          <div class="space-y-1 text-[11px] bg-white p-2 rounded border border-slate-200 font-mono-num">
+            <div class="flex justify-between text-slate-600">
+              <span>当前底盘模式:</span>
+              <span id="insp-chassis-type" class="font-semibold text-blue-700">两轮差速 (Diff-Drive)</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>关节名称:</span>
+              <span id="insp-joints-names" class="text-slate-800 truncate max-w-[200px]">wheel_l, wheel_r</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>位置与舵角:</span>
+              <span id="insp-joints-pos" class="text-slate-800">[0.0, 0.0]</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- REST 三进程架构 -->
+        <div class="p-2.5 rounded-lg border border-indigo-200 bg-indigo-50/50 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-indigo-800 text-[11px]">三进程架构 · RESTful 链路</span>
+            <span class="text-[10px] text-slate-400 font-mono">无 ROS 话题跨进程</span>
+          </div>
+          <div class="grid grid-cols-3 gap-1 text-[10px] font-mono">
+            <div class="p-1 rounded bg-white border border-slate-200"><div class="text-slate-500">仿真进程 :8090</div><div id="arch-sim" class="font-bold text-slate-400">…</div></div>
+            <div class="p-1 rounded bg-white border border-slate-200"><div class="text-slate-500">执行进程 :8091</div><div id="arch-nav" class="font-bold text-slate-400">…</div></div>
+            <div class="p-1 rounded bg-white border border-slate-200"><div class="text-slate-500">指令来源</div><div id="arch-cmd" class="font-bold text-slate-600">…</div></div>
+          </div>
+          <div id="arch-link" class="text-[10px] font-mono text-slate-500 leading-snug">state — Hz · lidar — · cmd —</div>
+        </div>
+
+        <!-- 相机类仿真图像 -->
+        <div id="cam-card" class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5" style="display:none">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/api/v1/sensors/cameras</span>
+            <a href="/model" target="_blank" class="text-[10px] text-indigo-600">安装/调整 →</a>
+          </div>
+          <div id="cam-thumbs" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px"></div>
+        </div>
+
+        <!-- 光电 / 碰撞条 -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/api/v1/sensors/photoelectric · bumpers</span>
+            <span class="text-[10px] text-slate-400 font-mono">光电 / 碰撞条</span>
+          </div>
+          <div id="pe-list" class="grid grid-cols-2 gap-1 text-[10px] font-mono"></div>
+          <div id="bumper-list" class="flex gap-1 text-[10px] font-mono"></div>
+          <div id="safety-line" class="text-[10px] text-slate-500"></div>
+        </div>
+
+        <!-- 话题 5: /io_states -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/io_states</span>
+            <span class="text-[10px] text-slate-400 font-mono">工业安全与数字量 I/O</span>
+          </div>
+          <div class="grid grid-cols-2 gap-1.5 text-[11px]">
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">急停回路:</span>
+              <span id="insp-io-estop" class="font-bold text-emerald-600">🟢 正常运行</span>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">防撞触边:</span>
+              <span id="insp-io-bumper" class="font-bold text-emerald-600">🟢 正常释放</span>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">在位检测:</span>
+              <span id="insp-io-cargo" class="font-bold text-slate-600">⚪ 空载位无货</span>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">抱闸释放:</span>
+              <span id="insp-io-brake" class="font-bold text-emerald-600">🟢 释放 (运转)</span>
+            </div>
+          </div>
+          <div class="p-1.5 rounded bg-white border border-slate-200 flex justify-between items-center text-[11px]">
+            <span class="text-slate-500">三色信号灯:</span>
+            <div class="flex items-center gap-2 font-bold font-mono">
+              <span id="insp-io-green" class="text-emerald-600">● 绿灯</span>
+              <span id="insp-io-yellow" class="text-slate-300">○ 黄灯</span>
+              <span id="insp-io-red" class="text-slate-300">○ 红灯</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 话题 6: /bullet_metrics -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/bullet_metrics</span>
+            <span class="text-[10px] text-slate-400 font-mono">MuJoCo</span>
+          </div>
+          <div class="grid grid-cols-2 gap-1.5 text-[11px] font-mono-num">
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">物理步进耗时:</span>
+              <span id="insp-bm-step" class="font-bold text-slate-800">0.85 ms</span>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">激光求交耗时:</span>
+              <span id="insp-bm-raycast" class="font-bold text-slate-800">1.42 ms</span>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">刚体数量:</span>
+              <span id="insp-bm-bodies" class="font-bold text-slate-800">14 个</span>
+            </div>
+            <div class="p-1.5 rounded bg-white border border-slate-200">
+              <span class="text-slate-500 block text-[10px]">物理求解约束:</span>
+              <span id="insp-bm-constraints" class="font-bold text-slate-800">4 组</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 话题 7: /plan -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold font-mono text-slate-800 text-[11px]">/plan</span>
+            <span class="text-[10px] text-slate-400 font-mono">nav_msgs/Path</span>
+          </div>
+          <div class="space-y-1 text-[11px] bg-white p-2 rounded border border-slate-200 font-mono-num">
+            <div class="flex justify-between text-slate-600">
+              <span>规划引擎:</span>
+              <span id="insp-plan-engine" class="font-semibold text-blue-700">Dijkstra 拓扑路网</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>调度状态:</span>
+              <span id="insp-plan-status" class="font-semibold text-slate-800">IDLE</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>剩余路程:</span>
+              <span id="insp-plan-dist" class="font-semibold text-slate-800">0.00 m</span>
+            </div>
+            <div class="flex justify-between text-slate-600">
+              <span>目标点坐标:</span>
+              <span id="insp-plan-target" class="font-semibold text-slate-800 truncate max-w-[190px]">无目标</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 2: 📈 树莓派 4B 硬件与仿真性能 (HARDWARE & PERF)             -->
+      <!-- ============================================================ -->
+      <div id="tab-panel-perf" class="flex-1 p-3 overflow-y-auto space-y-3 hidden">
+        <div class="flex items-center justify-between pb-1 border-b border-slate-100">
+          <div class="font-bold text-slate-800 flex items-center gap-1.5">
+            <i data-lucide="cpu" class="w-3.5 h-3.5 text-emerald-600"></i>
+            树莓派与仿真引擎性能监控
+          </div>
+          <span class="text-[10px] font-mono text-slate-500">4-Core Cortex-A72</span>
+        </div>
+
+        <!-- 4 核心 CPU 状态 -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-2">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="font-bold text-slate-700">CPU 4 核心占用率</span>
+            <span id="perf-cpu-total" class="font-mono-num font-bold text-blue-700 text-xs">--%</span>
+          </div>
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-2 text-[10px] font-mono-num">
+              <span class="w-10 text-slate-500">Core 0</span>
+              <div class="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div id="perf-core-0-bar" class="h-full bg-blue-600 transition-all duration-200" style="width: 0%"></div>
+              </div>
+              <span id="perf-core-0-txt" class="w-8 text-right font-bold text-slate-700">0%</span>
+            </div>
+            <div class="flex items-center gap-2 text-[10px] font-mono-num">
+              <span class="w-10 text-slate-500">Core 1</span>
+              <div class="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div id="perf-core-1-bar" class="h-full bg-blue-600 transition-all duration-200" style="width: 0%"></div>
+              </div>
+              <span id="perf-core-1-txt" class="w-8 text-right font-bold text-slate-700">0%</span>
+            </div>
+            <div class="flex items-center gap-2 text-[10px] font-mono-num">
+              <span class="w-10 text-slate-500">Core 2</span>
+              <div class="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div id="perf-core-2-bar" class="h-full bg-blue-600 transition-all duration-200" style="width: 0%"></div>
+              </div>
+              <span id="perf-core-2-txt" class="w-8 text-right font-bold text-slate-700">0%</span>
+            </div>
+            <div class="flex items-center gap-2 text-[10px] font-mono-num">
+              <span class="w-10 text-slate-500">Core 3</span>
+              <div class="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div id="perf-core-3-bar" class="h-full bg-blue-600 transition-all duration-200" style="width: 0%"></div>
+              </div>
+              <span id="perf-core-3-txt" class="w-8 text-right font-bold text-slate-700">0%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 内存、温度、负载摘要 -->
+        <div class="grid grid-cols-3 gap-2 text-[11px] font-mono-num">
+          <div class="p-2 rounded bg-white border border-slate-200">
+            <span class="text-slate-400 block text-[10px]">内存占用</span>
+            <span id="perf-mem-pct" class="font-bold text-slate-800 text-xs">--%</span>
+            <span id="perf-mem-mb" class="text-[9px] text-slate-400 block">-- / -- MB</span>
+          </div>
+          <div class="p-2 rounded bg-white border border-slate-200">
+            <span class="text-slate-400 block text-[10px]">CPU 核心温度</span>
+            <span id="perf-cpu-temp" class="font-bold text-emerald-700 text-xs">-- °C</span>
+            <span class="text-[9px] text-slate-400 block">正常区间</span>
+          </div>
+          <div class="p-2 rounded bg-white border border-slate-200">
+            <span class="text-slate-400 block text-[10px]">平均负载 (1/5m)</span>
+            <span id="perf-load-avg" class="font-bold text-slate-800 text-[10px] block truncate">--</span>
+            <span class="text-[9px] text-slate-400 block">Linux Load</span>
+          </div>
+        </div>
+
+        <!-- 60秒 实时滑动性能折线图 -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-white space-y-1.5">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="font-bold text-slate-700">60 秒实时负载与仿真延迟曲线</span>
+            <div class="flex items-center gap-2 text-[9px] font-mono">
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-500"></span>CPU%</span>
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>物理(ms)</span>
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-500"></span>激光(ms)</span>
+            </div>
+          </div>
+          <canvas id="perfChartCanvas" class="w-full h-28 bg-slate-50 rounded border border-slate-100"></canvas>
+        </div>
+
+        <!-- 关键进程清单 -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <span class="font-bold text-slate-700 block text-[11px]">关键仿真与 ROS2 进程明细</span>
+          <div class="space-y-1 text-[10px] font-mono-num">
+            <div class="flex justify-between p-1.5 rounded bg-white border border-slate-200">
+              <div>
+                <div class="font-bold text-blue-700">sim_server (仿真进程)</div>
+                <div class="text-slate-400 text-[9px]">MuJoCo 物理与传感器</div>
+              </div>
+              <div class="text-right">
+                <div id="perf-proc-sim-cpu" class="font-bold text-slate-800">--% CPU</div>
+                <div id="perf-proc-sim-mem" class="text-slate-400 text-[9px]">-- MB</div>
+              </div>
+            </div>
+            <div class="flex justify-between p-1.5 rounded bg-white border border-slate-200">
+              <div>
+                <div class="font-bold text-emerald-700">web_gateway.py</div>
+                <div class="text-slate-400 text-[9px]">Web 网关 / REST 聚合</div>
+              </div>
+              <div class="text-right">
+                <div id="perf-proc-server-cpu" class="font-bold text-slate-800">--% CPU</div>
+                <div id="perf-proc-server-mem" class="text-slate-400 text-[9px]">-- MB</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 动态激光雷达参数实时调节表单 -->
+        <div class="p-2.5 rounded-lg border border-blue-200 bg-blue-50/40 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-blue-900 text-[11px] flex items-center gap-1">
+              <i data-lucide="sliders" class="w-3.5 h-3.5 text-blue-600"></i>
+              动态激光雷达参数热调节
+            </span>
+            <span class="text-[10px] text-blue-700 font-mono">/api/lidar_config</span>
+          </div>
+
+          <div class="space-y-2 text-[11px]">
+            <div>
+              <div class="flex justify-between text-slate-700 mb-0.5">
+                <span>线束点数 (Beams):</span>
+                <span id="cfg-beams-val" class="font-mono-num font-bold text-blue-700">720</span>
+              </div>
+              <input type="range" id="cfg-beams" min="90" max="720" step="90" value="720" oninput="onLidarBeamsInput(this.value)" class="w-full">
+            </div>
+
+            <div>
+              <div class="flex justify-between text-slate-700 mb-0.5">
+                <span>角分辨率 (Resolution):</span>
+                <span id="cfg-res-val" class="font-mono-num font-bold text-blue-700">0.50°</span>
+              </div>
+              <input type="range" id="cfg-res" min="0.5" max="4.0" step="0.5" value="0.5" oninput="onLidarResInput(this.value)" class="w-full">
+            </div>
+
+            <div>
+              <div class="flex justify-between text-slate-700 mb-0.5">
+                <span>扫描频率 (Frequency):</span>
+                <span id="cfg-freq-val" class="font-mono-num font-bold text-blue-700">10.0 Hz</span>
+              </div>
+              <input type="range" id="cfg-freq" min="5" max="20" step="1" value="10" oninput="document.getElementById('cfg-freq-val').textContent = parseFloat(this.value).toFixed(1) + ' Hz'" class="w-full">
+            </div>
+
+            <div>
+              <div class="flex justify-between text-slate-700 mb-0.5">
+                <span>最大量程 (Range Max):</span>
+                <span id="cfg-range-val" class="font-mono-num font-bold text-blue-700">12.0 m</span>
+              </div>
+              <input type="range" id="cfg-range" min="5" max="30" step="1" value="12" oninput="document.getElementById('cfg-range-val').textContent = parseFloat(this.value).toFixed(1) + ' m'" class="w-full">
+            </div>
+
+            <button onclick="applyLidarConfig()" class="w-full py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded font-bold shadow-xs transition-all active:scale-98">
+              立即热更新激光雷达参数
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 3: 📜 实时事件瀑布流 (LIVE EVENT STREAM)                    -->
+      <!-- ============================================================ -->
+      <div id="tab-panel-events" class="flex-1 flex flex-col overflow-hidden hidden">
+        <!-- 频道过滤 Chips -->
+        <div class="p-2 border-b border-slate-200 bg-slate-50/70 flex flex-wrap gap-1">
+          <button onclick="toggleEventFilter('all')" id="ev-chip-all" class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white shadow-xs">全部频道</button>
+          <button onclick="toggleEventFilter('chassis')" id="ev-chip-chassis" class="px-2 py-0.5 rounded text-[10px] font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-100">🏎️ 底盘 (<span id="ev-cnt-chassis">0</span>)</button>
+          <button onclick="toggleEventFilter('navigation')" id="ev-chip-navigation" class="px-2 py-0.5 rounded text-[10px] font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-100">🧭 导航 (<span id="ev-cnt-navigation">0</span>)</button>
+          <button onclick="toggleEventFilter('safety')" id="ev-chip-safety" class="px-2 py-0.5 rounded text-[10px] font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-100">🛡️ 安全 (<span id="ev-cnt-safety">0</span>)</button>
+          <button onclick="toggleEventFilter('sensors')" id="ev-chip-sensors" class="px-2 py-0.5 rounded text-[10px] font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-100">📡 雷达 (<span id="ev-cnt-sensors">0</span>)</button>
+          <button onclick="toggleEventFilter('system')" id="ev-chip-system" class="px-2 py-0.5 rounded text-[10px] font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-100">⚡ 系统 (<span id="ev-cnt-system">0</span>)</button>
+        </div>
+
+        <!-- 工具条 (搜索、等级过滤、清屏、导出) -->
+        <div class="p-2 border-b border-slate-200 bg-white flex items-center justify-between gap-1.5">
+          <input type="text" id="ev-search-input" placeholder="🔍 检索关键词..." oninput="renderEventList()" class="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-0.5 text-[11px] text-slate-800">
+          <select id="ev-level-select" onchange="renderEventList()" class="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[11px] text-slate-800">
+            <option value="ALL">全部等级</option>
+            <option value="INFO">INFO</option>
+            <option value="WARN">WARN</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+          <button onclick="clearEventLogs()" class="p-1 hover:bg-slate-100 rounded text-slate-500" title="清空日志"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+          <button onclick="exportEventsJson()" class="p-1 hover:bg-slate-100 rounded text-blue-600" title="导出 JSON"><i data-lucide="download" class="w-3.5 h-3.5"></i></button>
+        </div>
+
+        <!-- 事件列表容器 -->
+        <div id="eventList" class="flex-1 p-2 space-y-1.5 overflow-y-auto font-mono text-[11px]">
+          <!-- 动态插入事件卡片 -->
+        </div>
+
+        <!-- 底部自动滚动控制 -->
+        <div class="p-2 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-[11px] text-slate-500">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="chk-autoscroll" checked onchange="autoScroll = this.checked">
+            <span>自动滚屏</span>
+          </label>
+          <button onclick="toggleStreamPause()" id="btn-pause-stream" class="text-blue-600 hover:underline">
+            ⏸ 暂停接收
+          </button>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 4: 🛡️ 工业安全与手动遥控 (SAFETY & TELEOP)                   -->
+      <!-- ============================================================ -->
+      <div id="tab-panel-safety" class="flex-1 p-3 overflow-y-auto space-y-3 hidden">
+        <!-- 虚拟摇杆控制区 -->
+        <div class="p-3 rounded-lg border border-slate-200 bg-slate-50/70 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-800 text-[11px] flex items-center gap-1.5">
+              <i data-lucide="gamepad-2" class="w-3.5 h-3.5 text-blue-600"></i>
+              虚拟手柄遥控 (支持键盘 WASD)
+            </span>
+            <span id="teleop-vel-badge" class="font-mono-num text-[10px] text-blue-700 font-bold">Vx: 0.00 | Wz: 0.00</span>
+          </div>
+
+          <div class="flex items-center justify-center py-2">
+            <div class="w-40 h-40 rounded-full border-2 border-slate-300 bg-white shadow-inner relative flex items-center justify-center">
+              <canvas id="joystickCanvas" width="160" height="160" class="rounded-full"></canvas>
+            </div>
+          </div>
+
+          <div class="text-[10px] text-slate-400 text-center font-mono">
+            W: 前进 | S: 后退 | A: 左转 | D: 右转 | 空格: 紧急驻车
+          </div>
+        </div>
+
+        <!-- 工业安全控制 (急停、防撞触边、在位传感器) -->
+        <div class="p-3 rounded-lg border border-rose-200 bg-rose-50/40 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-rose-900 text-[11px] flex items-center gap-1">
+              <i data-lucide="shield-alert" class="w-3.5 h-3.5 text-rose-600"></i>
+              工业安全连锁控制器
+            </span>
+            <span id="estop-status-pill" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+              🟢 回路闭合正常
+            </span>
+          </div>
+
+          <!-- 急停按钮 -->
+          <button id="btn-estop" onclick="toggleEStop()" class="w-full py-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-xs shadow-md flex items-center justify-center gap-2 active:scale-98 transition-all">
+            <i data-lucide="octagon" class="w-4 h-4"></i>
+            <span id="txt-estop">按下急停开关闭锁 (E-STOP)</span>
+          </button>
+
+          <!-- 触边与货物开关 -->
+          <div class="grid grid-cols-2 gap-2 text-[11px]">
+            <button onclick="toggleIO('di_bumper_front')" id="btn-toggle-bumper" class="p-2 rounded bg-white hover:bg-slate-50 border border-slate-200 text-left">
+              <div class="text-slate-500 text-[10px]">前向安全防撞触边</div>
+              <div id="stat-bumper" class="font-bold text-emerald-600">🟢 释放 (无碰触)</div>
+            </button>
+            <button onclick="toggleIO('di_cargo_present')" id="btn-toggle-cargo" class="p-2 rounded bg-white hover:bg-slate-50 border border-slate-200 text-left">
+              <div class="text-slate-500 text-[10px]">托盘货物在位传感器</div>
+              <div id="stat-cargo" class="font-bold text-slate-600">⚪ 空载位 (无货)</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- 货叉升降机构仿真 -->
+        <div class="p-3 rounded-lg border border-slate-200 bg-white space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-700 text-[11px] flex items-center gap-1">
+              <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-blue-600"></i>
+              顶升/货叉执行机构仿真
+            </span>
+            <span id="fork-height-display" class="font-mono-num font-bold text-blue-700 text-xs">0 mm</span>
+          </div>
+
+          <input type="range" id="slider-fork" min="0" max="1200" step="50" value="0" oninput="onForkSliderInput(this.value)" class="w-full">
+
+          <div class="grid grid-cols-4 gap-1 text-[10px]">
+            <button onclick="setForkHeight(0)" class="py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">0 mm</button>
+            <button onclick="setForkHeight(300)" class="py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">300 mm</button>
+            <button onclick="setForkHeight(600)" class="py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">600 mm</button>
+            <button onclick="setForkHeight(1000)" class="py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">1000 mm</button>
+          </div>
+        </div>
+
+        <!-- 三色报警灯状态 -->
+        <div class="p-3 rounded-lg border border-slate-200 bg-slate-50/60 space-y-1.5">
+          <span class="font-bold text-slate-700 block text-[11px]">设备三色警示灯</span>
+          <div class="flex items-center justify-around p-2 bg-white rounded border border-slate-200 font-bold text-xs">
+            <span id="light-green" class="flex items-center gap-1 text-emerald-600">● 绿灯 (运行)</span>
+            <span id="light-yellow" class="flex items-center gap-1 text-slate-300">○ 黄灯 (导航)</span>
+            <span id="light-red" class="flex items-center gap-1 text-slate-300">○ 红灯 (告警)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 5: 📦 仿真扰动注入库 (PERTURBATION TOOLBOX)                 -->
+      <!-- ============================================================ -->
+      <div id="tab-panel-perturb" class="flex-1 p-3 overflow-y-auto space-y-3 hidden">
+        <div class="pb-2 border-b border-amber-200">
+          <div class="font-bold text-amber-900 text-xs flex items-center justify-between">
+            <span class="flex items-center gap-1.5">
+              <i data-lucide="package-plus" class="w-4 h-4 text-amber-600"></i>
+              仿真场景扰动注入库
+            </span>
+            <span id="perturb-pause-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+              ▶ 运行中 (需先暂停)
+            </span>
+          </div>
+          <div class="text-[11px] text-amber-700 mt-0.5">选取工业元素放入仿真环境中，测试避障与重规划</div>
+          <div id="perturb-pause-hint" class="mt-2 p-2 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-800 flex items-start gap-1.5 transition-all">
+            <span class="text-base leading-none">⚠️</span>
+            <span id="perturb-pause-hint-text">添加扰动模块前必须先<b>暂停物理仿真</b>。放置后无需弹窗确认，<b>恢复仿真</b>时自动生效进入物理碰撞引擎。</span>
+          </div>
+        </div>
+
+        <!-- 4 种工业元素选择 -->
+        <div class="space-y-1.5">
+          <label class="text-[11px] font-bold text-slate-700 block">选取要注入的元素类别:</label>
+          <div class="grid grid-cols-2 gap-2">
+            <button onclick="selectInjectType('pallet')" id="btn-inj-pallet" class="p-2.5 rounded-lg border-2 border-blue-500 bg-blue-50/50 flex flex-col items-center gap-1 text-xs text-left transition-all">
+              <span class="text-lg">🪵</span>
+              <span class="font-bold text-slate-800">标准木质栈板</span>
+              <span class="text-[10px] text-slate-500">1.2 × 1.0 × 0.15m</span>
+            </button>
+            <button onclick="selectInjectType('shelf')" id="btn-inj-shelf" class="p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 flex flex-col items-center gap-1 text-xs text-left transition-all">
+              <span class="text-lg">🏗️</span>
+              <span class="font-bold text-slate-800">双层轻型货架</span>
+              <span class="text-[10px] text-slate-500">2.0 × 1.0 × 2.2m</span>
+            </button>
+            <button onclick="selectInjectType('box')" id="btn-inj-box" class="p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 flex flex-col items-center gap-1 text-xs text-left transition-all">
+              <span class="text-lg">📦</span>
+              <span class="font-bold text-slate-800">工业周转纸箱</span>
+              <span class="text-[10px] text-slate-500">0.8 × 0.8 × 0.8m</span>
+            </button>
+            <button onclick="selectInjectType('person')" id="btn-inj-person" class="p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 flex flex-col items-center gap-1 text-xs text-left transition-all">
+              <span class="text-lg">👷</span>
+              <span class="font-bold text-slate-800">车间作业人员</span>
+              <span class="text-[10px] text-slate-500">0.5 × 0.5m (站立)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 放置位置选择 -->
+        <div class="space-y-1.5 pt-2 border-t border-slate-200">
+          <label class="text-[11px] font-bold text-slate-700 block">放置注入目标位置:</label>
+          <select id="sel-inject-pos" class="w-full bg-slate-50 border border-slate-200 rounded p-2 text-xs text-slate-800">
+            <option value="ahead_25">车身正前方 2.5 米 (规划路径线上)</option>
+            <option value="ahead_12">车身正前方 1.2 米 (近距减速区)</option>
+            <option value="target_station">下一目标工位附近</option>
+            <option value="random">随机在通道中放置</option>
+          </select>
+        </div>
+
+        <!-- 确认注入按钮 -->
+        <button id="btn-confirm-inject" onclick="confirmInjectElement()" class="w-full py-2 bg-slate-400 hover:bg-slate-500 text-white rounded-lg text-xs font-bold shadow-sm flex items-center justify-center gap-1.5 active:scale-95 transition-all">
+          <i data-lucide="lock" class="w-4 h-4"></i> 将该元素放入仿真环境中 (需先暂停)
+        </button>
+
+        <!-- 已注入障碍物管理 -->
+        <div class="pt-2 border-t border-slate-200 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold text-slate-700">场景动态路障列表:</span>
+            <button onclick="clearAllObstacles()" class="text-[10px] text-rose-600 hover:underline">清空所有路障</button>
+          </div>
+          <div id="injected-elements-list" class="space-y-1 max-h-36 overflow-y-auto text-xs">
+            <div class="text-[11px] text-slate-400 text-center py-3 italic">暂无人工注入的扰动元素</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- TAB 6: 📼 仿真飞行记录与回放 (RECORDER & REPLAY)                -->
+      <!-- ============================================================ -->
+      <div id="tab-panel-replay" class="flex-1 p-3 overflow-y-auto space-y-3 hidden">
+        <div class="pb-1 border-b border-slate-200 flex items-center justify-between">
+          <div class="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+            <i data-lucide="film" class="w-4 h-4 text-rose-600"></i>
+            仿真过程记录与时间轴回放
+          </div>
+          <button id="btn-rec-toggle" onclick="toggleFlightRecording()" class="px-2.5 py-1 rounded bg-rose-50 text-rose-700 border border-rose-200 font-bold flex items-center gap-1 text-[11px] hover:bg-rose-100 transition-all">
+            <span id="rec-dot" class="w-2 h-2 rounded-full bg-rose-600"></span>
+            <span id="rec-text">开始记录</span>
+          </button>
+        </div>
+
+        <!-- 历史会话列表 -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="font-bold text-slate-700">历史仿真录制会话:</span>
+            <button onclick="fetchReplaySessions()" class="text-blue-600 hover:underline text-[10px]">刷新列表</button>
+          </div>
+          <div id="replay-sessions-list" class="space-y-1 max-h-40 overflow-y-auto">
+            <div class="text-[11px] text-slate-400 text-center py-3 italic">加载会话中...</div>
+          </div>
+        </div>
+
+        <!-- 交互式回放控制面板 -->
+        <div class="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-700 text-[11px]">时间轴回放控制器</span>
+            <span id="replay-time-txt" class="font-mono-num font-bold text-blue-700 text-xs">00:00 / 00:00</span>
+          </div>
+
+          <!-- 进度条 -->
+          <input type="range" id="replay-scrubber" min="0" max="100" value="0" oninput="onReplaySeek(this.value)" class="w-full">
+
+          <!-- 播放/暂停与倍速 -->
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1.5">
+              <button id="btn-replay-play" onclick="toggleReplayPlay()" class="px-3 py-1 bg-blue-600 text-white rounded font-bold text-xs hover:bg-blue-700">播放</button>
+              <button onclick="stopReplay()" class="px-2 py-1 bg-white border border-slate-200 text-slate-600 rounded text-xs hover:bg-slate-50">停止</button>
+            </div>
+            <div class="flex items-center gap-1 text-[10px]">
+              <button onclick="setReplaySpeed(0.5)" class="px-1.5 py-0.5 rounded bg-white border border-slate-200">0.5x</button>
+              <button onclick="setReplaySpeed(1.0)" class="px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 font-bold text-blue-700">1.0x</button>
+              <button onclick="setReplaySpeed(2.0)" class="px-1.5 py-0.5 rounded bg-white border border-slate-200">2.0x</button>
+              <button onclick="setReplaySpeed(4.0)" class="px-1.5 py-0.5 rounded bg-white border border-slate-200">4.0x</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 导入导出 -->
+        <div class="pt-2 border-t border-slate-200 flex items-center justify-between">
+          <button onclick="exportCurrentSessionJson()" class="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-300 rounded text-[11px] text-slate-700 font-medium shadow-xs flex items-center gap-1">
+            <i data-lucide="download" class="w-3.5 h-3.5 text-blue-600"></i> 导出选中记录 (JSON)
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================================== -->
+  <!-- 4. JAVASCRIPT 全套仿真、ROS 2 订阅、渲染与遥控引擎                 -->
+  <!-- ============================================================== -->
+  <script>
+    // --------------------------------------------------------------
+    // 全局状态与网络通信
+    // --------------------------------------------------------------
+    let telemetry = null;
+    let lastTelemetryTime = performance.now();
+    let simPaused = false;
+    let cameraMode = '2d'; // '2d', 'free', 'top', 'follow'
+    let activeSidebarTab = 'topics';
+    let injectedObstacles = [];
+    let selectedInjectType = 'pallet';
+
+    // 2D 视口变换参数
+    const view2D = {
+      panX: 0,
+      panY: 0,
+      scale: 35.0, // pixels per meter
+      isDragging: false,
+      dragStartX: 0,
+      dragStartY: 0
+    };
+
+    // 2D 视图图层可见性控制 (满足用户自定义查看拓扑线、环境轮廓、激光轮廓、规划路径)
+    const layerConfig = {
+      topology: true,
+      environment: true,
+      laser: true,
+      path: true,
+      stations: true
+    };
+
+    function toggleLayer(layerName) {
+      if (layerConfig[layerName] !== undefined) {
+        layerConfig[layerName] = !layerConfig[layerName];
+        const btn = document.getElementById('layer-btn-' + (layerName === 'topology' ? 'topo' : layerName === 'environment' ? 'env' : layerName));
+        if (btn) {
+          if (layerConfig[layerName]) {
+            btn.className = 'px-2 py-0.5 rounded font-medium bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1 transition-all shadow-xs';
+          } else {
+            btn.className = 'px-2 py-0.5 rounded font-medium bg-white text-slate-400 border border-slate-200 flex items-center gap-1 transition-all shadow-xs';
+          }
+        }
+      }
+    }
+
+    function reset2DView() {
+      if (!cv2D) return;
+      view2D.panX = cv2D.width / 2;
+      view2D.panY = cv2D.height / 2;
+      view2D.scale = 35.0 * window.devicePixelRatio;
+    }
+
+    // 渲染位姿与目标权威位姿 (指数平滑插值，杜绝外推超前导致的位置后退回跳)
+    const renderPose = {
+      x: 0,
+      y: 0,
+      yaw: 0,
+      vx: 0,
+      vy: 0,
+      wz: 0
+    };
+    const targetPose = {
+      x: 0,
+      y: 0,
+      yaw: 0
+    };
+    let hasInitialPose = false;
+    const deadReckonPose = renderPose; // 兼容引用
+
+    // --------------------------------------------------------------
+    // 初始化入口
+    // --------------------------------------------------------------
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) lucide.createIcons();
+      init2DCanvas();
+      init3DScene();
+      initJoystick();
+      startTelemetryLoop();
+      startPerfPolling();
+      startEventStream();
+      fetchLidarConfig();
+      fetchReplaySessions();
+      initKeyboardTeleop();
+      window.addEventListener('resize', onWindowResize);
+    });
+
+    // --------------------------------------------------------------
+    // SIDEBAR TAB 切换
+    // --------------------------------------------------------------
+    function switchSidebarTab(tabId) {
+      activeSidebarTab = tabId;
+      const tabs = ['topics', 'perf', 'events', 'safety', 'perturb', 'replay'];
+      tabs.forEach(t => {
+        const btn = document.getElementById('tab-btn-' + t);
+        const panel = document.getElementById('tab-panel-' + t);
+        if (btn) {
+          if (t === tabId) {
+            btn.classList.add('active');
+          } else {
+            btn.classList.remove('active');
+          }
+        }
+        if (panel) {
+          if (t === tabId) {
+            panel.classList.remove('hidden');
+          } else {
+            panel.classList.add('hidden');
+          }
+        }
+      });
+      if (tabId === 'perf') {
+        setTimeout(resizePerfCanvas, 50);
+      } else if (tabId === 'events') {
+        renderEventList();
+      }
+      if (window.lucide) lucide.createIcons();
+    }
+
+    // --------------------------------------------------------------
+    // 10Hz 实时高频遥测轮询与位姿同步 (TELEMETRY LOOP - 10.0 Hz)
+    // --------------------------------------------------------------
+    let isFetchingTelemetry = false;
+    let needsFullMetadata = true;
+    let telemetryPacketCount = 0;
+    let lastTelemetryHzCalcTime = performance.now();
+    let currentTelemetryHz = '10.0';
+
+    function startTelemetryLoop() {
+      setInterval(async () => {
+        if (isFetchingTelemetry) return;
+        isFetchingTelemetry = true;
+        try {
+          let url = needsFullMetadata ? '/api/telemetry?full=1' : '/api/telemetry';
+          if (cameraMode !== '2d') url += (url.indexOf('?') >= 0 ? '&' : '?') + 'scans=1';
+          const res = await fetch(url);
+          if (res.ok) {
+            const data = await res.json();
+            if (needsFullMetadata && data.scenario_metadata) {
+              needsFullMetadata = false;
+            }
+            onTelemetryReceived(data);
+          }
+        } catch (e) {
+          console.warn('Telemetry fetch error:', e);
+        } finally {
+          isFetchingTelemetry = false;
+        }
+      }, 100);
+    }
+
+    function onTelemetryReceived(data) {
+      if (!data) return;
+      // 轻量包自动沿用已缓存的静态拓扑与元数据
+      if (telemetry && !data.scenario_metadata && telemetry.scenario_metadata) {
+        data.scenario_metadata = telemetry.scenario_metadata;
+        data.topo_graph = telemetry.topo_graph;
+      }
+      telemetry = data;
+      lastTelemetryTime = performance.now();
+
+      // 权威位姿目标更新
+      targetPose.x = data.x !== undefined ? data.x : 0;
+      targetPose.y = data.y !== undefined ? data.y : 0;
+      targetPose.yaw = data.yaw !== undefined ? data.yaw : 0;
+      renderPose.vx = data.vx || 0;
+      renderPose.vy = data.vy || 0;
+      renderPose.wz = data.wz || 0;
+
+      // 首次初始化或突变（如一键重置、跨区瞬移）直接瞬时归位
+      if (!hasInitialPose || Math.hypot(targetPose.x - renderPose.x, targetPose.y - renderPose.y) > 1.5) {
+        renderPose.x = targetPose.x;
+        renderPose.y = targetPose.y;
+        renderPose.yaw = targetPose.yaw;
+        hasInitialPose = true;
+      }
+
+      // 实时计算端到端遥测更新帧率 (Hz)
+      telemetryPacketCount++;
+      const nowMs = performance.now();
+      if (nowMs - lastTelemetryHzCalcTime >= 1000) {
+        currentTelemetryHz = (telemetryPacketCount * 1000.0 / (nowMs - lastTelemetryHzCalcTime)).toFixed(1);
+        telemetryPacketCount = 0;
+        lastTelemetryHzCalcTime = nowMs;
+      }
+
+      // 同步暂停状态
+      if (data.is_paused !== undefined && simPaused !== data.is_paused) {
+        simPaused = data.is_paused;
+        const banner = document.getElementById('paused-banner');
+        const btn = document.getElementById('btn-pause-resume');
+        const txt = document.getElementById('txt-pause-resume');
+        const icon = document.getElementById('icon-pause-resume');
+        if (banner) banner.classList.toggle('hidden', !simPaused);
+        if (txt) txt.textContent = simPaused ? '恢复物理' : '暂停物理';
+        if (btn) {
+          btn.className = simPaused
+            ? 'px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded text-xs font-semibold flex items-center gap-1 transition-all'
+            : 'px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-xs font-semibold flex items-center gap-1 transition-all';
+        }
+        if (icon) icon.setAttribute('data-lucide', simPaused ? 'play' : 'pause');
+        if (window.lucide) lucide.createIcons();
+      }
+
+      // 实时更新 Tab 5 扰动面板按钮状态与提示文案
+      const pertBadge = document.getElementById('perturb-pause-badge');
+      const pertHint = document.getElementById('perturb-pause-hint');
+      const pertHintText = document.getElementById('perturb-pause-hint-text');
+      const pertBtn = document.getElementById('btn-confirm-inject');
+      if (pertBadge && pertHint && pertHintText && pertBtn) {
+        if (data.is_paused) {
+          pertBadge.textContent = '⏸ 已暂停 (可放置模块)';
+          pertBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300';
+          pertHint.className = 'mt-2 p-2 rounded bg-blue-50 border border-blue-200 text-[11px] text-blue-800 flex items-start gap-1.5 transition-all';
+          pertHintText.innerHTML = '仿真已暂停。选取元素并点击放置，<b>无需弹窗确认</b>；恢复仿真时物理实体立即生效！';
+          pertBtn.className = 'w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm flex items-center justify-center gap-1.5 active:scale-95 transition-all';
+          pertBtn.innerHTML = '<i data-lucide="plus-circle" class="w-4 h-4"></i> 将该元素放入仿真环境中 (待恢复生效)';
+        } else {
+          pertBadge.textContent = '▶ 运行中 (需先暂停)';
+          pertBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200';
+          pertHint.className = 'mt-2 p-2 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-800 flex items-start gap-1.5 transition-all';
+          pertHintText.innerHTML = '添加扰动模块前必须先<b>暂停物理仿真</b>。放置后无需弹窗确认，<b>恢复仿真</b>时自动生效进入物理碰撞引擎。';
+          pertBtn.className = 'w-full py-2 bg-slate-400 hover:bg-slate-500 text-white rounded-lg text-xs font-bold shadow-sm flex items-center justify-center gap-1.5 active:scale-95 transition-all';
+          pertBtn.innerHTML = '<i data-lucide="lock" class="w-4 h-4"></i> 将该元素放入仿真环境中 (需先暂停)';
+        }
+        if (window.lucide) lucide.createIcons();
+      }
+
+      // 更新 HUD
+      updateHUD(data);
+
+      // 更新 ROS 2 话题检视器
+      updateTopicInspector(data);
+
+      // 同步顶栏状态
+      const navBadge = document.getElementById('header-nav-badge');
+      if (navBadge) {
+        if (data.is_paused) {
+          navBadge.textContent = '⏸ 物理仿真暂停 (PAUSED)';
+          navBadge.className = 'px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200';
+        } else if (data.nav_status === 'OBSTACLE_WAIT') {
+          navBadge.textContent = '🛑 障碍边缘等待 (OBSTACLE_WAIT)';
+          navBadge.className = 'px-2 py-0.5 rounded text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200 animate-pulse';
+        } else if (data.nav_status === 'NAVIGATING') {
+          navBadge.textContent = '● 导航中 (NAVIGATING)';
+          navBadge.className = 'px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 animate-pulse';
+        } else {
+          navBadge.textContent = '● 空闲就绪 (IDLE)';
+          navBadge.className = 'px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200';
+        }
+      }
+
+      // 同步场景与底盘下拉框选中态
+      if (data.map_scenario) {
+        const selSc = document.getElementById('sel-scenario');
+        if (selSc && selSc.value !== data.map_scenario) selSc.value = data.map_scenario;
+      }
+      if (data.chassis_type) {
+        const selCh = document.getElementById('sel-chassis');
+        if (selCh && selCh.value !== data.chassis_type) selCh.value = data.chassis_type;
+      }
+      if (data.planner_type) {
+        const selPl = document.getElementById('sel-planner');
+        if (selPl && selPl.value !== data.planner_type) selPl.value = data.planner_type;
+      }
+
+      // 障碍物列表同步 (兼容 dynamic_obstacles 与 obstacles 双键)
+      const obsList = data.dynamic_obstacles || data.obstacles;
+      if (obsList && Array.isArray(obsList)) {
+        injectedObstacles = obsList;
+        renderInjectedObstaclesList();
+      }
+
+      // 动态更新工位快捷下发 Pills
+      if (data.scenario_metadata && data.scenario_metadata.id !== lastRenderedScenarioId) {
+        lastRenderedScenarioId = data.scenario_metadata.id;
+        renderScenarioStationsPills(data.scenario_metadata.stations);
+      }
+    }
+
+    let lastRenderedScenarioId = '';
+    function renderScenarioStationsPills(stations) {
+      const list = document.getElementById('station-pills-list');
+      if (!list || !stations || !Array.isArray(stations)) return;
+      list.innerHTML = stations.map(st => {
+        const title = st.name || st.id;
+        const text = stations.length > 6 ? st.id : title;   // 工位较多时显示编号，悬停看全名
+        const dot = st.color ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${st.color};margin-right:3px"></span>` : '';
+        return `<button onclick="dispatchStation('${st.id}')" class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-medium text-[11px] whitespace-nowrap" title="下发至 ${title}">${dot}${text}</button>`;
+      }).join('');
+    }
+
+    function updateHUD(data) {
+      const hudPose = document.getElementById('hud-pose');
+      const hudVel = document.getElementById('hud-vel');
+      const hudLaser = document.getElementById('hud-laser-pts');
+      const hudObstacle = document.getElementById('hud-obstacle-dist');
+      const hudFork = document.getElementById('hud-fork-height');
+      const hudStatus = document.getElementById('hud-nav-status');
+      const hudStep = document.getElementById('hud-current-step');
+
+      const deg = ((data.yaw * 180 / Math.PI) % 360 + 360) % 360;
+      if (hudPose) hudPose.textContent = `X: ${data.x.toFixed(2)}m Y: ${data.y.toFixed(2)}m θ: ${deg.toFixed(1)}°`;
+      if (hudVel) hudVel.textContent = `${(data.vx || 0).toFixed(2)} m/s | ${(data.wz || 0).toFixed(2)} rad/s`;
+
+      const pts = (data.scan_ranges && data.scan_ranges.length) ? data.scan_ranges.length : (data.lidar_config ? data.lidar_config.beams : 720);
+      const lFreq = (data.lidar_config && data.lidar_config.freq_hz) ? data.lidar_config.freq_hz.toFixed(1) : currentTelemetryHz;
+      let hitSummary = '';
+      if (data.scan_ranges && data.scan_ranges.length > 0) {
+        const maxR = (data.lidar_config && data.lidar_config.range_max) || data.scan_range_max || 12.0;
+        let hits = 0;
+        for (let i = 0; i < data.scan_ranges.length; i++) {
+          if (data.scan_ranges[i] < maxR - 0.15) hits++;
+        }
+        hitSummary = ` (实扫:${hits} / 空扫:${data.scan_ranges.length - hits})`;
+      }
+      if (hudLaser) hudLaser.textContent = `${pts} pts (${lFreq} Hz)${hitSummary}`;
+
+      const minDist = data.scan_min_dist !== undefined ? data.scan_min_dist : 12.0;
+      if (hudObstacle) {
+        if (minDist <= 1.36) {
+          hudObstacle.textContent = `${minDist.toFixed(2)} m (已达障碍边缘·安全停车)`;
+          hudObstacle.className = 'font-mono-num font-bold text-rose-600';
+        } else if (minDist <= 2.15) {
+          hudObstacle.textContent = `${minDist.toFixed(2)} m (减速区·跟进中)`;
+          hudObstacle.className = 'font-mono-num font-bold text-amber-600';
+        } else {
+          hudObstacle.textContent = minDist < 11.0 ? `${minDist.toFixed(2)} m (安全巡航)` : '> 2.5 m (安全巡航)';
+          hudObstacle.className = 'font-mono-num font-semibold text-slate-800';
+        }
+      }
+
+      const forkH = (data.io_states && data.io_states.fork_height_mm !== undefined) ? data.io_states.fork_height_mm : 0;
+      if (hudFork) hudFork.textContent = `${forkH} mm`;
+
+      if (hudStatus) {
+        if (data.is_paused) {
+          hudStatus.textContent = '⏸ 物理暂停';
+          hudStatus.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200';
+        } else if (data.nav_status === 'OBSTACLE_WAIT') {
+          hudStatus.textContent = '🛑 障碍边缘等待';
+          hudStatus.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200';
+        } else if (data.nav_status === 'NAVIGATING') {
+          hudStatus.textContent = '● 导航中';
+          hudStatus.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200';
+        } else {
+          hudStatus.textContent = '● 空闲就绪';
+          hudStatus.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200';
+        }
+      }
+
+      if (hudStep) {
+        if (data.target_goal) {
+          hudStep.textContent = `目标: (${data.target_goal.x.toFixed(1)}, ${data.target_goal.y.toFixed(1)})`;
+        } else {
+          hudStep.textContent = '等待工位派发';
+        }
+      }
+    }
+
+    // --------------------------------------------------------------
+    // TOPIC INSPECTOR (ROS 2 话题实时检视)
+    // --------------------------------------------------------------
+    function updateTopicInspector(data) {
+      if (!data) return;
+
+      // /cmd_vel
+      const cmdVx = document.getElementById('insp-cmd-vx');
+      const cmdVy = document.getElementById('insp-cmd-vy');
+      const cmdWz = document.getElementById('insp-cmd-wz');
+      if (cmdVx) cmdVx.textContent = (data.vx || 0).toFixed(2) + ' m/s';
+      if (cmdVy) cmdVy.textContent = (data.vy || 0).toFixed(2) + ' m/s';
+      if (cmdWz) cmdWz.textContent = (data.wz || 0).toFixed(2) + ' rad/s';
+
+      // /odom
+      const odomX = document.getElementById('insp-odom-x');
+      const odomY = document.getElementById('insp-odom-y');
+      if (odomX) odomX.textContent = (data.x || 0).toFixed(2) + ' m';
+      if (odomY) odomY.textContent = (data.y || 0).toFixed(2) + ' m';
+
+      const deg = ((data.yaw * 180 / Math.PI) % 360 + 360) % 360;
+      const cardinalDist = Math.min(deg % 90, 90 - (deg % 90));
+      const odomYaw = document.getElementById('insp-odom-yaw');
+      const odomYawRad = document.getElementById('insp-odom-yaw-rad');
+      if (odomYaw) odomYaw.textContent = deg.toFixed(1) + '°';
+      if (odomYawRad) odomYawRad.textContent = (data.yaw || 0).toFixed(3) + ' rad';
+
+      const alignElem = document.getElementById('insp-odom-align');
+      if (alignElem) {
+        if (cardinalDist <= 3.0) {
+          alignElem.textContent = `✅ 严格平行/垂直 (${deg.toFixed(1)}°)`;
+          alignElem.className = 'font-semibold text-emerald-600';
+        } else {
+          alignElem.textContent = `⚠️ 转弯过渡角 (${deg.toFixed(1)}°)`;
+          alignElem.className = 'font-semibold text-amber-600';
+        }
+      }
+
+      const odomVx = document.getElementById('insp-odom-vx');
+      const odomWz = document.getElementById('insp-odom-wz');
+      if (odomVx) odomVx.textContent = (data.vx || 0).toFixed(2);
+      if (odomWz) odomWz.textContent = (data.wz || 0).toFixed(2);
+
+      // /scan
+      const minDist = data.scan_min_dist !== undefined ? data.scan_min_dist : 12.0;
+      const scanMin = document.getElementById('insp-scan-min');
+      if (scanMin) scanMin.textContent = minDist < 11.0 ? minDist.toFixed(2) + ' m' : '> 12.0 m (安全)';
+
+      const scanSafety = document.getElementById('insp-scan-safety');
+      if (scanSafety) {
+        if (minDist < 0.8) {
+          scanSafety.textContent = '🚨 极近障碍阻挡 (停机区)';
+          scanSafety.className = 'font-semibold text-rose-600';
+        } else if (minDist < 1.4) {
+          scanSafety.textContent = '⚠️ 减速预警区 (<1.4m)';
+          scanSafety.className = 'font-semibold text-amber-600';
+        } else {
+          scanSafety.textContent = '✅ 畅通安全通道';
+          scanSafety.className = 'font-semibold text-emerald-600';
+        }
+      }
+
+      const scanRays = document.getElementById('insp-scan-rays');
+      const scanRes = document.getElementById('insp-scan-res');
+      const beamsCount = (data.laser_scan && data.laser_scan.ranges) ? data.laser_scan.ranges.length : 720;
+      if (scanRays) scanRays.textContent = beamsCount;
+      if (scanRes) scanRes.textContent = (360.0 / beamsCount).toFixed(2) + '°';
+
+      // /joint_states
+      const chassisNameMap = {
+        diff_drive: "两轮差速 (Diff-Drive)",
+        single_steer: "单舵轮 (Single-Steer)",
+        dual_steer: "双舵轮全向 (Dual-Steer)"
+      };
+      const chassisElem = document.getElementById('insp-chassis-type');
+      if (chassisElem) chassisElem.textContent = chassisNameMap[data.chassis_type] || data.chassis_type;
+
+      if (data.joint_states) {
+        const jNames = document.getElementById('insp-joints-names');
+        const jPos = document.getElementById('insp-joints-pos');
+        if (jNames && data.joint_states.names) jNames.textContent = data.joint_states.names.join(', ');
+        if (jPos && data.joint_states.positions) {
+          jPos.textContent = '[' + data.joint_states.positions.map(p => p.toFixed(2)).join(', ') + ']';
+        }
+      }
+
+      // 相机缩略图 (单目 RGB / 双目左目 / ToF 深度伪彩)，每 0.5 s 刷新
+      if (data.cameras) {
+        const card = document.getElementById('cam-card'), box = document.getElementById('cam-thumbs');
+        if (card) card.style.display = data.cameras.length ? '' : 'none';
+        if (box) {
+          const key = data.cameras.map(c => c.name).join(',');
+          if (box.dataset.key !== key) {
+            box.dataset.key = key;
+            box.innerHTML = data.cameras.map(c => `<figure style="margin:0"><img data-cam="${c.name}" data-stream="${c.streams[0]}" style="width:100%;border-radius:4px;background:#0f172a;aspect-ratio:${c.width}/${c.height}"><figcaption class="text-[10px] text-slate-500 font-mono">${c.name} · ${({camera:'单目',stereo:'双目',tof:'ToF'})[c.type]||c.type} ${c.width}×${c.height}</figcaption></figure>`).join('');
+          }
+          const now = Date.now();
+          if (!box._t || now - box._t > 500) {
+            box._t = now;
+            box.querySelectorAll('img[data-cam]').forEach(img => { img.src = `/sim/api/v1/sensors/cameras/${img.dataset.cam}?stream=${img.dataset.stream}&format=jpeg&t=${now}`; });
+          }
+        }
+      }
+
+      // 三进程架构 / 光电 / 碰撞条 (REST 数据)
+      if (data.arch) {
+        const a = data.arch, lk = a.link || {}, ctl = a.control || {};
+        const so = document.getElementById('arch-sim'), no = document.getElementById('arch-nav'), co = document.getElementById('arch-cmd');
+        if (so) { so.textContent = a.sim_online ? '● 在线' : '○ 离线'; so.className = 'font-bold ' + (a.sim_online ? 'text-emerald-600' : 'text-rose-600'); }
+        if (no) { no.textContent = a.nav_online ? '● 在线' : '○ 离线'; no.className = 'font-bold ' + (a.nav_online ? 'text-emerald-600' : 'text-rose-600'); }
+        if (co) co.textContent = (ctl.source || 'none') + (ctl.watchdog_active ? ' ⏸' : '');
+        const le = document.getElementById('arch-link');
+        if (le) le.textContent = `state ${lk.state_hz ?? '—'} Hz · lidar ${JSON.stringify(lk.lidar_frames || {}).replace(/[{}"]/g, '')} · cmd ${lk.cmd_sent ?? 0} · 回馈延迟 ${a.nav_feedback_age_s ?? '—'} s`;
+      }
+      if (data.photoelectric) {
+        const el = document.getElementById('pe-list');
+        if (el) el.innerHTML = data.photoelectric.map(p => `<div class="p-1 rounded border ${p.detected ? 'bg-orange-50 border-orange-300 text-orange-700 font-bold' : 'bg-white border-slate-200 text-slate-600'}">${p.detected ? '◉' : '○'} ${p.name} <span class="text-slate-400">${p.distance_m != null ? p.distance_m.toFixed(2) + 'm' : '—'}</span></div>`).join('');
+      }
+      if (data.bumpers && data.bumpers.strips) {
+        const el = document.getElementById('bumper-list');
+        if (el) el.innerHTML = data.bumpers.strips.map(b => `<span class="px-1.5 py-0.5 rounded border ${b.pressed ? 'bg-rose-50 border-rose-300 text-rose-700 font-bold' : 'bg-white border-slate-200 text-slate-600'}">${b.pressed ? '💥' : '▭'} 触边-${b.name} (${b.press_count})</span>`).join('') + `<span class="text-slate-400 ml-auto">碰撞 ${data.bumpers.count}</span>`;
+      }
+      if (data.safety) {
+        const el = document.getElementById('safety-line'), s = data.safety, ph = s.photo || {};
+        const blk = Object.keys(ph).filter(k => ph[k].length).map(k => ({front: '前', rear: '后', left: '左', right: '右'}[k]));
+        if (el) el.textContent = `执行进程安全层: ${s.estop ? '急停挂起任务' : '急停正常'} · 触边 ${s.bumpers.length ? s.bumpers.join(',') + ' 压下' : '释放'} · 光电封锁方向 ${blk.length ? blk.join('/') : '无'}`;
+      }
+
+      // /io_states
+      if (data.io_states) {
+        const isEstop = !!data.io_states.is_emergency_stop;
+        const estopElem = document.getElementById('insp-io-estop');
+        if (estopElem) {
+          estopElem.textContent = isEstop ? '🛑 已触发按下 (锁止)' : '🟢 正常运行 (释放)';
+          estopElem.className = isEstop ? 'font-bold text-rose-600' : 'font-bold text-emerald-600';
+        }
+
+        const inputs = data.io_states.inputs || {};
+        const isBumper = !!(inputs.di_bumper_front || inputs.di_bumper_rear);
+        const bumpElem = document.getElementById('insp-io-bumper');
+        if (bumpElem) {
+          bumpElem.textContent = isBumper ? '💥 触碰受阻触发' : '🟢 正常释放';
+          bumpElem.className = isBumper ? 'font-bold text-rose-600' : 'font-bold text-emerald-600';
+        }
+
+        const isCargo = !!inputs.di_cargo_present;
+        const cargoElem = document.getElementById('insp-io-cargo');
+        if (cargoElem) {
+          cargoElem.textContent = isCargo ? '📦 托盘货物在位' : '⚪ 空载位无货';
+          cargoElem.className = isCargo ? 'font-bold text-blue-600' : 'font-bold text-slate-500';
+        }
+
+        const outputs = data.io_states.outputs || {};
+        const brakeElem = document.getElementById('insp-io-brake');
+        if (brakeElem) {
+          brakeElem.textContent = outputs.do_brake_release ? '🟢 释放 (运转)' : '🛑 抱死 (制动)';
+          brakeElem.className = outputs.do_brake_release ? 'font-bold text-emerald-600' : 'font-bold text-rose-600';
+        }
+
+        const gElem = document.getElementById('insp-io-green');
+        const yElem = document.getElementById('insp-io-yellow');
+        const rElem = document.getElementById('insp-io-red');
+        if (gElem) gElem.className = outputs.do_tower_green ? 'text-emerald-600 font-bold' : 'text-slate-300';
+        if (yElem) yElem.className = outputs.do_tower_yellow ? 'text-amber-600 font-bold' : 'text-slate-300';
+        if (rElem) rElem.className = outputs.do_tower_red ? 'text-rose-600 font-bold' : 'text-slate-300';
+
+        // 同步安全 Tab 中的状态
+        const statBumper = document.getElementById('stat-bumper');
+        if (statBumper) {
+          statBumper.textContent = isBumper ? '💥 触碰受阻' : '🟢 释放 (无碰触)';
+          statBumper.className = isBumper ? 'font-bold text-rose-600' : 'font-bold text-emerald-600';
+        }
+        const statCargo = document.getElementById('stat-cargo');
+        if (statCargo) {
+          statCargo.textContent = isCargo ? '📦 托盘货物在位' : '⚪ 空载位 (无货)';
+          statCargo.className = isCargo ? 'font-bold text-blue-600' : 'font-bold text-slate-600';
+        }
+        const estopPill = document.getElementById('estop-status-pill');
+        const btnEstop = document.getElementById('btn-estop');
+        const txtEstop = document.getElementById('txt-estop');
+        if (estopPill) {
+          estopPill.textContent = isEstop ? '🛑 急停闭锁' : '🟢 回路闭合正常';
+          estopPill.className = isEstop 
+            ? 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800'
+            : 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800';
+        }
+        if (btnEstop && txtEstop) {
+          txtEstop.textContent = isEstop ? '旋转释放急停开关 (RESET)' : '按下急停开关闭锁 (E-STOP)';
+          btnEstop.className = isEstop 
+            ? 'w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-md flex items-center justify-center gap-2 active:scale-98 transition-all'
+            : 'w-full py-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-xs shadow-md flex items-center justify-center gap-2 active:scale-98 transition-all';
+        }
+      }
+
+      // /bullet_metrics
+      const bm = data.bullet_metrics;
+      if (bm) {
+        const bmStep = document.getElementById('insp-bm-step');
+        const bmRay = document.getElementById('insp-bm-raycast');
+        const bmBodies = document.getElementById('insp-bm-bodies');
+        const bmConst = document.getElementById('insp-bm-constraints');
+        if (bmStep) bmStep.textContent = (bm.step_simulation_ms || 0.8).toFixed(2) + ' ms';
+        if (bmRay) bmRay.textContent = (bm.lidar_raycast_ms || 1.4).toFixed(2) + ' ms';
+        if (bmBodies) bmBodies.textContent = (bm.num_bodies || 14) + ' 个';
+        if (bmConst) bmConst.textContent = (bm.num_constraints || 4) + ' 组';
+      }
+
+      // /plan
+      const plannerMap = {
+        dijkstra: "Dijkstra 拓扑路网",
+        straight: "直连导航模式",
+        direct: "直连导航模式",
+        astar: "A* 栅格避障规划",
+        nav2: "Nav2 自主导航 (NavFn + RPP/DWB)"
+      };
+      const pEng = document.getElementById('insp-plan-engine');
+      const pStat = document.getElementById('insp-plan-status');
+      const pDist = document.getElementById('insp-plan-dist');
+      const pTgt = document.getElementById('insp-plan-target');
+      if (pEng) pEng.textContent = plannerMap[data.planner_type] || data.planner_type;
+      if (pStat) pStat.textContent = data.nav_status || 'IDLE';
+      const n2 = document.getElementById('nav2-badge');
+      if (n2 && data.nav2) {
+        const ok = data.nav2.server_ready, run = data.nav2.process;
+        n2.textContent = ok ? `Nav2 就绪 · ${data.nav2.chassis || ''}` : (run ? 'Nav2 启动中…' : 'Nav2 未运行');
+        n2.className = 'text-[10px] font-bold px-1.5 py-0.5 rounded ' + (ok ? 'bg-emerald-100 text-emerald-700' : (run ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-400'));
+        const fb = data.nav2_feedback;
+        if (fb && data.planner_type === 'nav2') n2.title = `剩余 ${fb.distance_remaining} m · 用时 ${fb.navigation_time_s} s · 恢复行为 ${fb.recoveries} 次`;
+      }
+      if (pDist) pDist.textContent = (data.nav_dist_rem || 0).toFixed(2) + ' m';
+      if (pTgt) {
+        if (data.target_goal) {
+          pTgt.textContent = `(${data.target_goal.x.toFixed(1)}, ${data.target_goal.y.toFixed(1)}) Yaw:${Math.round((data.target_goal.yaw || 0)*180/Math.PI)}°`;
+        } else {
+          pTgt.textContent = '无目标';
+        }
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 硬件与仿真性能监视器 (PERF MONITOR)
+    // --------------------------------------------------------------
+    const perfHistory = [];
+    const MAX_PERF_HISTORY = 60;
+    let isFetchingPerf = false;
+
+    function startPerfPolling() {
+      setInterval(async () => {
+        if (isFetchingPerf) return;
+        isFetchingPerf = true;
+        try {
+          const res = await fetch('/api/system_perf');
+          if (res.ok) {
+            const data = await res.json();
+            onPerfDataReceived(data);
+          }
+        } catch (e) {
+          console.warn('Perf fetch error:', e);
+        } finally {
+          isFetchingPerf = false;
+        }
+      }, 1000);
+    }
+
+    function onPerfDataReceived(data) {
+      if (!data) return;
+      const host = data.host || {};
+      const bullet = data.bullet_simulation || {};
+      const procs = data.processes || {};
+
+      // 顶栏 CPU Badge
+      const badgeCpu = document.getElementById('badge-cpu-pct');
+      if (badgeCpu && host.cpu_total_percent !== undefined) {
+        badgeCpu.textContent = `CPU ${host.cpu_total_percent.toFixed(0)}%`;
+      }
+
+      // 总 CPU
+      const perfCpuTot = document.getElementById('perf-cpu-total');
+      if (perfCpuTot) perfCpuTot.textContent = `${(host.cpu_total_percent || 0).toFixed(1)}%`;
+
+      // 4 核心进度条
+      const cores = host.cpu_percent_per_core || [0, 0, 0, 0];
+      for (let i = 0; i < 4; i++) {
+        const val = cores[i] || 0;
+        const bar = document.getElementById(`perf-core-${i}-bar`);
+        const txt = document.getElementById(`perf-core-${i}-txt`);
+        if (bar) bar.style.width = `${Math.min(val, 100)}%`;
+        if (txt) txt.textContent = `${Math.round(val)}%`;
+      }
+
+      // 内存
+      const memPct = document.getElementById('perf-mem-pct');
+      const memMb = document.getElementById('perf-mem-mb');
+      if (memPct) memPct.textContent = `${(host.memory_percent || 0).toFixed(1)}%`;
+      if (memMb) memMb.textContent = `${host.memory_used_mb || 0} / ${host.memory_total_mb || 0} MB`;
+
+      // 温度
+      const tempElem = document.getElementById('perf-cpu-temp');
+      if (tempElem && host.cpu_temp_c !== undefined) {
+        const temp = host.cpu_temp_c;
+        tempElem.textContent = `${temp.toFixed(1)} °C`;
+        if (temp < 60) {
+          tempElem.className = 'font-bold text-emerald-700 text-xs';
+        } else if (temp < 75) {
+          tempElem.className = 'font-bold text-amber-600 text-xs';
+        } else {
+          tempElem.className = 'font-bold text-rose-600 text-xs';
+        }
+      }
+
+      // 负载
+      const loadElem = document.getElementById('perf-load-avg');
+      if (loadElem && host.load_avg) {
+        loadElem.textContent = host.load_avg.slice(0, 2).map(v => v.toFixed(2)).join(', ');
+      }
+
+      // 进程表格
+      const simCpu = document.getElementById('perf-proc-sim-cpu');
+      const simMem = document.getElementById('perf-proc-sim-mem');
+      const srvCpu = document.getElementById('perf-proc-server-cpu');
+      const srvMem = document.getElementById('perf-proc-server-mem');
+
+      if (procs.simulation) {
+        if (simCpu) simCpu.textContent = `${(procs.simulation.cpu_percent || 0).toFixed(1)}% CPU`;
+        if (simMem) simMem.textContent = `${(procs.simulation.rss_mb || 0).toFixed(0)} MB`;
+      }
+      if (procs.teleop_server) {
+        if (srvCpu) srvCpu.textContent = `${(procs.teleop_server.cpu_percent || 0).toFixed(1)}% CPU`;
+        if (srvMem) srvMem.textContent = `${(procs.teleop_server.rss_mb || 0).toFixed(0)} MB`;
+      }
+
+      // 记录曲线历史
+      perfHistory.push({
+        time: Date.now(),
+        cpu: host.cpu_total_percent || 0,
+        step: bullet.step_simulation_ms || 0.8,
+        raycast: bullet.lidar_raycast_ms || 1.4
+      });
+      if (perfHistory.length > MAX_PERF_HISTORY) perfHistory.shift();
+
+      if (activeSidebarTab === 'perf') {
+        drawPerfChart();
+      }
+    }
+
+    function resizePerfCanvas() {
+      const cv = document.getElementById('perfChartCanvas');
+      if (!cv) return;
+      const rect = cv.getBoundingClientRect();
+      cv.width = rect.width * window.devicePixelRatio;
+      cv.height = rect.height * window.devicePixelRatio;
+      drawPerfChart();
+    }
+
+    function drawPerfChart() {
+      const cv = document.getElementById('perfChartCanvas');
+      if (!cv || perfHistory.length < 2) return;
+      const ctx = cv.getContext('2d');
+      const W = cv.width, H = cv.height;
+      ctx.clearRect(0, 0, W, H);
+
+      // 绘制背景参考线
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.lineWidth = 1;
+      for (let y = 0.25; y <= 0.75; y += 0.25) {
+        ctx.beginPath();
+        ctx.moveTo(0, H * y);
+        ctx.lineTo(W, H * y);
+        ctx.stroke();
+      }
+
+      const n = perfHistory.length;
+      const stepX = W / (MAX_PERF_HISTORY - 1);
+
+      // 1. 绘制 CPU % (0 ~ 100) 蓝色
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 2 * window.devicePixelRatio;
+      ctx.beginPath();
+      perfHistory.forEach((pt, i) => {
+        const x = i * stepX;
+        const y = H - (pt.cpu / 100.0) * (H - 10) - 5;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 2. 绘制 Step Time ms (0 ~ 10ms 映射到半屏) 绿色
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 1.5 * window.devicePixelRatio;
+      ctx.beginPath();
+      perfHistory.forEach((pt, i) => {
+        const x = i * stepX;
+        const y = H - (Math.min(pt.step, 10.0) / 10.0) * (H - 10) - 5;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 3. 绘制 Raycast Time ms (0 ~ 10ms) 橙色
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 1.5 * window.devicePixelRatio;
+      ctx.beginPath();
+      perfHistory.forEach((pt, i) => {
+        const x = i * stepX;
+        const y = H - (Math.min(pt.raycast, 10.0) / 10.0) * (H - 10) - 5;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    // --------------------------------------------------------------
+    // 动态激光雷达参数配置 (LIDAR RECONFIG)
+    // --------------------------------------------------------------
+    async function fetchLidarConfig() {
+      try {
+        const res = await fetch('/api/lidar_config');
+        if (res.ok) {
+          const cfg = await res.json();
+          if (cfg.beams) {
+            document.getElementById('cfg-beams').value = cfg.beams;
+            document.getElementById('cfg-beams-val').textContent = cfg.beams;
+          }
+          if (cfg.angle_resolution_deg) {
+            document.getElementById('cfg-res').value = cfg.angle_resolution_deg;
+            document.getElementById('cfg-res-val').textContent = cfg.angle_resolution_deg.toFixed(2) + '°';
+          }
+          if (cfg.freq_hz) {
+            document.getElementById('cfg-freq').value = cfg.freq_hz;
+            document.getElementById('cfg-freq-val').textContent = cfg.freq_hz.toFixed(1) + ' Hz';
+          }
+          if (cfg.range_max) {
+            document.getElementById('cfg-range').value = cfg.range_max;
+            document.getElementById('cfg-range-val').textContent = cfg.range_max.toFixed(1) + ' m';
+          }
+        }
+      } catch (e) {
+        console.warn('fetchLidarConfig error:', e);
+      }
+    }
+
+    function onLidarBeamsInput(val) {
+      const b = parseInt(val);
+      document.getElementById('cfg-beams-val').textContent = b;
+      const resDeg = 360.0 / b;
+      document.getElementById('cfg-res').value = resDeg.toFixed(2);
+      document.getElementById('cfg-res-val').textContent = resDeg.toFixed(2) + '°';
+    }
+
+    function onLidarResInput(val) {
+      const r = parseFloat(val);
+      document.getElementById('cfg-res-val').textContent = r.toFixed(2) + '°';
+      const b = Math.round(360.0 / r);
+      document.getElementById('cfg-beams').value = b;
+      document.getElementById('cfg-beams-val').textContent = b;
+    }
+
+    async function applyLidarConfig() {
+      const beams = parseInt(document.getElementById('cfg-beams').value);
+      const angle_res = parseFloat(document.getElementById('cfg-res').value);
+      const freq = parseFloat(document.getElementById('cfg-freq').value);
+      const range_max = parseFloat(document.getElementById('cfg-range').value);
+
+      try {
+        const res = await fetch('/api/lidar_config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            beams: beams,
+            angle_resolution_deg: angle_res,
+            freq_hz: freq,
+            range_max: range_max
+          })
+        });
+        if (res.ok) {
+          alert('✅ 激光雷达参数热更新成功！');
+        }
+      } catch (e) {
+        alert('更新失败: ' + e);
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 实时事件流中心 (LIVE EVENT STREAM)
+    // --------------------------------------------------------------
+    const eventLogs = [];
+    let lastEventId = 0;
+    let streamPaused = false;
+    let autoScroll = true;
+    let selectedEventFilter = 'all';
+
+    function startEventStream() {
+      setInterval(async () => {
+        if (streamPaused) return;
+        try {
+          const res = await fetch(`/api/events?since_id=${lastEventId}&limit=50`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.events && data.events.length > 0) {
+              data.events.forEach(ev => {
+                eventLogs.push(ev);
+                if (ev.id > lastEventId) lastEventId = ev.id;
+              });
+              if (eventLogs.length > 500) eventLogs.splice(0, eventLogs.length - 500);
+
+              // 更新计数
+              const badgeEv = document.getElementById('badge-event-count');
+              if (badgeEv) badgeEv.textContent = eventLogs.length;
+
+              if (data.counts) {
+                const map = {
+                  chassis: 'ev-cnt-chassis',
+                  navigation: 'ev-cnt-navigation',
+                  safety: 'ev-cnt-safety',
+                  sensors: 'ev-cnt-sensors',
+                  system: 'ev-cnt-system'
+                };
+                for (const [k, elId] of Object.entries(map)) {
+                  const el = document.getElementById(elId);
+                  if (el && data.counts[k] !== undefined) el.textContent = data.counts[k];
+                }
+              }
+
+              if (activeSidebarTab === 'events') {
+                renderEventList();
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Events fetch error:', e);
+        }
+      }, 500);
+    }
+
+    function toggleEventFilter(cat) {
+      selectedEventFilter = cat;
+      const cats = ['all', 'chassis', 'navigation', 'safety', 'sensors', 'system'];
+      cats.forEach(c => {
+        const btn = document.getElementById('ev-chip-' + c);
+        if (btn) {
+          if (c === cat) {
+            btn.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white shadow-xs';
+          } else {
+            btn.className = 'px-2 py-0.5 rounded text-[10px] font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-100';
+          }
+        }
+      });
+      renderEventList();
+    }
+
+    function renderEventList() {
+      const container = document.getElementById('eventList');
+      if (!container) return;
+
+      const search = (document.getElementById('ev-search-input')?.value || '').toLowerCase();
+      const level = document.getElementById('ev-level-select')?.value || 'ALL';
+
+      const filtered = eventLogs.filter(ev => {
+        if (selectedEventFilter !== 'all' && ev.category !== selectedEventFilter) return false;
+        if (level !== 'ALL' && ev.level !== level) return false;
+        if (search) {
+          const str = (ev.title + ' ' + ev.message + ' ' + (ev.event_type || '')).toLowerCase();
+          if (!str.includes(search)) return false;
+        }
+        return true;
+      });
+
+      container.innerHTML = filtered.map(ev => {
+        const levelColors = {
+          INFO: 'bg-blue-100 text-blue-800',
+          WARN: 'bg-amber-100 text-amber-800',
+          ERROR: 'bg-rose-100 text-rose-800',
+          CRITICAL: 'bg-rose-600 text-white'
+        };
+        const dateStr = new Date(ev.timestamp * 1000).toLocaleTimeString();
+        return `
+          <div class="p-2 rounded bg-white border border-slate-200 shadow-xs space-y-1">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-1.5">
+                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold ${levelColors[ev.level] || 'bg-slate-100 text-slate-700'}">${ev.level}</span>
+                <span class="font-bold text-slate-800">${escapeHtml(ev.title)}</span>
+              </div>
+              <span class="text-[10px] text-slate-400 font-mono">${dateStr}</span>
+            </div>
+            <div class="text-slate-600 break-words">${escapeHtml(ev.message)}</div>
+            ${ev.payload ? `<pre class="text-[9px] bg-slate-50 p-1.5 rounded text-slate-600 overflow-x-auto">${escapeHtml(JSON.stringify(ev.payload, null, 2))}</pre>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      if (autoScroll) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+
+    function toggleStreamPause() {
+      streamPaused = !streamPaused;
+      const btn = document.getElementById('btn-pause-stream');
+      if (btn) btn.textContent = streamPaused ? '▶️ 继续接收' : '⏸ 暂停接收';
+    }
+
+    function clearEventLogs() {
+      eventLogs.length = 0;
+      renderEventList();
+    }
+
+    function exportEventsJson() {
+      const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(eventLogs, null, 2));
+      const a = document.createElement('a');
+      a.setAttribute('href', dataStr);
+      a.setAttribute('download', `amr_events_${Date.now()}.json`);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+
+    function escapeHtml(str) {
+      return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // --------------------------------------------------------------
+    // 工业安全与数字量 I/O 控制 (SAFETY & IO)
+    // --------------------------------------------------------------
+    let eStopActive = false;
+    async function toggleEStop() {
+      eStopActive = !eStopActive;
+      try {
+        await fetch('/api/set_io', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'is_emergency_stop', value: eStopActive })
+        });
+      } catch (e) {
+        console.error('toggleEStop error:', e);
+      }
+    }
+
+    async function toggleIO(key) {
+      if (!telemetry || !telemetry.io_states) return;
+      const cur = !!((telemetry.io_states.inputs || {})[key]);
+      try {
+        await fetch('/api/set_io', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: key, value: !cur })
+        });
+      } catch (e) {
+        console.error('toggleIO error:', e);
+      }
+    }
+
+    function onForkSliderInput(val) {
+      const h = parseInt(val);
+      document.getElementById('fork-height-display').textContent = `${h} mm`;
+      setForkHeight(h);
+    }
+
+    async function setForkHeight(h) {
+      document.getElementById('slider-fork').value = h;
+      document.getElementById('fork-height-display').textContent = `${h} mm`;
+      try {
+        await fetch('/api/set_io', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'fork_height_mm', value: h })
+        });
+      } catch (e) {
+        console.error('setForkHeight error:', e);
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 虚拟手柄遥控与键盘控制 (JOYSTICK & TELEOP)
+    // --------------------------------------------------------------
+    let joyCanvas, joyCtx;
+    let isJoyDragging = false;
+    let joyCenter = { x: 80, y: 80 };
+    let joyPos = { x: 80, y: 80 };
+    const joyRadius = 60;
+    let teleopTimer = null;
+
+    function initJoystick() {
+      joyCanvas = document.getElementById('joystickCanvas');
+      if (!joyCanvas) return;
+      joyCtx = joyCanvas.getContext('2d');
+      drawJoystick();
+
+      joyCanvas.addEventListener('mousedown', onJoyStart);
+      window.addEventListener('mousemove', onJoyMove);
+      window.addEventListener('mouseup', onJoyEnd);
+
+      joyCanvas.addEventListener('touchstart', onJoyStartTouch, { passive: false });
+      window.addEventListener('touchmove', onJoyMoveTouch, { passive: false });
+      window.addEventListener('touchend', onJoyEndTouch);
+    }
+
+    function drawJoystick() {
+      if (!joyCtx) return;
+      joyCtx.clearRect(0, 0, 160, 160);
+
+      // 底盘基准圈
+      joyCtx.beginPath();
+      joyCtx.arc(joyCenter.x, joyCenter.y, joyRadius, 0, Math.PI * 2);
+      joyCtx.fillStyle = '#f8fafc';
+      joyCtx.fill();
+      joyCtx.strokeStyle = '#cbd5e1';
+      joyCtx.lineWidth = 2;
+      joyCtx.stroke();
+
+      // 十字参考线
+      joyCtx.strokeStyle = '#e2e8f0';
+      joyCtx.beginPath();
+      joyCtx.moveTo(joyCenter.x - joyRadius, joyCenter.y);
+      joyCtx.lineTo(joyCenter.x + joyRadius, joyCenter.y);
+      joyCtx.moveTo(joyCenter.x, joyCenter.y - joyRadius);
+      joyCtx.lineTo(joyCenter.x, joyCenter.y + joyRadius);
+      joyCtx.stroke();
+
+      // 拖拽手柄
+      joyCtx.beginPath();
+      joyCtx.arc(joyPos.x, joyPos.y, 24, 0, Math.PI * 2);
+      joyCtx.fillStyle = '#2563eb';
+      joyCtx.fill();
+      joyCtx.strokeStyle = '#1d4ed8';
+      joyCtx.lineWidth = 3;
+      joyCtx.stroke();
+    }
+
+    function onJoyStart(e) {
+      isJoyDragging = true;
+      updateJoyPos(e.clientX, e.clientY);
+      startTeleopLoop();
+    }
+
+    function onJoyMove(e) {
+      if (!isJoyDragging) return;
+      updateJoyPos(e.clientX, e.clientY);
+    }
+
+    function onJoyEnd() {
+      if (!isJoyDragging) return;
+      isJoyDragging = false;
+      joyPos = { x: joyCenter.x, y: joyCenter.y };
+      drawJoystick();
+      sendCmdVel(0, 0, 0);
+      stopTeleopLoop();
+    }
+
+    function onJoyStartTouch(e) {
+      e.preventDefault();
+      isJoyDragging = true;
+      const t = e.touches[0];
+      updateJoyPos(t.clientX, t.clientY);
+      startTeleopLoop();
+    }
+
+    function onJoyMoveTouch(e) {
+      if (!isJoyDragging) return;
+      e.preventDefault();
+      const t = e.touches[0];
+      updateJoyPos(t.clientX, t.clientY);
+    }
+
+    function onJoyEndTouch(e) {
+      isJoyDragging = false;
+      joyPos = { x: joyCenter.x, y: joyCenter.y };
+      drawJoystick();
+      sendCmdVel(0, 0, 0);
+      stopTeleopLoop();
+    }
+
+    function updateJoyPos(clientX, clientY) {
+      const rect = joyCanvas.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      const dx = x - joyCenter.x;
+      const dy = y - joyCenter.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist <= joyRadius) {
+        joyPos = { x, y };
+      } else {
+        joyPos = {
+          x: joyCenter.x + (dx / dist) * joyRadius,
+          y: joyCenter.y + (dy / dist) * joyRadius
+        };
+      }
+      drawJoystick();
+    }
+
+    function startTeleopLoop() {
+      if (teleopTimer) return;
+      teleopTimer = setInterval(() => {
+        if (!isJoyDragging) return;
+        const dx = joyPos.x - joyCenter.x;
+        const dy = joyPos.y - joyCenter.y;
+        // Y 轴向前为负
+        const vx = (-dy / joyRadius) * 1.0; // max 1.0 m/s
+        const wz = (-dx / joyRadius) * 1.5; // max 1.5 rad/s
+        sendCmdVel(vx, 0, wz);
+      }, 100);
+    }
+
+    function stopTeleopLoop() {
+      if (teleopTimer) {
+        clearInterval(teleopTimer);
+        teleopTimer = null;
+      }
+    }
+
+    async function sendCmdVel(vx, vy, wz) {
+      const badge = document.getElementById('teleop-vel-badge');
+      if (badge) badge.textContent = `Vx: ${vx.toFixed(2)} | Wz: ${wz.toFixed(2)}`;
+      try {
+        await fetch('/api/cmd_vel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vx, vy, wz })
+        });
+      } catch (e) {
+        console.warn('sendCmdVel error:', e);
+      }
+    }
+
+    function initKeyboardTeleop() {
+      const keys = {};
+      window.addEventListener('keydown', (e) => {
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+        keys[e.key.toLowerCase()] = true;
+        handleKeys();
+      });
+      window.addEventListener('keyup', (e) => {
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+        keys[e.key.toLowerCase()] = false;
+        handleKeys();
+      });
+
+      function handleKeys() {
+        let vx = 0, wz = 0;
+        if (keys['w']) vx += 0.8;
+        if (keys['s']) vx -= 0.8;
+        if (keys['a']) wz += 1.2;
+        if (keys['d']) wz -= 1.2;
+        if (keys[' ']) { vx = 0; wz = 0; }
+        sendCmdVel(vx, 0, wz);
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 仿真扰动注入库 (PERTURBATION TOOLBOX)
+    // --------------------------------------------------------------
+    function selectInjectType(type) {
+      selectedInjectType = type;
+      const types = ['pallet', 'shelf', 'box', 'person'];
+      types.forEach(t => {
+        const btn = document.getElementById('btn-inj-' + t);
+        if (btn) {
+          if (t === type) {
+            btn.className = 'p-2.5 rounded-lg border-2 border-blue-500 bg-blue-50/50 flex flex-col items-center gap-1 text-xs text-left transition-all';
+          } else {
+            btn.className = 'p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 flex flex-col items-center gap-1 text-xs text-left transition-all';
+          }
+        }
+      });
+    }
+
+    function showToast(msg, type = 'info') {
+      let toast = document.getElementById('toast-notification');
+      if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'toast-notification';
+        document.body.appendChild(toast);
+      }
+      const bg = type === 'success' ? 'bg-emerald-600' : (type === 'warning' ? 'bg-amber-600' : 'bg-slate-800');
+      toast.className = `fixed top-14 right-6 z-50 px-3.5 py-2 rounded-lg shadow-lg text-xs font-bold text-white transition-all transform duration-300 pointer-events-none opacity-100 translate-y-0 ${bg}`;
+      toast.innerText = msg;
+      setTimeout(() => {
+        toast.className = toast.className.replace('opacity-100 translate-y-0', 'opacity-0 translate-y-[-10px]');
+      }, 2500);
+    }
+
+    async function confirmInjectElement() {
+      if (!telemetry) return;
+      if (!telemetry.is_paused) {
+        showToast('⚠️ 仅在物理仿真暂停状态下允许添加扰动模块，请先点击顶栏暂停仿真！', 'warning');
+        return;
+      }
+      const posType = document.getElementById('sel-inject-pos').value;
+      let targetX = telemetry.x, targetY = telemetry.y;
+      const yaw = telemetry.yaw;
+
+      const sizeMap = {
+        pallet: { w: 1.2, h: 1.0 },
+        shelf: { w: 2.0, h: 1.0 },
+        box: { w: 0.8, h: 0.8 },
+        person: { w: 0.5, h: 0.5 }
+      };
+      const dims = sizeMap[selectedInjectType] || { w: 0.8, h: 0.8 };
+
+      if (posType === 'ahead_25') {
+        targetX += Math.cos(yaw) * 2.5;
+        targetY += Math.sin(yaw) * 2.5;
+      } else if (posType === 'ahead_12') {
+        targetX += Math.cos(yaw) * 1.2;
+        targetY += Math.sin(yaw) * 1.2;
+      } else if (posType === 'target_station' && telemetry.target_goal) {
+        targetX = telemetry.target_goal.x + 0.5;
+        targetY = telemetry.target_goal.y + 0.5;
+      } else {
+        targetX += (Math.random() - 0.5) * 4.0;
+        targetY += (Math.random() - 0.5) * 4.0;
+      }
+
+      try {
+        const res = await fetch('/api/obstacles/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            x: targetX,
+            y: targetY,
+            w: dims.w,
+            h: dims.h,
+            type: selectedInjectType
+          })
+        });
+        const resData = await res.json().catch(() => ({}));
+        if (res.ok) {
+          const typeNames = {
+            pallet: '🪵 木质栈板',
+            shelf: '🏗️ 双层货架',
+            box: '📦 周转纸箱',
+            person: '👷 车间人员'
+          };
+          const name = typeNames[selectedInjectType] || selectedInjectType;
+          // 放置物体后无需弹窗确定，仅展示轻量 toast 提示已布置，恢复仿真时生效
+          showToast(`已布置 ${name} (X:${targetX.toFixed(2)}, Y:${targetY.toFixed(2)})，恢复仿真时正式生效！`, 'success');
+        } else {
+          showToast(resData.message || '添加失败，请先暂停物理仿真', 'warning');
+        }
+      } catch (e) {
+        showToast('注入请求异常: ' + e, 'warning');
+      }
+    }
+
+    function renderInjectedObstaclesList() {
+      const container = document.getElementById('injected-elements-list');
+      if (!container) return;
+      if (!injectedObstacles || injectedObstacles.length === 0) {
+        container.innerHTML = '<div class="text-[11px] text-slate-400 text-center py-3 italic">暂无人工注入的扰动元素</div>';
+        return;
+      }
+      const typeInfo = {
+        pallet: { icon: '🪵', name: '木栈板', badge: 'bg-amber-100 text-amber-800 border-amber-200' },
+        shelf: { icon: '🏗️', name: '仓储货架', badge: 'bg-blue-100 text-blue-800 border-blue-200' },
+        box: { icon: '📦', name: '周转箱', badge: 'bg-orange-100 text-orange-800 border-orange-200' },
+        person: { icon: '👷', name: '作业人员', badge: 'bg-rose-100 text-rose-800 border-rose-200' }
+      };
+      container.innerHTML = injectedObstacles.map((obs, idx) => {
+        const info = typeInfo[obs.type] || { icon: '⚠️', name: '障碍物', badge: 'bg-slate-100 text-slate-800 border-slate-200' };
+        const isLive = obs.active !== false && (!telemetry || !telemetry.is_paused);
+        const statusBadge = isLive 
+          ? '<span class="text-[10px] px-1.5 py-0.5 rounded border font-medium bg-emerald-100 text-emerald-800 border-emerald-200">物理生效</span>'
+          : '<span class="text-[10px] px-1.5 py-0.5 rounded border font-medium bg-amber-100 text-amber-800 border-amber-200">待生效 (暂停中)</span>';
+        return `
+          <div class="p-1.5 rounded bg-white border border-slate-200 flex items-center justify-between text-[11px] hover:border-slate-300 transition-colors">
+            <div class="flex items-center gap-1.5">
+              <span class="text-sm">${info.icon}</span>
+              <div>
+                <span class="font-bold text-slate-800">#${obs.id || (idx + 1)} ${info.name}</span>
+                <span class="text-slate-500 font-mono text-[10px] block">(${obs.x.toFixed(1)}, ${obs.y.toFixed(1)}) ${obs.w}x${obs.h}m</span>
+              </div>
+            </div>
+            ${statusBadge}
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function clearAllObstacles() {
+      try {
+        await fetch('/api/obstacles/clear', { method: 'POST' });
+        injectedObstacles = [];
+        renderInjectedObstaclesList();
+        showToast('🗑️ 已清空全部仿真路障与物理实体', 'info');
+      } catch (e) {
+        console.error('clearAllObstacles error:', e);
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 调度导航与场景控制 (DISPATCH & SCENARIO)
+    // --------------------------------------------------------------
+    async function dispatchStation(stationId) {
+      let goal = null;
+      if (telemetry && telemetry.scenario_metadata && telemetry.scenario_metadata.stations) {
+        const found = telemetry.scenario_metadata.stations.find(st => st.id === stationId || (st.name && st.name.includes(stationId)));
+        if (found) {
+          goal = { x: found.x, y: found.y, yaw: found.dock_yaw !== undefined ? found.dock_yaw : 0.0 };
+        }
+      }
+      if (!goal) {
+        const fallback = {
+          S1: { x: 0.0, y: 5.0, yaw: Math.PI / 2 },
+          S2: { x: -5.0, y: 0.0, yaw: Math.PI },
+          S3: { x: 0.0, y: -5.0, yaw: -Math.PI / 2 },
+          S4: { x: 5.0, y: 0.0, yaw: 0.0 },
+          P0: { x: 0.0, y: 0.0, yaw: 0.0 }
+        };
+        goal = fallback[stationId];
+      }
+      if (!goal) return;
+
+      try {
+        await fetch('/api/navigate_to_pose', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(goal)
+        });
+      } catch (e) {
+        alert('派发工位失败: ' + e);
+      }
+    }
+
+    async function cancelNavigation() {
+      try {
+        await fetch('/api/cancel_navigation', { method: 'POST' });
+      } catch (e) {
+        console.error('cancelNavigation error:', e);
+      }
+    }
+
+    async function switchScenario(scId) {
+      needsFullMetadata = true;
+      hasInitialPose = false;
+      try {
+        await fetch('/api/map_scenario', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scenario: scId })
+        });
+      } catch (e) {
+        console.error('switchScenario error:', e);
+      }
+    }
+
+    async function switchChassis(chId) {
+      try {
+        await fetch('/api/chassis_type', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: chId })
+        });
+      } catch (e) {
+        console.error('switchChassis error:', e);
+      }
+    }
+
+    async function switchPlanner(plId) {
+      try {
+        await fetch('/api/planner_type', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: plId })
+        });
+      } catch (e) {
+        console.error('switchPlanner error:', e);
+      }
+    }
+
+    async function toggleSimPauseResume() {
+      simPaused = !simPaused;
+      const banner = document.getElementById('paused-banner');
+      const btn = document.getElementById('btn-pause-resume');
+      const txt = document.getElementById('txt-pause-resume');
+      const icon = document.getElementById('icon-pause-resume');
+
+      if (banner) banner.classList.toggle('hidden', !simPaused);
+      if (txt) txt.textContent = simPaused ? '恢复物理' : '暂停物理';
+      if (btn) {
+        btn.className = simPaused
+          ? 'px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded text-xs font-semibold flex items-center gap-1 transition-all'
+          : 'px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-xs font-semibold flex items-center gap-1 transition-all';
+      }
+      if (icon) icon.setAttribute('data-lucide', simPaused ? 'play' : 'pause');
+      if (window.lucide) lucide.createIcons();
+
+      try {
+        await fetch(simPaused ? '/api/sim_pause' : '/api/sim_resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paused: simPaused })
+        });
+      } catch (e) {
+        console.error('toggleSimPauseResume error:', e);
+      }
+    }
+
+    async function resetSimulation() {
+      needsFullMetadata = true;
+      hasInitialPose = false;
+      try {
+        await fetch('/api/sim_reset', { method: 'POST' });
+      } catch (e) {
+        alert('重置环境失败: ' + e);
+      }
+    }
+
+    // --------------------------------------------------------------
+    // 飞行记录与交互式回放 (FLIGHT RECORDER & REPLAY)
+    // --------------------------------------------------------------
+    let isRecording = false;
+    async function toggleFlightRecording() {
+      isRecording = !isRecording;
+      const dot = document.getElementById('rec-dot');
+      const txt = document.getElementById('rec-text');
+      if (dot) dot.className = isRecording ? 'w-2 h-2 rounded-full bg-rose-600 animate-pulse' : 'w-2 h-2 rounded-full bg-rose-600';
+      if (txt) txt.textContent = isRecording ? '停止录制' : '开始记录';
+
+      try {
+        await fetch('/api/replay/record', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: isRecording ? 'start' : 'stop' })
+        });
+        fetchReplaySessions();
+      } catch (e) {
+        console.error('toggleFlightRecording error:', e);
+      }
+    }
+
+    async function fetchReplaySessions() {
+      try {
+        const res = await fetch('/api/replay/sessions');
+        if (res.ok) {
+          const data = await res.json();
+          renderReplaySessions(data.sessions || []);
+        }
+      } catch (e) {
+        console.warn('fetchReplaySessions error:', e);
+      }
+    }
+
+    function renderReplaySessions(sessions) {
+      const container = document.getElementById('replay-sessions-list');
+      if (!container) return;
+      if (sessions.length === 0) {
+        container.innerHTML = '<div class="text-[11px] text-slate-400 text-center py-3 italic">暂无历史录制会话</div>';
+        return;
+      }
+      container.innerHTML = sessions.map(s => `
+        <div class="p-2 rounded bg-white border border-slate-200 flex items-center justify-between text-[11px] hover:border-blue-300 cursor-pointer" onclick="selectReplaySession('${s.id}')">
+          <div>
+            <div class="font-bold text-slate-800">${s.id}</div>
+            <div class="text-[10px] text-slate-400 font-mono">${s.frames || 0} 帧 | 时长: ${(s.duration_sec || 0).toFixed(1)}s</div>
+          </div>
+          <span class="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">选取回放</span>
+        </div>
+      `).join('');
+    }
+
+    function selectReplaySession(id) {
+      alert(`已载入会话: ${id}`);
+    }
+
+    function toggleReplayPlay() {}
+    function stopReplay() {}
+    function setReplaySpeed(spd) {}
+    function onReplaySeek(val) {}
+    function exportCurrentSessionJson() {
+      alert('导出当前回放会话数据');
+    }
+
+    // --------------------------------------------------------------
+    // 2D CANVAS 渲染与航位推算平滑位姿 (2D RENDER LOOP)
+    // --------------------------------------------------------------
+    let cv2D, ctx2D;
+
+    function init2DCanvas() {
+      cv2D = document.getElementById('canvas-2d');
+      if (!cv2D) return;
+      ctx2D = cv2D.getContext('2d');
+      resizeCanvas2D();
+
+      cv2D.addEventListener('mousedown', (e) => {
+        view2D.isDragging = true;
+        view2D.dragStartX = e.clientX - view2D.panX;
+        view2D.dragStartY = e.clientY - view2D.panY;
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!view2D.isDragging) return;
+        view2D.panX = e.clientX - view2D.dragStartX;
+        view2D.panY = e.clientY - view2D.dragStartY;
+      });
+      window.addEventListener('mouseup', () => { view2D.isDragging = false; });
+      cv2D.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        view2D.scale = Math.max(10, Math.min(120, view2D.scale * factor));
+      }, { passive: false });
+
+      // 点击空白区域发送目标导航点
+      cv2D.addEventListener('click', (e) => {
+        if (view2D.isDragging) return;
+        const rect = cv2D.getBoundingClientRect();
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+        const worldX = (screenX - view2D.panX) / view2D.scale;
+        const worldY = (view2D.panY - screenY) / view2D.scale;
+        if (confirm(`确认下发导航目标点至坐标: (${worldX.toFixed(2)}, ${worldY.toFixed(2)})？`)) {
+          fetch('/api/navigate_to_pose', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ x: worldX, y: worldY, yaw: 0.0 })
+          });
+        }
+      });
+
+      requestAnimationFrame(renderLoop2D);
+    }
+
+    function resizeCanvas2D() {
+      if (!cv2D) return;
+      const rect = cv2D.parentElement.getBoundingClientRect();
+      cv2D.width = rect.width * window.devicePixelRatio;
+      cv2D.height = rect.height * window.devicePixelRatio;
+      if (view2D.panX === 0 && view2D.panY === 0) {
+        view2D.panX = (cv2D.width / 2);
+        view2D.panY = (cv2D.height / 2);
+      }
+    }
+
+    // 渲染位姿平滑 (2D/3D 共用，与帧率无关): 包间按最新速度航位推算 (≤0.25 s) + 时间常数 80 ms 指数逼近
+    let lastSmoothTs = performance.now();
+    function smoothRenderPose() {
+      const now = performance.now();
+      const dt = Math.min(0.1, (now - lastSmoothTs) / 1000);
+      lastSmoothTs = now;
+      if (!hasInitialPose) return;
+      const age = Math.min(0.25, Math.max(0, (now - lastTelemetryTime) / 1000));
+      const c = Math.cos(targetPose.yaw), s = Math.sin(targetPose.yaw);
+      const vx = renderPose.vx || 0, vy = renderPose.vy || 0, wz = renderPose.wz || 0;
+      const px = targetPose.x + (c * vx - s * vy) * age;
+      const py = targetPose.y + (s * vx + c * vy) * age;
+      const pyaw = targetPose.yaw + wz * age;
+      const k = 1 - Math.exp(-dt / 0.08);
+      renderPose.x += (px - renderPose.x) * k;
+      renderPose.y += (py - renderPose.y) * k;
+      let dYaw = pyaw - renderPose.yaw;
+      while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+      while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+      renderPose.yaw += dYaw * k;
+    }
+
+    function renderLoop2D() {
+      if (cameraMode === '2d' && cv2D && ctx2D) {
+        smoothRenderPose();
+        draw2DScene();
+      }
+      requestAnimationFrame(renderLoop2D);
+    }
+
+    function draw2DScene() {
+      const W = cv2D.width, H = cv2D.height;
+      ctx2D.clearRect(0, 0, W, H);
+
+      const dpr = window.devicePixelRatio || 1;
+      const toScreen = (wx, wy) => ({
+        sx: view2D.panX + wx * view2D.scale,
+        sy: view2D.panY - wy * view2D.scale
+      });
+
+      // ------------------------------------------------------------
+      // 1. 细网格标尺与坐标基准 (1米主栅格 + 0.5米辅助格)
+      // ------------------------------------------------------------
+      ctx2D.strokeStyle = '#f1f5f9';
+      ctx2D.lineWidth = 1;
+      const gridSpan = 15;
+      for (let i = -gridSpan; i <= gridSpan; i += 0.5) {
+        const p1 = toScreen(i, -gridSpan);
+        const p2 = toScreen(i, gridSpan);
+        ctx2D.beginPath();
+        ctx2D.moveTo(p1.sx, p1.sy);
+        ctx2D.lineTo(p2.sx, p2.sy);
+        ctx2D.stroke();
+
+        const p3 = toScreen(-gridSpan, i);
+        const p4 = toScreen(gridSpan, i);
+        ctx2D.beginPath();
+        ctx2D.moveTo(p3.sx, p3.sy);
+        ctx2D.lineTo(p4.sx, p4.sy);
+        ctx2D.stroke();
+      }
+
+      ctx2D.strokeStyle = '#e2e8f0';
+      ctx2D.lineWidth = 1.2 * dpr;
+      for (let i = -gridSpan; i <= gridSpan; i++) {
+        const p1 = toScreen(i, -gridSpan);
+        const p2 = toScreen(i, gridSpan);
+        ctx2D.beginPath();
+        ctx2D.moveTo(p1.sx, p1.sy);
+        ctx2D.lineTo(p2.sx, p2.sy);
+        ctx2D.stroke();
+
+        const p3 = toScreen(-gridSpan, i);
+        const p4 = toScreen(gridSpan, i);
+        ctx2D.beginPath();
+        ctx2D.moveTo(p3.sx, p3.sy);
+        ctx2D.lineTo(p4.sx, p4.sy);
+        ctx2D.stroke();
+      }
+
+      // ------------------------------------------------------------
+      // 2. 环境轮廓 (ENVIRONMENT CONTOURS: 墙体与立体货架)
+      // ------------------------------------------------------------
+      if (layerConfig.environment && telemetry && telemetry.scenario_metadata) {
+        const meta = telemetry.scenario_metadata;
+
+        // 2.1 外部库区围墙 (Perimeter Walls)
+        if (meta.walls && Array.isArray(meta.walls)) {
+          ctx2D.strokeStyle = '#334155';
+          ctx2D.lineWidth = 4 * dpr;
+          ctx2D.lineCap = 'round';
+          meta.walls.forEach(w => {
+            if (Array.isArray(w) && w.length >= 4) {
+              const s1 = toScreen(w[0], w[1]);
+              const s2 = toScreen(w[2], w[3]);
+              ctx2D.beginPath();
+              ctx2D.moveTo(s1.sx, s1.sy);
+              ctx2D.lineTo(s2.sx, s2.sy);
+              ctx2D.stroke();
+            }
+          });
+        }
+
+        // 2.2 仓储立体货架排架 (Shelves Racks)
+        if (meta.shelves && Array.isArray(meta.shelves)) {
+          meta.shelves.forEach(sh => {
+            const pMin = toScreen(Math.min(sh.x1, sh.x2), Math.max(sh.y1, sh.y2));
+            const pMax = toScreen(Math.max(sh.x1, sh.x2), Math.min(sh.y1, sh.y2));
+            const rw = pMax.sx - pMin.sx;
+            const rh = pMax.sy - pMin.sy;
+
+            // 货架实体阴影与基底
+            ctx2D.fillStyle = '#1e293b';
+            ctx2D.fillRect(pMin.sx, pMin.sy, rw, rh);
+
+            // 货架发光边框
+            ctx2D.strokeStyle = sh.border || '#38bdf8';
+            ctx2D.lineWidth = 2 * dpr;
+            ctx2D.strokeRect(pMin.sx, pMin.sy, rw, rh);
+
+            // 货架内部隔板细线
+            ctx2D.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx2D.lineWidth = 1;
+            ctx2D.beginPath();
+            ctx2D.moveTo(pMin.sx, pMin.sy + rh / 2);
+            ctx2D.lineTo(pMin.sx + rw, pMin.sy + rh / 2);
+            ctx2D.moveTo(pMin.sx + rw / 2, pMin.sy);
+            ctx2D.lineTo(pMin.sx + rw / 2, pMin.sy + rh);
+            ctx2D.stroke();
+
+            // 货架名称标签
+            if (sh.name) {
+              ctx2D.fillStyle = '#f8fafc';
+              ctx2D.font = `bold ${Math.max(9, Math.min(12, 11 * dpr))}px sans-serif`;
+              ctx2D.textAlign = 'center';
+              ctx2D.textBaseline = 'middle';
+              ctx2D.fillText(sh.name, pMin.sx + rw / 2, pMin.sy + rh / 2);
+            }
+          });
+        }
+      }
+
+      // ------------------------------------------------------------
+      // 2.3 动态扰动物理实体 (INJECTED PHYSICAL ENTITIES: 人员/托盘/货架/纸箱)
+      // ------------------------------------------------------------
+      if (layerConfig.environment && injectedObstacles && injectedObstacles.length > 0) {
+        function drawObstacle2DLabel(cx, cy, text, accentColor) {
+          ctx2D.save();
+          ctx2D.font = `bold ${Math.max(9, Math.min(13, 10.5 * dpr))}px "PingFang SC", "Microsoft YaHei", sans-serif`;
+          ctx2D.textAlign = 'center';
+          ctx2D.textBaseline = 'middle';
+          const tm = ctx2D.measureText(text);
+          const pillW = tm.width + 12 * dpr;
+          const pillH = 18 * dpr;
+          const pillX = cx - pillW / 2;
+          const pillY = cy - pillH / 2;
+
+          ctx2D.fillStyle = 'rgba(15, 23, 42, 0.9)';
+          ctx2D.beginPath();
+          if (ctx2D.roundRect) ctx2D.roundRect(pillX, pillY, pillW, pillH, 4 * dpr);
+          else ctx2D.fillRect(pillX, pillY, pillW, pillH);
+          ctx2D.fill();
+
+          ctx2D.strokeStyle = accentColor || '#38bdf8';
+          ctx2D.lineWidth = 1.2 * dpr;
+          ctx2D.beginPath();
+          if (ctx2D.roundRect) ctx2D.roundRect(pillX, pillY, pillW, pillH, 4 * dpr);
+          else ctx2D.strokeRect(pillX, pillY, pillW, pillH);
+          ctx2D.stroke();
+
+          ctx2D.fillStyle = '#f8fafc';
+          ctx2D.fillText(text, cx, cy);
+          ctx2D.restore();
+        }
+
+        injectedObstacles.forEach(obs => {
+          const s = toScreen(obs.x - obs.w / 2, obs.y + obs.h / 2);
+          const w = obs.w * view2D.scale;
+          const h = obs.h * view2D.scale;
+          const center = toScreen(obs.x, obs.y);
+          const type = obs.type || 'box';
+
+          ctx2D.save();
+
+          // 实体软阴影 (Floor Drop Shadow)
+          ctx2D.shadowColor = 'rgba(15, 23, 42, 0.28)';
+          ctx2D.shadowBlur = 6 * dpr;
+          ctx2D.shadowOffsetX = 2 * dpr;
+          ctx2D.shadowOffsetY = 3 * dpr;
+
+          if (type === 'person') {
+            // 👷 车间作业人员 2D 实体
+            // 1. 地面安全预警环 (半透明粉红 + 虚线红圈)
+            ctx2D.shadowColor = 'transparent';
+            ctx2D.strokeStyle = 'rgba(239, 68, 68, 0.75)';
+            ctx2D.fillStyle = 'rgba(254, 226, 226, 0.35)';
+            ctx2D.lineWidth = 1.5 * dpr;
+            ctx2D.setLineDash([4 * dpr, 3 * dpr]);
+            ctx2D.beginPath();
+            const safetyR = Math.max(w, h) * 0.9;
+            ctx2D.arc(center.sx, center.sy, safetyR, 0, Math.PI * 2);
+            ctx2D.fill();
+            ctx2D.stroke();
+            ctx2D.setLineDash([]);
+
+            // 2. 躯干高亮荧光背心 (Safety Orange)
+            const vestW = w * 0.75;
+            const vestH = h * 0.55;
+            const vestX = center.sx - vestW / 2;
+            const vestY = center.sy - vestH / 2 + 2 * dpr;
+            ctx2D.fillStyle = '#ea580c';
+            ctx2D.beginPath();
+            if (ctx2D.roundRect) ctx2D.roundRect(vestX, vestY, vestW, vestH, 4 * dpr);
+            else ctx2D.fillRect(vestX, vestY, vestW, vestH);
+            ctx2D.fill();
+            ctx2D.strokeStyle = '#c2410c';
+            ctx2D.lineWidth = 1.5 * dpr;
+            ctx2D.stroke();
+
+            // 3. 背心银白反光带
+            ctx2D.strokeStyle = '#f8fafc';
+            ctx2D.lineWidth = 2 * dpr;
+            ctx2D.beginPath();
+            ctx2D.moveTo(vestX + 2 * dpr, vestY + vestH / 2);
+            ctx2D.lineTo(vestX + vestW - 2 * dpr, vestY + vestH / 2);
+            ctx2D.moveTo(vestX + vestW * 0.3, vestY);
+            ctx2D.lineTo(vestX + vestW * 0.3, vestY + vestH);
+            ctx2D.moveTo(vestX + vestW * 0.7, vestY);
+            ctx2D.lineTo(vestX + vestW * 0.7, vestY + vestH);
+            ctx2D.stroke();
+
+            // 4. 黄色工业安全帽
+            const headR = Math.min(w, h) * 0.24;
+            ctx2D.fillStyle = '#eab308';
+            ctx2D.beginPath();
+            ctx2D.arc(center.sx, center.sy - 3 * dpr, headR, 0, Math.PI * 2);
+            ctx2D.fill();
+            ctx2D.strokeStyle = '#ca8a04';
+            ctx2D.lineWidth = 1.5 * dpr;
+            ctx2D.stroke();
+
+            // 帽檐线条
+            ctx2D.strokeStyle = '#a16207';
+            ctx2D.lineWidth = 1.8 * dpr;
+            ctx2D.beginPath();
+            ctx2D.arc(center.sx, center.sy - 3 * dpr, headR * 0.85, 0, Math.PI);
+            ctx2D.stroke();
+
+            ctx2D.restore();
+            drawObstacle2DLabel(center.sx, vestY - 14 * dpr, `👷 人员 #${obs.id}`, '#e11d48');
+
+          } else if (type === 'pallet') {
+            // 🪵 标准木质栈板 2D 实体
+            ctx2D.fillStyle = '#d97706';
+            ctx2D.fillRect(s.sx, s.sy, w, h);
+            ctx2D.strokeStyle = '#78350f';
+            ctx2D.lineWidth = 2 * dpr;
+            ctx2D.strokeRect(s.sx, s.sy, w, h);
+
+            // 木条缝隙 (5条横向木铺板)
+            const slatCount = 5;
+            const slatH = h / slatCount;
+            ctx2D.fillStyle = '#b45309';
+            for (let i = 1; i < slatCount; i++) {
+              ctx2D.fillRect(s.sx, s.sy + i * slatH - 1 * dpr, w, 2 * dpr);
+            }
+
+            // 叉车插口卡槽 (深色入叉缺口)
+            ctx2D.fillStyle = '#451a03';
+            const notchW = w * 0.22;
+            const notchH = 4 * dpr;
+            ctx2D.fillRect(s.sx + w * 0.18, s.sy, notchW, notchH);
+            ctx2D.fillRect(s.sx + w * 0.6, s.sy, notchW, notchH);
+            ctx2D.fillRect(s.sx + w * 0.18, s.sy + h - notchH, notchW, notchH);
+            ctx2D.fillRect(s.sx + w * 0.6, s.sy + h - notchH, notchW, notchH);
+
+            // 栈板货物绑定打包带
+            ctx2D.strokeStyle = 'rgba(254, 243, 199, 0.7)';
+            ctx2D.lineWidth = 1.5 * dpr;
+            ctx2D.strokeRect(s.sx + 4 * dpr, s.sy + 4 * dpr, w - 8 * dpr, h - 8 * dpr);
+
+            ctx2D.restore();
+            drawObstacle2DLabel(center.sx, s.sy - 12 * dpr, `🪵 木栈板 #${obs.id}`, '#d97706');
+
+          } else if (type === 'shelf') {
+            // 🏗️ 双层轻型货架 2D 实体
+            ctx2D.fillStyle = '#1e293b';
+            ctx2D.fillRect(s.sx, s.sy, w, h);
+
+            // 仓库专用蓝色立柱边框
+            ctx2D.strokeStyle = '#2563eb';
+            ctx2D.lineWidth = 3 * dpr;
+            ctx2D.strokeRect(s.sx, s.sy, w, h);
+
+            // 中部醒目橙色防撞横梁
+            ctx2D.fillStyle = '#ea580c';
+            ctx2D.fillRect(s.sx, s.sy + h / 2 - 2 * dpr, w, 4 * dpr);
+
+            // X 交叉支撑桁架线
+            ctx2D.strokeStyle = 'rgba(59, 130, 246, 0.45)';
+            ctx2D.lineWidth = 1.5 * dpr;
+            ctx2D.beginPath();
+            ctx2D.moveTo(s.sx, s.sy); ctx2D.lineTo(s.sx + w, s.sy + h);
+            ctx2D.moveTo(s.sx + w, s.sy); ctx2D.lineTo(s.sx, s.sy + h);
+            ctx2D.stroke();
+
+            // 4 处角钢加固立柱
+            ctx2D.fillStyle = '#1d4ed8';
+            const legS = Math.min(8 * dpr, w * 0.15);
+            ctx2D.fillRect(s.sx, s.sy, legS, legS);
+            ctx2D.fillRect(s.sx + w - legS, s.sy, legS, legS);
+            ctx2D.fillRect(s.sx, s.sy + h - legS, legS, legS);
+            ctx2D.fillRect(s.sx + w - legS, s.sy + h - legS, legS, legS);
+
+            ctx2D.restore();
+            drawObstacle2DLabel(center.sx, s.sy - 12 * dpr, `🏗️ 货架 #${obs.id}`, '#2563eb');
+
+          } else if (type === 'box') {
+            // 📦 工业周转纸箱 2D 实体
+            ctx2D.fillStyle = '#fef3c7';
+            ctx2D.fillRect(s.sx, s.sy, w, h);
+            ctx2D.strokeStyle = '#b45309';
+            ctx2D.lineWidth = 2 * dpr;
+            ctx2D.strokeRect(s.sx, s.sy, w, h);
+
+            // 封箱深棕胶带 (十字封口)
+            ctx2D.fillStyle = '#92400e';
+            const tapeW = Math.max(4 * dpr, w * 0.18);
+            ctx2D.fillRect(s.sx, center.sy - tapeW / 2, w, tapeW);
+
+            // 纸箱折痕
+            ctx2D.strokeStyle = '#d97706';
+            ctx2D.lineWidth = 1 * dpr;
+            ctx2D.beginPath();
+            ctx2D.moveTo(s.sx + w * 0.15, s.sy); ctx2D.lineTo(s.sx + w * 0.15, s.sy + h);
+            ctx2D.moveTo(s.sx + w * 0.85, s.sy); ctx2D.lineTo(s.sx + w * 0.85, s.sy + h);
+            ctx2D.stroke();
+
+            // 纸箱中心标志
+            ctx2D.fillStyle = '#78350f';
+            ctx2D.font = `bold ${Math.max(10, Math.min(13, 11 * dpr))}px sans-serif`;
+            ctx2D.textAlign = 'center';
+            ctx2D.textBaseline = 'middle';
+            ctx2D.fillText('📦', center.sx, center.sy);
+
+            ctx2D.restore();
+            drawObstacle2DLabel(center.sx, s.sy - 12 * dpr, `📦 纸箱 #${obs.id}`, '#b45309');
+
+          } else {
+            // 通用障碍物 (黄色警示斜纹)
+            ctx2D.fillStyle = '#fef08a';
+            ctx2D.fillRect(s.sx, s.sy, w, h);
+            ctx2D.strokeStyle = '#ca8a04';
+            ctx2D.lineWidth = 2 * dpr;
+            ctx2D.strokeRect(s.sx, s.sy, w, h);
+
+            ctx2D.save();
+            ctx2D.beginPath();
+            ctx2D.rect(s.sx, s.sy, w, h);
+            ctx2D.clip();
+            ctx2D.strokeStyle = '#1e293b';
+            ctx2D.lineWidth = 3 * dpr;
+            for (let offset = -h; offset < w + h; offset += 14 * dpr) {
+              ctx2D.beginPath();
+              ctx2D.moveTo(s.sx + offset, s.sy);
+              ctx2D.lineTo(s.sx + offset + h, s.sy + h);
+              ctx2D.stroke();
+            }
+            ctx2D.restore();
+
+            ctx2D.restore();
+            drawObstacle2DLabel(center.sx, s.sy - 12 * dpr, `⚠️ 障碍 #${obs.id}`, '#f59e0b');
+          }
+        });
+      }
+
+      // ------------------------------------------------------------
+      // 3. 拓扑路网 (TOPOLOGY LINES: 导轨动线与拓扑节点)
+      // ------------------------------------------------------------
+      if (layerConfig.topology && telemetry && telemetry.topo_graph) {
+        const edges = telemetry.topo_graph.edges || [];
+        const nodes = telemetry.topo_graph.nodes || {};
+
+        // 3.1 拓扑导轨连接线 (带外发光与双轨效果)
+        edges.forEach(e => {
+          let p1 = null, p2 = null;
+          if (e.p1 && e.p2) {
+            p1 = e.p1; p2 = e.p2;
+          } else if (e.from && e.to && nodes[e.from] && nodes[e.to]) {
+            p1 = nodes[e.from]; p2 = nodes[e.to];
+          }
+          if (p1 && p2) {
+            const s1 = toScreen(p1.x, p1.y);
+            const s2 = toScreen(p2.x, p2.y);
+
+            // 导轨外围柔和光晕
+            ctx2D.strokeStyle = 'rgba(96, 165, 250, 0.28)';
+            ctx2D.lineWidth = 6 * dpr;
+            ctx2D.lineCap = 'round';
+            ctx2D.beginPath();
+            ctx2D.moveTo(s1.sx, s1.sy);
+            ctx2D.lineTo(s2.sx, s2.sy);
+            ctx2D.stroke();
+
+            // 导轨核心导向实线
+            ctx2D.strokeStyle = '#3b82f6';
+            ctx2D.lineWidth = 2 * dpr;
+            ctx2D.beginPath();
+            ctx2D.moveTo(s1.sx, s1.sy);
+            ctx2D.lineTo(s2.sx, s2.sy);
+            ctx2D.stroke();
+          }
+        });
+
+        // 3.2 拓扑节点 (Topological Node Points)
+        Object.entries(nodes).forEach(([k, n]) => {
+          const s = toScreen(n.x, n.y);
+          // 外环
+          ctx2D.fillStyle = '#ffffff';
+          ctx2D.beginPath();
+          ctx2D.arc(s.sx, s.sy, 5 * dpr, 0, Math.PI * 2);
+          ctx2D.fill();
+          ctx2D.strokeStyle = '#2563eb';
+          ctx2D.lineWidth = 2 * dpr;
+          ctx2D.stroke();
+          // 内点
+          ctx2D.fillStyle = '#2563eb';
+          ctx2D.beginPath();
+          ctx2D.arc(s.sx, s.sy, 2 * dpr, 0, Math.PI * 2);
+          ctx2D.fill();
+
+          // 节点名称标签
+          if (view2D.scale > 25) {
+            ctx2D.fillStyle = '#64748b';
+            ctx2D.font = `${9 * dpr}px monospace`;
+            ctx2D.textAlign = 'left';
+            ctx2D.textBaseline = 'bottom';
+            ctx2D.fillText(k, s.sx + 6 * dpr, s.sy - 3 * dpr);
+          }
+        });
+      }
+
+      // ------------------------------------------------------------
+      // 4. 工位标注与对接位姿指示 (STATIONS)
+      // ------------------------------------------------------------
+      if (layerConfig.stations && telemetry && telemetry.scenario_metadata && telemetry.scenario_metadata.stations) {
+        telemetry.scenario_metadata.stations.forEach(st => {
+          const s = toScreen(st.x, st.y);
+          const color = st.color || '#3b82f6';
+
+          // 工位光晕底盘
+          ctx2D.fillStyle = color;
+          ctx2D.beginPath();
+          ctx2D.arc(s.sx, s.sy, 9 * dpr, 0, Math.PI * 2);
+          ctx2D.fill();
+          ctx2D.strokeStyle = '#ffffff';
+          ctx2D.lineWidth = 2 * dpr;
+          ctx2D.stroke();
+
+          // 对接航向指引箭头 (Docking Yaw Arrow)
+          if (st.dock_yaw !== undefined) {
+            const arrLen = 16 * dpr;
+            const ax = s.sx + Math.cos(-st.dock_yaw) * arrLen;
+            const ay = s.sy + Math.sin(-st.dock_yaw) * arrLen;
+            ctx2D.strokeStyle = color;
+            ctx2D.lineWidth = 3 * dpr;
+            ctx2D.beginPath();
+            ctx2D.moveTo(s.sx, s.sy);
+            ctx2D.lineTo(ax, ay);
+            ctx2D.stroke();
+          }
+
+          // 工位铭牌文字
+          const txt = st.name || st.id;
+          ctx2D.font = `bold ${10 * dpr}px sans-serif`;
+          const tw = ctx2D.measureText(txt).width;
+          ctx2D.fillStyle = 'rgba(255, 255, 255, 0.9)';
+          ctx2D.fillRect(s.sx - tw / 2 - 4 * dpr, s.sy + 12 * dpr, tw + 8 * dpr, 14 * dpr);
+          ctx2D.strokeStyle = '#cbd5e1';
+          ctx2D.lineWidth = 1;
+          ctx2D.strokeRect(s.sx - tw / 2 - 4 * dpr, s.sy + 12 * dpr, tw + 8 * dpr, 14 * dpr);
+
+          ctx2D.fillStyle = '#0f172a';
+          ctx2D.textAlign = 'center';
+          ctx2D.textBaseline = 'middle';
+          ctx2D.fillText(txt, s.sx, s.sy + 19 * dpr);
+        });
+      }
+
+      // ------------------------------------------------------------
+      // 5. 激光轮廓与扫描视场多边形 (LASER CONTOURS & FOV POLYGON)
+      // ------------------------------------------------------------
+      if (layerConfig.laser && telemetry && telemetry.scan_ranges && telemetry.scan_ranges.length > 0) {
+        const ranges = telemetry.scan_ranges;
+        const scanPose = (telemetry && telemetry.scan_pose) ? telemetry.scan_pose : renderPose;
+        const angleMin = telemetry.scan_angle_min !== undefined ? telemetry.scan_angle_min : -Math.PI;
+        const angleInc = telemetry.scan_angle_inc !== undefined ? telemetry.scan_angle_inc : (Math.PI * 2 / ranges.length);
+        const robotS = toScreen(scanPose.x, scanPose.y);
+        const maxRange = (telemetry.lidar_config && telemetry.lidar_config.range_max) || telemetry.scan_range_max || 12.0;
+        const outOfRangeThreshold = maxRange - 0.15;
+
+        const hitPoints = [];
+        for (let i = 0; i < ranges.length; i++) {
+          const r = ranges[i];
+          if (r > 0.05 && r <= maxRange + 1.0) {
+            const beamAngle = scanPose.yaw + angleMin + i * angleInc;
+            const hx = scanPose.x + Math.cos(beamAngle) * r;
+            const hy = scanPose.y + Math.sin(beamAngle) * r;
+            const hs = toScreen(hx, hy);
+            const isHit = (r < outOfRangeThreshold);
+            hitPoints.push({ sx: hs.sx, sy: hs.sy, dist: r, isHit: isHit });
+          }
+        }
+
+        if (hitPoints.length > 2) {
+          // 5.1 激光扫描覆盖扇区多边形 (Soft Green Coverage Wash)
+          ctx2D.fillStyle = 'rgba(16, 185, 129, 0.05)';
+          ctx2D.beginPath();
+          ctx2D.moveTo(robotS.sx, robotS.sy);
+          hitPoints.forEach(hp => {
+            ctx2D.lineTo(hp.sx, hp.sy);
+          });
+          ctx2D.closePath();
+          ctx2D.fill();
+
+          // 5.2 激光边缘轮廓线 (严格区分实际扫到轮廓 vs 超出范围空扫边界)
+          for (let i = 0; i < hitPoints.length - 1; i++) {
+            const pA = hitPoints[i];
+            const pB = hitPoints[i + 1];
+            const segDist = Math.hypot(pA.sx - pB.sx, pA.sy - pB.sy);
+
+            // 若两点均为实际扫到轮廓 (Real Obstacle Surface)
+            if (pA.isHit && pB.isHit) {
+              if (segDist < 3.0 * view2D.scale) {
+                const minDist = Math.min(pA.dist, pB.dist);
+                if (minDist < 0.8) {
+                  ctx2D.strokeStyle = '#ef4444'; // 极近停机区：红色实线
+                  ctx2D.lineWidth = 3 * dpr;
+                } else if (minDist < 1.4) {
+                  ctx2D.strokeStyle = '#f59e0b'; // 减速预警区：橙色实线
+                  ctx2D.lineWidth = 2.4 * dpr;
+                } else {
+                  ctx2D.strokeStyle = '#10b981'; // 实际扫到轮廓：翠绿高亮实线
+                  ctx2D.lineWidth = 2.0 * dpr;
+                }
+                ctx2D.setLineDash([]);
+                ctx2D.beginPath();
+                ctx2D.moveTo(pA.sx, pA.sy);
+                ctx2D.lineTo(pB.sx, pB.sy);
+                ctx2D.stroke();
+              }
+            } else if (!pA.isHit && !pB.isHit) {
+              // 若两点均为超出激光扫描范围的开阔空扫 (Empty Space / Range Max Boundary)
+              if (segDist < 3.5 * view2D.scale) {
+                ctx2D.strokeStyle = 'rgba(148, 163, 184, 0.4)'; // 浅青灰色细虚线
+                ctx2D.lineWidth = 1.0 * dpr;
+                ctx2D.setLineDash([3 * dpr, 3 * dpr]);
+                ctx2D.beginPath();
+                ctx2D.moveTo(pA.sx, pA.sy);
+                ctx2D.lineTo(pB.sx, pB.sy);
+                ctx2D.stroke();
+                ctx2D.setLineDash([]);
+              }
+            }
+            // 若一实一虚（实体墙体与通道开阔处交界），不画连线，通道保持通透无阻
+          }
+
+          // 5.3 激光击中点云 (实体命中点 vs 空扫点颜色与尺寸区分)
+          hitPoints.forEach((hp, idx) => {
+            if (idx % 2 === 0) { // 适度降噪采样展示
+              if (hp.isHit) {
+                // 【实际扫到轮廓的点云】：实心高亮饱满大点 (绿/橙/红)
+                ctx2D.fillStyle = hp.dist < 0.8 ? '#ef4444' : (hp.dist < 1.4 ? '#f59e0b' : '#10b981');
+                ctx2D.beginPath();
+                ctx2D.arc(hp.sx, hp.sy, 2.4 * dpr, 0, Math.PI * 2);
+                ctx2D.fill();
+              } else {
+                // 【超出激光扫描范围的空扫点云】：浅青灰弱化点
+                ctx2D.fillStyle = 'rgba(148, 163, 184, 0.45)'; // Slate 400 浅灰
+                ctx2D.beginPath();
+                ctx2D.arc(hp.sx, hp.sy, 1.2 * dpr, 0, Math.PI * 2);
+                ctx2D.fill();
+              }
+            }
+          });
+        }
+      }
+
+      // ------------------------------------------------------------
+      // 6. 规划路径信息与流动导引 (PLANNED PATH & WAYPOINTS)
+      // ------------------------------------------------------------
+      const pathCard = document.getElementById('path-info-card');
+      const hasPlan = telemetry && telemetry.plan_path && telemetry.plan_path.length > 1;
+
+      if (layerConfig.path && hasPlan) {
+        const path = telemetry.plan_path;
+
+        // 更新右下角规划路径信息卡片
+        if (pathCard) {
+          pathCard.classList.remove('hidden');
+          const pEng = document.getElementById('path-card-engine');
+          const pWp = document.getElementById('path-card-waypoints');
+          const pDist = document.getElementById('path-card-dist');
+          const pGoal = document.getElementById('path-card-goal');
+          const pStat = document.getElementById('path-card-status');
+
+          if (pEng) pEng.textContent = ({straight:'直连规划模式', direct:'直连规划模式', astar:'A* 栅格避障规划', nav2:'Nav2 自主导航'}[telemetry.planner_type] || 'Dijkstra 拓扑导轨');
+          if (pWp) pWp.textContent = `${path.length} 个航点`;
+          if (pDist) pDist.textContent = `${(telemetry.nav_dist_rem || 0).toFixed(2)} m`;
+          if (pGoal && telemetry.target_goal) {
+            pGoal.textContent = `(${telemetry.target_goal.x.toFixed(1)}, ${telemetry.target_goal.y.toFixed(1)})`;
+          }
+          if (pStat) {
+            const isNav = telemetry.nav_status === 'NAVIGATING';
+            pStat.textContent = isNav ? '● 导航执行中' : '● 待命中';
+            pStat.className = isNav
+              ? 'px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800 font-mono animate-pulse'
+              : 'px-1.5 py-0.2 rounded text-[10px] font-bold bg-slate-100 text-slate-700 font-mono';
+          }
+        }
+
+        // 6.1 路径外发光底线 (Glowing Path Underlay)
+        ctx2D.strokeStyle = 'rgba(147, 197, 253, 0.45)';
+        ctx2D.lineWidth = 7 * dpr;
+        ctx2D.lineCap = 'round';
+        ctx2D.lineJoin = 'round';
+        ctx2D.beginPath();
+        path.forEach((pt, idx) => {
+          const s = toScreen(pt.x, pt.y);
+          if (idx === 0) ctx2D.moveTo(s.sx, s.sy);
+          else ctx2D.lineTo(s.sx, s.sy);
+        });
+        ctx2D.stroke();
+
+        // 6.2 动态流动虚线 (Flowing Dashed Path)
+        ctx2D.strokeStyle = '#2563eb';
+        ctx2D.lineWidth = 3.2 * dpr;
+        const dashOffset = -(performance.now() / 25) % 20;
+        ctx2D.setLineDash([8 * dpr, 6 * dpr]);
+        ctx2D.lineDashOffset = dashOffset;
+        ctx2D.beginPath();
+        path.forEach((pt, idx) => {
+          const s = toScreen(pt.x, pt.y);
+          if (idx === 0) ctx2D.moveTo(s.sx, s.sy);
+          else ctx2D.lineTo(s.sx, s.sy);
+        });
+        ctx2D.stroke();
+        ctx2D.setLineDash([]); // 恢复实线
+
+        // 6.3 航点圆圈与工步序号 (Waypoint Circles & Numbers)
+        path.forEach((pt, idx) => {
+          const s = toScreen(pt.x, pt.y);
+          // 航点圆圈
+          ctx2D.fillStyle = '#ffffff';
+          ctx2D.beginPath();
+          ctx2D.arc(s.sx, s.sy, 6 * dpr, 0, Math.PI * 2);
+          ctx2D.fill();
+          ctx2D.strokeStyle = '#2563eb';
+          ctx2D.lineWidth = 2 * dpr;
+          ctx2D.stroke();
+
+          // 序号
+          ctx2D.fillStyle = '#1e3a8a';
+          ctx2D.font = `bold ${8 * dpr}px sans-serif`;
+          ctx2D.textAlign = 'center';
+          ctx2D.textBaseline = 'middle';
+          ctx2D.fillText(String(idx + 1), s.sx, s.sy);
+        });
+
+        // 6.4 终点目标涟漪光晕 (Destination Beacon Ripple)
+        const lastPt = path[path.length - 1];
+        const goalS = toScreen(lastPt.x, lastPt.y);
+        const rippleR = (12 + Math.sin(performance.now() / 180) * 5) * dpr;
+
+        ctx2D.strokeStyle = 'rgba(239, 68, 68, 0.6)';
+        ctx2D.lineWidth = 2 * dpr;
+        ctx2D.beginPath();
+        ctx2D.arc(goalS.sx, goalS.sy, rippleR, 0, Math.PI * 2);
+        ctx2D.stroke();
+
+        ctx2D.fillStyle = '#ef4444';
+        ctx2D.beginPath();
+        ctx2D.arc(goalS.sx, goalS.sy, 4 * dpr, 0, Math.PI * 2);
+        ctx2D.fill();
+      } else {
+        if (pathCard && !pathCard.classList.contains('hidden')) {
+          pathCard.classList.add('hidden');
+        }
+      }
+
+      // ------------------------------------------------------------
+      // 7. AMR 机器人车身底盘 (ROBOT CHASSIS & HEADING)
+      // ------------------------------------------------------------
+      const rS = toScreen(renderPose.x, renderPose.y);
+      ctx2D.save();
+      ctx2D.translate(rS.sx, rS.sy);
+      ctx2D.rotate(-renderPose.yaw); // Canvas Y 轴向下，取反
+
+      if (window.AMR3D && AMR3D.draw2DRobot(ctx2D, telemetry, view2D.scale, dpr)) { ctx2D.restore(); return; }
+      const carW = 0.8 * view2D.scale;
+      const carL = 1.2 * view2D.scale;
+
+      // 车体底座投影发光
+      ctx2D.fillStyle = 'rgba(37, 99, 235, 0.15)';
+      ctx2D.fillRect(-carL / 2 - 4 * dpr, -carW / 2 - 4 * dpr, carL + 8 * dpr, carW + 8 * dpr);
+
+      // 车身主矩形 (工业蓝)
+      ctx2D.fillStyle = '#2563eb';
+      ctx2D.fillRect(-carL / 2, -carW / 2, carL, carW);
+      ctx2D.strokeStyle = '#1e3a8a';
+      ctx2D.lineWidth = 2.5 * dpr;
+      ctx2D.strokeRect(-carL / 2, -carW / 2, carL, carW);
+
+      // 车头红三角航向标
+      ctx2D.fillStyle = '#ef4444';
+      ctx2D.beginPath();
+      ctx2D.moveTo(carL / 2 + 12 * dpr, 0);
+      ctx2D.lineTo(carL / 2 - 4 * dpr, -9 * dpr);
+      ctx2D.lineTo(carL / 2 - 4 * dpr, 9 * dpr);
+      ctx2D.closePath();
+      ctx2D.fill();
+
+      // 激光雷达发射原点 (翠绿)
+      ctx2D.fillStyle = '#10b981';
+      ctx2D.beginPath();
+      ctx2D.arc(0, 0, 5 * dpr, 0, Math.PI * 2);
+      ctx2D.fill();
+      ctx2D.strokeStyle = '#ffffff';
+      ctx2D.lineWidth = 1.5 * dpr;
+      ctx2D.stroke();
+
+      ctx2D.restore();
+    }
+
+    // --------------------------------------------------------------
+    // 3D THREE.JS 场景渲染与动态点云 (3D VIEWPORT)
+    // --------------------------------------------------------------
+    let scene3D, camera3D, renderer3D, controls3D;
+    let robot3DGroup, pointCloud3D, obstacles3DGroup;
+    const MAX_3D_PTS = 14400;
+    const ptPos3D = new Float32Array(MAX_3D_PTS * 3);
+    const ptCol3D = new Float32Array(MAX_3D_PTS * 3);
+
+    function create3DTextSprite(text, borderColor = '#38bdf8') {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+
+      // 背景胶囊气泡 (暗黑半透明玻璃 + 亮色边框)
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+      if (ctx.roundRect) ctx.roundRect(8, 8, 240, 48, 12);
+      else ctx.fillRect(8, 8, 240, 48);
+      ctx.fill();
+
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 3;
+      if (ctx.roundRect) { ctx.roundRect(8, 8, 240, 48, 12); ctx.stroke(); }
+      else ctx.strokeRect(8, 8, 240, 48);
+
+      ctx.font = 'bold 22px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = '#f8fafc';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, 128, 32);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+      const sprite = new THREE.Sprite(spriteMat);
+      sprite.scale.set(1.4, 0.35, 1.0);
+      return sprite;
+    }
+
+    let last3DObsSignature = '';
+    function update3DObstacles() {
+      if (!scene3D || !obstacles3DGroup) return;
+      const curList = injectedObstacles || [];
+      const curSig = JSON.stringify(curList.map(o => ({ id: o.id, x: o.x, y: o.y, w: o.w, h: o.h, type: o.type, active: o.active })));
+      if (curSig === last3DObsSignature) return;
+      last3DObsSignature = curSig;
+
+      // 清理原有的 3D 障碍物对象
+      while (obstacles3DGroup.children.length > 0) {
+        const child = obstacles3DGroup.children[0];
+        obstacles3DGroup.remove(child);
+        if (child.traverse) {
+          child.traverse(c => {
+            if (c.geometry) c.geometry.dispose();
+            if (c.material) {
+              if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+              else c.material.dispose();
+            }
+          });
+        }
+      }
+
+      if (!curList || curList.length === 0) return;
+
+      curList.forEach(obs => {
+        const obsGroup = new THREE.Group();
+        obsGroup.position.set(obs.x, obs.y, 0);
+
+        const type = obs.type || 'box';
+        const w = obs.w || 0.8;
+        const h = obs.h || 0.8;
+
+        if (type === 'person') {
+          // 👷 车间作业人员 3D 实体
+          // 1. 地面安全预警红环 (贴地发光)
+          const ringGeom = new THREE.RingGeometry(Math.max(w, h) * 0.65, Math.max(w, h) * 0.75, 32);
+          const ringMat = new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+          const ring = new THREE.Mesh(ringGeom, ringMat);
+          ring.position.z = 0.02;
+          obsGroup.add(ring);
+
+          // 2. 双腿/工装裤
+          const legMat = new THREE.MeshStandardMaterial({ color: 0x1e3a8a, roughness: 0.7 });
+          const leg1 = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 0.7, 12), legMat);
+          leg1.position.set(-0.1, 0, 0.35);
+          leg1.rotation.x = Math.PI / 2;
+          obsGroup.add(leg1);
+          const leg2 = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 0.7, 12), legMat);
+          leg2.position.set(0.1, 0, 0.35);
+          leg2.rotation.x = Math.PI / 2;
+          obsGroup.add(leg2);
+
+          // 3. 荧光安全背心躯干
+          const vestGeom = new THREE.BoxGeometry(0.42, 0.28, 0.65);
+          const vestMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.4 });
+          const vest = new THREE.Mesh(vestGeom, vestMat);
+          vest.position.set(0, 0, 1.02);
+          obsGroup.add(vest);
+
+          // 4. 反光银条
+          const stripeGeom = new THREE.BoxGeometry(0.44, 0.3, 0.08);
+          const stripeMat = new THREE.MeshBasicMaterial({ color: 0xf1f5f9 });
+          const stripe = new THREE.Mesh(stripeGeom, stripeMat);
+          stripe.position.set(0, 0, 1.15);
+          obsGroup.add(stripe);
+
+          // 5. 头部与黄色安全帽
+          const head = new THREE.Mesh(
+            new THREE.SphereGeometry(0.12, 16, 16),
+            new THREE.MeshStandardMaterial({ color: 0xfde047, roughness: 0.6 })
+          );
+          head.position.set(0, 0, 1.45);
+          obsGroup.add(head);
+
+          const helmet = new THREE.Mesh(
+            new THREE.SphereGeometry(0.14, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.2 })
+          );
+          helmet.position.set(0, 0, 1.48);
+          obsGroup.add(helmet);
+
+          // 3D 浮空标签
+          const label = create3DTextSprite(`👷 人员 #${obs.id}`, '#e11d48');
+          label.position.set(0, 0, 1.95);
+          obsGroup.add(label);
+
+        } else if (type === 'pallet') {
+          // 🪵 标准木质栈板 3D 实体
+          // 底部 3 根纵向木撑条
+          const stringerMat = new THREE.MeshStandardMaterial({ color: 0x92400e, roughness: 0.8 });
+          [-w / 2 + 0.08, 0, w / 2 - 0.08].forEach(xPos => {
+            const stringer = new THREE.Mesh(new THREE.BoxGeometry(0.1, h, 0.09), stringerMat);
+            stringer.position.set(xPos, 0, 0.045);
+            obsGroup.add(stringer);
+          });
+
+          // 顶层 5 根横向木铺板
+          const deckMat = new THREE.MeshStandardMaterial({ color: 0xb45309, roughness: 0.7 });
+          const slatCount = 5;
+          const stepY = (h - 0.12) / (slatCount - 1);
+          for (let i = 0; i < slatCount; i++) {
+            const slatY = -h / 2 + 0.06 + i * stepY;
+            const slat = new THREE.Mesh(new THREE.BoxGeometry(w, stepY * 0.75, 0.03), deckMat);
+            slat.position.set(0, slatY, 0.105);
+            obsGroup.add(slat);
+          }
+
+          // 上方码放的货物纸箱
+          const cargoGeom = new THREE.BoxGeometry(w * 0.85, h * 0.85, 0.55);
+          const cargoMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.5 });
+          const cargo = new THREE.Mesh(cargoGeom, cargoMat);
+          cargo.position.set(0, 0, 0.4);
+          obsGroup.add(cargo);
+
+          // 货物胶带封箱
+          const tapeGeom = new THREE.BoxGeometry(w * 0.86, 0.1, 0.56);
+          const tapeMat = new THREE.MeshBasicMaterial({ color: 0x78350f });
+          const tape = new THREE.Mesh(tapeGeom, tapeMat);
+          tape.position.set(0, 0, 0.4);
+          obsGroup.add(tape);
+
+          // 3D 浮空标签
+          const label = create3DTextSprite(`🪵 托盘 #${obs.id}`, '#d97706');
+          label.position.set(0, 0, 0.95);
+          obsGroup.add(label);
+
+        } else if (type === 'shelf') {
+          // 🏗️ 双层轻型货架 3D 实体
+          const shelfH = 1.8;
+          const colMat = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.3 });
+          const beamMat = new THREE.MeshStandardMaterial({ color: 0xea580c, roughness: 0.4 });
+
+          // 4 根立柱
+          const legX = w / 2 - 0.04;
+          const legY = h / 2 - 0.04;
+          [[-legX, -legY], [legX, -legY], [legX, legY], [-legX, legY]].forEach(([lx, ly]) => {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, shelfH), colMat);
+            leg.position.set(lx, ly, shelfH / 2);
+            obsGroup.add(leg);
+          });
+
+          // 2 层横梁与隔板
+          [0.85, shelfH].forEach(beamZ => {
+            const beamF = new THREE.Mesh(new THREE.BoxGeometry(w, 0.04, 0.08), beamMat);
+            beamF.position.set(0, legY, beamZ);
+            obsGroup.add(beamF);
+            const beamB = new THREE.Mesh(new THREE.BoxGeometry(w, 0.04, 0.08), beamMat);
+            beamB.position.set(0, -legY, beamZ);
+            obsGroup.add(beamB);
+
+            const beamL = new THREE.Mesh(new THREE.BoxGeometry(0.04, h - 0.08, 0.08), beamMat);
+            beamL.position.set(-legX, 0, beamZ);
+            obsGroup.add(beamL);
+            const beamR = new THREE.Mesh(new THREE.BoxGeometry(0.04, h - 0.08, 0.08), beamMat);
+            beamR.position.set(legX, 0, beamZ);
+            obsGroup.add(beamR);
+
+            const deck = new THREE.Mesh(
+              new THREE.BoxGeometry(w - 0.06, h - 0.06, 0.02),
+              new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.4, roughness: 0.3 })
+            );
+            deck.position.set(0, 0, beamZ - 0.01);
+            obsGroup.add(deck);
+          });
+
+          // 货架货位物料箱
+          const bin1 = new THREE.Mesh(
+            new THREE.BoxGeometry(w * 0.38, h * 0.7, 0.35),
+            new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.3 })
+          );
+          bin1.position.set(-w * 0.22, 0, 1.05);
+          obsGroup.add(bin1);
+
+          const bin2 = new THREE.Mesh(
+            new THREE.BoxGeometry(w * 0.38, h * 0.7, 0.35),
+            new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3 })
+          );
+          bin2.position.set(w * 0.22, 0, 1.05);
+          obsGroup.add(bin2);
+
+          // 3D 浮空标签
+          const label = create3DTextSprite(`🏗️ 货架 #${obs.id}`, '#2563eb');
+          label.position.set(0, 0, shelfH + 0.35);
+          obsGroup.add(label);
+
+        } else if (type === 'box') {
+          // 📦 工业周转纸箱 3D 实体
+          const boxH = Math.min(w, h) * 0.9;
+          const boxMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.6 });
+          const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, boxH), boxMat);
+          box.position.set(0, 0, boxH / 2);
+          obsGroup.add(box);
+
+          const tapeMat = new THREE.MeshBasicMaterial({ color: 0x78350f });
+          const tapeX = new THREE.Mesh(new THREE.BoxGeometry(w + 0.002, 0.1, 0.004), tapeMat);
+          tapeX.position.set(0, 0, boxH + 0.002);
+          obsGroup.add(tapeX);
+
+          // 3D 浮空标签
+          const label = create3DTextSprite(`📦 纸箱 #${obs.id}`, '#b45309');
+          label.position.set(0, 0, boxH + 0.3);
+          obsGroup.add(label);
+
+        } else {
+          // 通用障碍实体
+          const obsH = 0.8;
+          const obsMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.4 });
+          const block = new THREE.Mesh(new THREE.BoxGeometry(w, h, obsH), obsMat);
+          block.position.set(0, 0, obsH / 2);
+          obsGroup.add(block);
+
+          const label = create3DTextSprite(`⚠️ 障碍 #${obs.id}`, '#f59e0b');
+          label.position.set(0, 0, obsH + 0.3);
+          obsGroup.add(label);
+        }
+
+        obstacles3DGroup.add(obsGroup);
+      });
+    }
+
+    function init3DScene() {
+      const cv3D = document.getElementById('canvas-3d');
+      if (!cv3D) return;
+
+      scene3D = new THREE.Scene();
+      scene3D.background = new THREE.Color(0xf8fafc);
+      scene3D.fog = new THREE.FogExp2(0xf8fafc, 0.02);
+
+      camera3D = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
+      camera3D.position.set(0, -12, 10);
+      camera3D.up.set(0, 0, 1);
+
+      renderer3D = new THREE.WebGLRenderer({ canvas: cv3D, antialias: true });
+      renderer3D.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));   // 高分屏限制像素比，保证帧率
+
+      controls3D = new THREE.OrbitControls(camera3D, renderer3D.domElement);
+      controls3D.target.set(0, 0, 0.5);
+      controls3D.enableDamping = true;
+      controls3D.dampingFactor = 0.05;
+
+      scene3D.add(new THREE.AmbientLight(0xffffff, 0.8));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+      dirLight.position.set(10, -10, 15);
+      scene3D.add(dirLight);
+
+      // 地面网格
+      const grid = new THREE.GridHelper(30, 30, 0x94a3b8, 0xe2e8f0);
+      grid.rotation.x = Math.PI / 2;
+      scene3D.add(grid);
+
+      // 物理障碍物实体 3D 组合
+      obstacles3DGroup = new THREE.Group();
+      scene3D.add(obstacles3DGroup);
+
+      // 车身 3D 模型
+      robot3DGroup = new THREE.Group();
+      const bodyMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(1.2, 0.8, 0.5),
+        new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.3 })
+      );
+      bodyMesh.position.z = 0.3;
+      robot3DGroup.add(bodyMesh);
+
+      // 车头红圆锥
+      const noseMesh = new THREE.Mesh(
+        new THREE.ConeGeometry(0.15, 0.3, 16),
+        new THREE.MeshBasicMaterial({ color: 0xef4444 })
+      );
+      noseMesh.position.set(0.65, 0, 0.3);
+      noseMesh.rotation.z = -Math.PI / 2;
+      robot3DGroup.add(noseMesh);
+
+      // 激光雷达圆柱
+      const lidarMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.08, 0.12, 16),
+        new THREE.MeshStandardMaterial({ color: 0x10b981 })
+      );
+      lidarMesh.position.set(0, 0, 0.6);
+      lidarMesh.rotation.x = Math.PI / 2;
+      robot3DGroup.add(lidarMesh);
+
+      scene3D.add(robot3DGroup);
+
+      // 动态 3D 点云
+      const ptGeom = new THREE.BufferGeometry();
+      ptGeom.setAttribute('position', new THREE.BufferAttribute(ptPos3D, 3));
+      ptGeom.setAttribute('color', new THREE.BufferAttribute(ptCol3D, 3));
+      const ptMat = new THREE.PointsMaterial({ size: 0.1, vertexColors: true, transparent: true, opacity: 0.9 });
+      pointCloud3D = new THREE.Points(ptGeom, ptMat);
+      scene3D.add(pointCloud3D);
+
+      resize3DScene();
+      requestAnimationFrame(renderLoop3D);
+    }
+
+    function resize3DScene() {
+      const cv3D = document.getElementById('canvas-3d');
+      if (!cv3D || !renderer3D || !camera3D) return;
+      const rect = cv3D.parentElement.getBoundingClientRect();
+      camera3D.aspect = rect.width / rect.height;
+      camera3D.updateProjectionMatrix();
+      renderer3D.setSize(rect.width, rect.height);
+    }
+
+    function renderLoop3D() {
+      if (cameraMode !== '2d') {
+        smoothRenderPose();
+        if (window.AMR3D) AMR3D.update({ scene: scene3D, robotGroup: robot3DGroup, pointCloud: pointCloud3D, telemetry: telemetry, pose: renderPose, cameraMode: cameraMode, camera: camera3D, controls: controls3D, renderer: renderer3D });
+        if (robot3DGroup) {
+          robot3DGroup.position.set(renderPose.x, renderPose.y, 0);
+          robot3DGroup.rotation.z = renderPose.yaw;
+        }
+
+        // 同步 3D 物理障碍物实体 (作业人员/栈板/货架/周转箱)
+        update3DObstacles();
+
+        // 跟随相机模式
+        if (cameraMode === 'follow' && camera3D && controls3D) {
+          controls3D.target.set(renderPose.x, renderPose.y, 0.5);
+          camera3D.position.set(
+            renderPose.x - Math.cos(renderPose.yaw) * 6,
+            renderPose.y - Math.sin(renderPose.yaw) * 6,
+            4
+          );
+        } else if (cameraMode === 'top' && camera3D && controls3D) {
+          controls3D.target.set(renderPose.x, renderPose.y, 0);
+          camera3D.position.set(renderPose.x, renderPose.y, 16);
+        }
+
+        // 更新 3D 点云 (以 scan_pose 空间物理投影，确保点云与障碍物和货架严格对齐)
+        const ranges = (telemetry && telemetry.scan_ranges && telemetry.scan_ranges.length > 0)
+          ? telemetry.scan_ranges
+          : (telemetry && telemetry.laser_scan && telemetry.laser_scan.ranges ? telemetry.laser_scan.ranges : null);
+        if (ranges && pointCloud3D && pointCloud3D.visible) {
+          const scanPose = (telemetry && telemetry.scan_pose) ? telemetry.scan_pose : renderPose;
+          const angleMin = telemetry.scan_angle_min !== undefined ? telemetry.scan_angle_min : -Math.PI;
+          const angleInc = telemetry.scan_angle_inc !== undefined ? telemetry.scan_angle_inc : (Math.PI * 2 / ranges.length);
+          const maxRange = (telemetry.lidar_config && telemetry.lidar_config.range_max) || telemetry.scan_range_max || 12.0;
+          const outOfRangeThreshold = maxRange - 0.15;
+          let ptIdx = 0;
+
+          for (let idx = 0; idx < ranges.length; idx++) {
+            const r = ranges[idx];
+            if (r > 0.05 && r <= maxRange + 1.0 && ptIdx < MAX_3D_PTS) {
+              const a = scanPose.yaw + angleMin + idx * angleInc;
+              const px = scanPose.x + Math.cos(a) * r;
+              const py = scanPose.y + Math.sin(a) * r;
+              const pz = 0.3;
+
+              ptPos3D[ptIdx * 3] = px;
+              ptPos3D[ptIdx * 3 + 1] = py;
+              ptPos3D[ptIdx * 3 + 2] = pz;
+
+              const isHit = (r < outOfRangeThreshold);
+              if (isHit) {
+                // 【实际扫到轮廓的点云】: 鲜明距离安全渐变色 (红/橙/翠绿)
+                if (r < 0.8) {
+                  ptCol3D[ptIdx * 3] = 0.94; ptCol3D[ptIdx * 3 + 1] = 0.27; ptCol3D[ptIdx * 3 + 2] = 0.27; // Red
+                } else if (r < 1.4) {
+                  ptCol3D[ptIdx * 3] = 0.96; ptCol3D[ptIdx * 3 + 1] = 0.62; ptCol3D[ptIdx * 3 + 2] = 0.04; // Amber
+                } else {
+                  ptCol3D[ptIdx * 3] = 0.06; ptCol3D[ptIdx * 3 + 1] = 0.72; ptCol3D[ptIdx * 3 + 2] = 0.5; // Emerald Green
+                }
+              } else {
+                // 【超出激光扫描范围的空扫点云】: 浅青灰弱化点 (Slate 400)
+                ptCol3D[ptIdx * 3] = 0.58; ptCol3D[ptIdx * 3 + 1] = 0.64; ptCol3D[ptIdx * 3 + 2] = 0.72;
+              }
+              ptIdx++;
+            }
+          }
+
+          // 填充剩余空点
+          for (let i = ptIdx; i < MAX_3D_PTS; i++) {
+            ptPos3D[i * 3] = 0; ptPos3D[i * 3 + 1] = 0; ptPos3D[i * 3 + 2] = -100;
+          }
+
+          pointCloud3D.geometry.attributes.position.needsUpdate = true;
+          pointCloud3D.geometry.attributes.color.needsUpdate = true;
+        }
+
+        if (controls3D) controls3D.update();
+        if (renderer3D && scene3D && camera3D) renderer3D.render(scene3D, camera3D);
+      }
+      requestAnimationFrame(renderLoop3D);
+    }
+
+    function setCameraView(mode) {
+      cameraMode = mode;
+      const cv2D = document.getElementById('canvas-2d');
+      const cv3D = document.getElementById('canvas-3d');
+
+      const modes = ['2d', 'free', 'top', 'follow', 'inspect'];
+      modes.forEach(m => {
+        const btn = document.getElementById('cam-btn-' + m);
+        if (btn) {
+          if (m === mode) {
+            btn.className = 'px-2 py-0.5 rounded text-xs font-semibold text-blue-600 bg-white shadow-xs';
+          } else {
+            btn.className = 'px-2 py-0.5 rounded text-xs font-medium text-slate-600 hover:text-slate-900';
+          }
+        }
+      });
+
+      const ov3D = document.getElementById('amr3d-overlay');
+      if (ov3D) ov3D.classList.toggle('hidden', mode === '2d');
+      if (mode === '2d') {
+        if (cv2D) cv2D.classList.remove('hidden');
+        if (cv3D) cv3D.classList.add('hidden');
+      } else {
+        if (cv2D) cv2D.classList.add('hidden');
+        if (cv3D) cv3D.classList.remove('hidden');
+        resize3DScene();
+      }
+    }
+
+    function onWindowResize() {
+      resizeCanvas2D();
+      resize3DScene();
+      resizePerfCanvas();
+    }
+  </script>
+<script>try{document.getElementById("hdr-node-addr").textContent=location.host}catch(e){}</script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+# ============================================================================
+# agv-platform —— 仿真资源管理平台 (agv-hub) + 计算节点代理 (agv-agent)，同一镜像两种角色
+#   hub   : 资源仓库 (节点/模型/场景/程序包)、部署编排、实例监控、Web 前端、工作台反向代理   :8080
+#   agent : 每台计算节点一份，经 docker.sock 启停 agv-sim / agv-nav 容器、导入导出镜像          :8070
+# 构建: docker build -f docker/Dockerfile.platform -t agv-platform:latest .
+# 运行: 见 deploy.sh hub / deploy.sh agent
+# ============================================================================
+ARG PY_BASE=python:3.10-slim-bookworm
+FROM ${PY_BASE}
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG http_proxy
+ARG https_proxy
+ARG AGV_VERSION=1.0
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HUB_PORT=8080 HUB_DATA=/data/hub AGENT_PORT=8070
+LABEL org.agv.kind=platform org.agv.version=${AGV_VERSION}
+RUN (pip install --no-cache-dir ${PIP_INDEX:+-i $PIP_INDEX} "numpy<2" psutil "protobuf>=3.12" \
+     || pip install --no-cache-dir "numpy<2" psutil "protobuf>=3.12")
+WORKDIR /opt/agv
+COPY common/ common/
+COPY hub/ hub/
+COPY agent/ agent/
+COPY planning/__init__.py planning/dijkstra_planner.py planning/a_star_planner.py planning/maneuver.py planning/protection.py planning/
+# 模型补全编辑器的传感器模板需要相机参数库 (只含 numpy，无 MuJoCo 依赖)
+COPY sim_core/__init__.py sim_core/cameras.py sim_core/
+COPY tools/__init__.py tools/scenario_to_map.py tools/
+COPY cmodel_proto/ cmodel_proto/
+COPY cmodel_parser.py model_overrides.py model_editor.html ./
+COPY web/ web/
+COPY vendor/ vendor/
+COPY tests/data/ tests/data/
+COPY docker/platform_entrypoint.sh /usr/local/bin/agv-platform
+EXPOSE 8080 8070
+ENTRYPOINT ["bash", "/usr/local/bin/agv-platform"]
+CMD ["hub"]

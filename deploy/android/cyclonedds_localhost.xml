@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Android (Termux + proot) 用的 Cyclone DDS 配置 (RMW_IMPLEMENTATION=rmw_cyclonedds_cpp)
+  只走回环 lo (与局域网内树莓派等设备隔离)；Android 回环不支持组播 → 关闭组播，
+  单播发现本机 0..119 号参与者 (一个实例 10+ 个 ROS 进程，默认上限 9 不够)。
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces><NetworkInterface name="lo"/></Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+      <Peers><Peer address="127.0.0.1"/></Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

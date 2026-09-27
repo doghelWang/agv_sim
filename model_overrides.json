@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "sensors": {
+    "laser": {
+      "library": "mid-360s",
+      "model": "Livox Mid-360S"
+    },
+    "cam1": {
+      "_added": true,
+      "stype": "camera",
+      "x": 1.288,
+      "y": 0,
+      "z": 0.9,
+      "roll": 0,
+      "pitch": 0.13962634015954636,
+      "yaw": 0,
+      "model": "通用 USB RGB 相机",
+      "width": 320,
+      "height": 240,
+      "hfov_deg": 70,
+      "fps": 10,
+      "range_max": 30,
+      "pixel_noise": 2,
+      "type": "camera"
+    },
+    "stereo1": {
+      "_added": true,
+      "stype": "stereo",
+      "x": 1.288,
+      "y": 0.2,
+      "z": 0.5,
+      "roll": 0,
+      "pitch": 0,
+      "yaw": 0.2617993877991494,
+      "model": "Intel RealSense D435 (仿)",
+      "width": 424,
+      "height": 240,
+      "hfov_deg": 87,
+      "fps": 10,
+      "baseline_m": 0.05,
+      "range_min": 0.3,
+      "range_max": 10,
+      "subpixel_px": 0.08,
+      "pixel_noise": 2,
+      "type": "stereo"
+    },
+    "tof1": {
+      "_added": true,
+      "stype": "tof",
+      "x": 1.288,
+      "y": 0,
+      "z": 0.3,
+      "roll": 0,
+      "pitch": 0.5235987755982988,
+      "yaw": 0,
+      "model": "PMD/Sunny 224×172 ToF (仿)",
+      "width": 224,
+      "height": 172,
+      "hfov_deg": 62,
+      "fps": 10,
+      "range_min": 0.1,
+      "range_max": 4,
+      "noise_abs_m": 0.005,
+      "noise_rel": 0.004,
+      "type": "tof"
+    }
+  },
+  "_migrated_from": "sensor_overrides.json",
+  "chassis": {
+    "mass_kg": 320
+  },
+  "wheels": {},
+  "motors": {},
+  "lift": {
+    "enabled": true,
+    "stroke_m": 0.06,
+    "speed_mps": 0.02,
+    "x": 0.4,
+    "y": 0,
+    "z": 0.3,
+    "size": [
+      1,
+      0.7,
+      0.04
+    ],
+    "mass_kg": 20
+  },
+  "imu": {}
+}
