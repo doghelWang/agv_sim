@@ -15,7 +15,7 @@ BRANCH="${AGV_GIT_BRANCH:-main}"
 if [ -z "$REMOTE" ] && [ ! -d "$AGV_ROOTFS/opt/agv-git/.git" ]; then
     echo "[错误] 未设置仓库地址: 在 ~/.agv.env 写 AGV_GIT_REMOTE=https://github.com/doghelWang/agv_sim.git"; exit 1
 fi
-pd bash -c "
+pd env ${AGV_PROXY:+https_proxy=$AGV_PROXY http_proxy=$AGV_PROXY} bash -c "
 set -e
 command -v rsync >/dev/null || apt-get install -y -q rsync git >/dev/null
 export GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new'

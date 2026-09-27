@@ -16,6 +16,12 @@
    - 开发者选项 → 打开「无线调试」(第 5 节用于关闭幽灵进程限制)。
 3. 保持充电、散热 (背夹风扇或去掉手机壳)：持续高负载时手机会降频，见第 7 节。
 
+### 网络要求
+
+- 能访问 Termux 软件源、清华镜像 (Ubuntu/ROS/PyPI，国内直连可用)；
+- **能访问 GitHub** (下载 install.sh、克隆代码、下载 ROS 密钥)。国内直连常失败，手机上需要一个 HTTP 代理 (如 Clash/sing-box 的 `127.0.0.1:7890`)：
+  下载时 `curl -x http://127.0.0.1:7890 …`，安装时加 `--proxy http://127.0.0.1:7890` (会写入 `~/.agv.env` 的 `AGV_PROXY`，之后更新也走代理)。
+
 ## 2. 一键安装
 
 在 Termux 里执行 (不要进 proot)：
@@ -23,6 +29,7 @@
 ```bash
 pkg update -y && pkg install -y curl
 curl -fsSL https://raw.githubusercontent.com/doghelWang/agv_sim/main/deploy/android/install.sh -o install.sh
+#   国内网络: curl -x http://127.0.0.1:7890 -fsSL … ，下面的 install.sh 命令也加 --proxy http://127.0.0.1:7890
 
 # 作为计算节点接入主平台 (推荐)
 bash install.sh --repo https://github.com/doghelWang/agv_sim.git --name phone1 --hub http://<主平台IP>:8080

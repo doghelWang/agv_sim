@@ -38,7 +38,7 @@ KEY=/usr/share/keyrings/ros-archive-keyring.gpg
 if [ ! -s "$KEY" ]; then
     for u in https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
              https://mirrors.tuna.tsinghua.edu.cn/rosdistro/ros.key; do
-        curl -fsSL --max-time 30 "$u" -o "$KEY" && [ -s "$KEY" ] && break
+        curl -fsSL --max-time 30 ${AGV_PROXY:+-x $AGV_PROXY} "$u" -o "$KEY" && [ -s "$KEY" ] && break
     done
     [ -s "$KEY" ] || { echo "[错误] 下载 ROS 签名密钥失败，检查网络/代理"; exit 1; }
 fi

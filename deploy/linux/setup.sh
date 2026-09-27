@@ -6,6 +6,8 @@
 #   bash deploy/linux/setup.sh                      # 本机当主平台 (资源平台 + 节点代理)
 #   bash deploy/linux/setup.sh --hub http://<主平台IP>:8080 --token <集群令牌> [--name 名称]   # 接入已有主平台
 #
+# 网络: 需要能访问 GitHub (克隆/更新)、Docker Hub 或其镜像站 (基础镜像)、Ubuntu/ROS/PyPI 源 (默认清华镜像)。
+#       Docker Hub 不通时自动改用 docker.m.daocloud.io；GitHub 不通时先 git config --global http.proxy http://<代理>
 # 选项: --swap 4G  内存 <6 GB 时建议: 建 swap 文件 (编译/运行更稳)
 #       --no-build  镜像已存在时跳过构建   --official  不用清华镜像 (海外网络)
 # 步骤: 检查硬件/系统 → 安装 Docker → (可选) swap → 构建 agv-sim / agv-nav / agv-platform 镜像 → 启动平台或节点代理
@@ -69,6 +71,14 @@ fi
 
 # ---- 4. 构建镜像
 if [ "$OFFICIAL" = 1 ]; then export APT_MIRROR="" PIP_INDEX=""; fi
+# Docker Hub 直连不通 (国内常见) 且 Docker 没配 registry-mirrors 时，基础镜像改从镜像站拉
+if [ -z "$BASE_REGISTRY" ] && ! docker info 2>/dev/null | grep -qi "Registry Mirrors"; then
+    code=$(curl -s -m 8 -o /dev/null -w "%{http_code}" https://registry-1.docker.io/v2/ || true)
+    if [ "$code" != 401 ] && [ "$code" != 200 ]; then
+        export BASE_REGISTRY="${DOCKER_MIRROR:-docker.m.daocloud.io}"
+        warn "Docker Hub 连不上，基础镜像改从 $BASE_REGISTRY 拉取 (可用 DOCKER_MIRROR=... 指定其它镜像站)"
+    fi
+fi
 if [ "$BUILD" = 1 ]; then
     say "构建镜像 (agv-sim / agv-nav / agv-platform)，首次较慢"
     bash deploy.sh build all

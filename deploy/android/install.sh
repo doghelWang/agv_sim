@@ -13,17 +13,18 @@
 #   --mirror tuna      tuna=清华镜像 (默认) | official
 #   --hub URL          接入已有主平台 (例如 http://192.168.1.10:8082)；不填则手机自己当平台
 #   --token TOKEN      主平台集群令牌 (不填且指定了 --hub 时会提示输入，不回显)
+#   --proxy URL        访问 GitHub 用的 HTTP 代理，例如 http://127.0.0.1:7890 (国内网络直连 GitHub 常失败)
 #   --no-start         装完不启动
 # 步骤: Termux 软件包 → proot Ubuntu 22.04 → ROS 2 Humble/Nav2/MuJoCo (proot_setup.sh) → 拉取代码到 /opt/agv
 #       → Termux 侧脚本与开机自启 → 写 ~/.agv.env → 启动
 # ============================================================================
 set -e
-REPO=""; BRANCH=""; NAME=""; DISTRO=""; MIRROR="tuna"; HUB=""; TOKEN=""; START=1
+REPO=""; BRANCH=""; NAME=""; DISTRO=""; MIRROR="tuna"; HUB=""; TOKEN=""; START=1; PROXY=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --repo) REPO="$2"; shift 2;;   --branch) BRANCH="$2"; shift 2;;  --name) NAME="$2"; shift 2;;
         --distro) DISTRO="$2"; shift 2;; --mirror) MIRROR="$2"; shift 2;; --hub) HUB="$2"; shift 2;;
-        --token) TOKEN="$2"; shift 2;;   --no-start) START=0; shift;;
+        --token) TOKEN="$2"; shift 2;;   --no-start) START=0; shift;;   --proxy) PROXY="$2"; shift 2;;
         -h|--help) sed -n 2,20p "$0"; exit 0;;
         *) echo "未知参数 $1"; exit 1;;
     esac
@@ -65,12 +66,13 @@ grep -q 'VERSION_ID="22.04"' "$ROOTFS/etc/os-release" || {
 say "3/6 拉取代码 $REPO ($BRANCH)"
 proot-distro login "$DISTRO" -- bash -c "command -v git >/dev/null || (apt-get update -q && apt-get install -y -q git ca-certificates >/dev/null)"
 if [ ! -d "$ROOTFS/opt/agv-git/.git" ]; then
-    proot-distro login "$DISTRO" -- git clone -q -b "$BRANCH" "$REPO" /opt/agv-git
+    proot-distro login "$DISTRO" -- env $PX git clone -q -b "$BRANCH" "$REPO" /opt/agv-git || {
+        echo "[错误] 克隆 $REPO 失败。国内网络请加 --proxy http://<代理地址:端口>"; exit 1; }
 fi
 
 # ---- 4. 运行环境 (ROS 2 Humble / Nav2 / MuJoCo)
 say "4/6 安装运行环境 (ROS 2 Humble + Nav2 + MuJoCo，首次约 20~40 分钟)"
-proot-distro login "$DISTRO" -- env AGV_MIRROR="$MIRROR" bash /opt/agv-git/deploy/android/proot_setup.sh
+proot-distro login "$DISTRO" -- env AGV_MIRROR="$MIRROR" AGV_PROXY="$PROXY" bash /opt/agv-git/deploy/android/proot_setup.sh
 
 # ---- 5. 配置 + 同步代码 + Termux 侧脚本
 say "5/6 写配置 ~/.agv.env 并同步代码"
@@ -80,6 +82,7 @@ say "5/6 写配置 ~/.agv.env 并同步代码"
     echo "AGV_GIT_BRANCH=$BRANCH"
     echo "AGENT_NAME=$NAME"
     echo "AGV_HUB_PORT=${AGV_HUB_PORT:-8082}"
+    [ -n "$PROXY" ] && echo "AGV_PROXY=$PROXY"
     if [ -n "$HUB" ]; then echo "HUB_API=$HUB"; echo "JOIN_TOKEN=$TOKEN"; fi
 } > ~/.agv.env
 chmod 600 ~/.agv.env

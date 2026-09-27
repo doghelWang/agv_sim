@@ -10,6 +10,7 @@
 #     HUB_API=http://<主平台IP>:<端口>   设置后手机只作为计算节点接入主平台，不启动本机平台
 #     JOIN_TOKEN=<集群令牌>              主平台 ~/.agv-hub/cluster_token (或平台「添加计算节点」生成的一次性令牌)
 #     AGENT_HOST=<本机局域网IP>           可选，缺省自动取 wlan0 地址
+#     AGV_PROXY=http://127.0.0.1:7890    可选，访问 GitHub 用的 HTTP 代理 (git 克隆/更新、下载 ROS 密钥)
 #   兼容旧文件 ~/.agv-hub.env (HUB_API/JOIN_TOKEN/AGENT_HOST)
 # ============================================================================
 set -a

@@ -25,10 +25,25 @@
 
 硬件要求 (Linux 板卡)：64 位 ARM 或 x86_64；内存 ≥ 4 GB (构建镜像时建议 ≥ 6 GB 或加 4 GB swap)；可用磁盘 ≥ 12 GB；能访问 Docker Hub、Ubuntu/ROS 软件源 (国内默认用清华镜像)。
 
+### 1.1 系统与网络要求 (部署前逐条确认)
+
+| 项 | 要求 | 说明 |
+|---|---|---|
+| 系统 | **64 位** Ubuntu 20.04/22.04/24.04、Debian 11/12、Armbian、Raspberry Pi OS 64 位 (有 `apt`、`systemd`) | RK3588 厂商的 Buildroot/Yocto 精简系统通常没有 apt、内核不带 Docker 所需功能 (overlayfs、cgroup、veth)，请刷 Ubuntu/Debian 系镜像 (如 Joshua-Riek ubuntu-rockchip、Armbian、厂商 Debian) |
+| 权限 | root 或有 sudo 的用户 | 装 Docker、建 swap |
+| 基础工具 | `git`、`curl` | `sudo apt-get install -y git curl` |
+| 磁盘 / 内存 | 可用 ≥ 12 GB；内存 ≥ 4 GB (构建时 < 6 GB 加 `--swap 4G`) | 三个镜像约 4.5 GB |
+| 访问 GitHub | 克隆与更新代码 | 国内直连常失败：`git config --global http.proxy http://<代理IP:端口>` 后再 clone；或在能上网的电脑上下载 zip 拷过去 |
+| 访问 Docker Hub | 拉基础镜像 `ros:humble-ros-base`、`python:3.10-slim` (约 1 GB) | 国内直连常失败：`setup.sh` 检测到连不上时自动改用 `docker.m.daocloud.io`；也可指定 `DOCKER_MIRROR=<镜像站>` 或 `BASE_REGISTRY=<镜像站>`，或在 `/etc/docker/daemon.json` 配 `registry-mirrors` |
+| 访问 Ubuntu / ROS / PyPI 源 | 构建时装 Nav2、MuJoCo 等 | 默认清华镜像 (国内直连可用)；海外用 `--official` |
+
+除此之外不需要预装任何东西：ROS 2、Nav2、MuJoCo、Python 依赖都在 Docker 镜像里，由 `setup.sh` 自动构建。
+
 ## 2. Linux 板卡一键部署 (RK3588 / 树莓派 / x86)
 
 ```bash
-sudo apt-get update && sudo apt-get install -y git
+sudo apt-get update && sudo apt-get install -y git curl
+# 国内网络连不上 GitHub 时先: git config --global http.proxy http://<代理IP:端口>
 git clone https://github.com/doghelWang/agv_sim.git ~/agv_sim
 cd ~/agv_sim
 
