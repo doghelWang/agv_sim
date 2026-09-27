@@ -127,7 +127,8 @@
 
 ### 1.9 相机类传感器（单目 / 双目 / ToF）
 
-`GET /api/v1/sensors/cameras` 返回相机清单：名称、类型、分辨率、视场、内参 K（行优先 3×3）、`frame_id`、可用的流，以及最新帧序号。
+`GET /api/v1/sensors/cameras` 返回相机清单：名称、类型、分辨率、视场、内参 K（行优先 3×3）、`frame_id`、可用的流，以及最新帧序号、`active` (当前是否在成像)。
+相机按需成像：最近 `SIM_CAMERA_IDLE_S` 秒 (默认 3) 内没有人取帧就停止渲染；闲置后的第一次取帧会等一帧新图 (至少等 1 s)，而不是返回旧帧。
 
 `GET /api/v1/sensors/cameras/{name}?stream=&format=&after_seq=&wait=` 取一帧（支持长轮询）。
 

@@ -10,7 +10,7 @@
 #   NAV_USE_ROS=1|0               执行进程是否启用 ROS 2/Nav2 (0 = 纯内置导引)
 #   SIM_PHYSICS=mujoco|kinematic  仿真引擎 (默认 mujoco；未安装时自动退回 kinematic)
 #   SIM_CAMERA_RENDER=ray|gl      相机成像: 光线投射 (默认，无需 GPU) / OpenGL 光栅 (需 EGL，MUJOCO_GL=egl)
-#   SIM_CAMERA_MAX_HZ=10          相机帧率上限；SIM_RAY_THREADS 射线并行线程数
+#   SIM_CAMERA_MAX_HZ=10          相机帧率上限；SIM_CAMERA_IDLE_S=3 无人取帧即停止成像；SIM_RAY_THREADS 射线并行线程数
 #   SIM_API_PORT / NAV_API_PORT / WEB_PORT  端口 (默认 8090 / 8091 / 8088)
 #
 # 可选环境变量:

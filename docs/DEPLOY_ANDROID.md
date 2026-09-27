@@ -78,6 +78,8 @@ AGV_HUB_PORT=8082                 # 手机当主平台时的端口
 HUB_API=http://192.168.1.10:8080  # 删掉这两行 = 手机自己当主平台
 JOIN_TOKEN=xxxxxxxx
 # AGENT_HOST=192.168.1.20         # 可选，缺省自动取 wlan0 地址
+# AGV_CPUS_SIM=4-7                # 可选，仿真进程绑定的核 (缺省自动取大核；none = 不绑定)
+# AGV_CPUS_WEB=0-3                # 可选，Web 网关绑定的核 (缺省小核)；AGV_CPUS_NAV 执行进程 (缺省不绑定)
 ```
 
 修改后 `bash ~/stop_agv.sh && bash ~/start_agv.sh` 生效。
@@ -121,6 +123,10 @@ AGV_SPAWNER_OFF=1 bash ~/start_agv.sh   # 关闭 (回到单会话，只用于排
 同理，Android 的回环网卡不支持组播，`ROS_LOCALHOST_ONLY=1` 下十几个 ROS 进程发现不全；执行进程在 Android 上自动改用
 `deploy/android/fastdds_localhost.xml` (只走 127.0.0.1，单播发现 120 个参与者)。其它 Android 专用调整 (都在代码里自动生效)：
 不启 EKF (执行进程直接发布里程计 TF)、全局代价地图不加障碍层、slam_toolbox 的 map→odom 外推 0.8 s、Nav2 控制 20 Hz、关闭 bond 心跳。
+
+**绑核**：大小核手机上，派生服务在 proot 外面用 `sched_setaffinity` 把仿真进程连同它的 proot 追踪进程绑到大核 (骁龙 855 为 4-7)，
+Web 网关绑到小核，避免物理线程被调度到小核上变慢。`curl -s 127.0.0.1:8069/list` 或 `~/spawner.log` 里的 `cpus=` 可以确认；
+在 `~/.agv.env` 里用 `AGV_CPUS_SIM` / `AGV_CPUS_WEB` 修改 (设为 `none` 关闭)，改完重启节点。
 
 ## 7. 性能与散热
 

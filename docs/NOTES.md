@@ -38,6 +38,8 @@
 - 不要在 proot 容器里直接运行 `pip`：会报 `Cannot find path to android app folder`。要用 `env -u ANDROID_DATA -u ANDROID_ROOT python3 -m pip …`。
 - 不要在 proot 里设置 `ROS_LOCALHOST_ONLY=1`：Android 回环网卡不支持组播，ROS 节点会互相发现不全。执行进程在 Android 上已自动改用 `deploy/android/fastdds_localhost.xml`。
 - 容器里自己跑 ROS 命令 (`ros2 topic echo` 等) 时，要和实例使用相同的 `ROS_DOMAIN_ID` (平台按实例分配，见实例详情) 和同一份 DDS 配置 (`FASTRTPS_DEFAULT_PROFILES_FILE=/opt/agv/deploy/android/fastdds_localhost.xml`)，否则看不到任何话题。
+- 2026-09-27 之前安装的手机，容器里是 Ubuntu 自带的参考 BLAS (numpy 矩阵运算慢约 20 倍)，补装一次：
+  `proot-distro login ubuntu -- apt-get install -y libopenblas0-pthread` (新安装的已包含)。
 - 首次从旧版本升级 `update_from_git.sh` 时可能报一次 `unexpected EOF` (脚本在运行中覆盖了自己)，再执行一次即可；之后的版本已避免。
 
 ## 5. 更新代码
@@ -67,7 +69,22 @@
 
 - SLAM 地图目前按实例保存，删除实例记录或换执行节点后需要重新建图 (见 BACKLOG T14)。
 
-## 8. 精度与测试
+## 8. 相机与性能开关
+
+- **相机按需成像**：仿真进程只在最近 3 s 内有人取帧时才渲染相机 (一帧射线渲染要 150~200 ms，一直渲染会占 1~2 个核)。
+  工作台打开相机画面、或 ROS 里有节点订阅 `/<相机名>/image_raw` 等话题时自动恢复，首帧约 0.2~1 s。
+  `/api/v1/sensors/cameras` 返回的 `active` 表示当前是否在成像。
+- 相关环境变量 (都在实例环境里设置，默认值已按测试结果选定)：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `SIM_CAMERA_IDLE_S` | 3 | 相机多少秒无人取帧就停止成像；0 = 一直渲染 (旧行为) |
+| `NAV_CAMERAS` | auto | 执行进程拉取相机：auto = 有 ROS 订阅者才拉，on = 一直拉，off = 不拉 |
+| `SIM_RAY_THREADS` | min(2, 核数) | 相机/3D 激光射线并行线程数 |
+| `OPENBLAS_NUM_THREADS` / `OMP_NUM_THREADS` | 1 | 数学库线程数 (入口脚本设置) |
+| `AGV_CPUS_SIM` / `AGV_CPUS_WEB` / `AGV_CPUS_NAV` | 大核 / 小核 / 不绑定 | 仅手机：绑核，见 DEPLOY_ANDROID.md 第 6 节 |
+
+## 9. 精度与测试
 
 - 精度考核 `tools/precision_test.py` 统计的是**真值**相对参考线的偏差；导航用的是**定位结果** (slam_toolbox)，不是真值。定位误差会直接反映到跟线误差上。
 - 刚部署的实例处于**建图模式**，前几圈定位误差偏大；建好地图后保存地图并切换到定位模式再考核 (执行进程接口 `POST /api/v1/slam/save`、`POST /api/v1/slam/mode {"mode":"localization"}`)。
