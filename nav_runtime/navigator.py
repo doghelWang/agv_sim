@@ -195,7 +195,6 @@ class Navigator:
         if self._slam_uses_merged():           # 只有 3D 激光时用合并扫描做 SLAM
             self.slam.on_scan(float(d.get("t", 0.0)), rs, a0, inc, rmax)
         # 各档防护区走廊内最近障碍 (机体系；走廊 = 当前外形两侧外扩 side；距离从车头/车尾算起)
-        import numpy as np
         r = np.asarray(rs, float)
         ok = (r > 0.02) & (r < rmax - 1e-3)
         a = a0 + inc * np.nonzero(ok)[0]

@@ -259,7 +259,12 @@ def main():
             link.on_model_change.append(regen_nav2)
             if link.model:
                 regen_nav2(link.model)
-            ex = MultiThreadedExecutor(num_threads=4)
+            # NAV_ROS_EXECUTOR=single: 单线程执行器 (wait set 只建一次/轮，回调串行)；默认 multi (4 线程)
+            if os.environ.get("NAV_ROS_EXECUTOR", "multi").strip().lower() == "single":
+                from rclpy.executors import SingleThreadedExecutor
+                ex = SingleThreadedExecutor()
+            else:
+                ex = MultiThreadedExecutor(num_threads=4)
             ex.add_node(ros)
             threading.Thread(target=ex.spin, daemon=True, name="ros-spin").start()
 

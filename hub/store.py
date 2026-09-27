@@ -79,10 +79,15 @@ class Store:
     # ------------------------------------------------------------------ 文件
     def write_json(self, path: str, obj: Any):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        # 临时文件名带进程/线程号: 并发写同一记录时各写各的，os.replace 原子替换 (后写者生效)
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
     @staticmethod
     def read_json(path: str, default: Any = None) -> Any:
