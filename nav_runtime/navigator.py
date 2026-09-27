@@ -1500,6 +1500,10 @@ class Navigator:
                 self.telemetry["path_index"] = max(1, end_i)
 
             def fb(dist, speed, rest=rest):
+                # 分段终点 = 停车点 (拐点原地转向 / 工位)：之外的障碍不影响本段 → 防护区缩短到剩余行程 (与自研导引
+                # approach_left 同一套逻辑)。否则紧贴墙体的拓扑节点 (如 grid_9_square 的 (±7.5, 0)，车头离外墙
+                # 仅 0.17 m) 会被低速档 0.35 m 防护区挡住，Nav2 "Failed to make progress" → 线路跟随中断反复重试
+                self.approach_left = max(0.0, float(dist))
                 with self.lock:
                     if not cancelled():
                         self.telemetry["nav_dist_rem"] = round(dist + rest, 2)
@@ -1507,7 +1511,11 @@ class Navigator:
                                                            "segment": k + 1, "segments": len(segs)}
             tries = 0
             while True:
-                res = self.nav2.follow_path(poses, cancelled, on_feedback=fb)
+                self.approach_left = None
+                try:
+                    res = self.nav2.follow_path(poses, cancelled, on_feedback=fb)
+                finally:
+                    self.approach_left = None
                 # 动作结束后 Nav2 不再发 cmd_vel，而仿真看门狗会把最后一条指令保持 0.5 s
                 # (到位时正在原地转向 → 多转 10° 以上)：显式下发零速
                 for _ in range(3):
