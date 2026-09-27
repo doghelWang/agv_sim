@@ -10,6 +10,8 @@ cd "$(dirname "$0")/.." || exit 1
 KINDS="${*:-sim nav}"
 for k in $KINDS; do
     docker image inspect "agv-$k:latest" >/dev/null 2>&1 || { echo "没有 agv-$k:latest，请先 deploy.sh build"; exit 1; }
+    # 每次刷新叠一层，超过 100 层先压平 (Docker 上限约 125 层，否则报 max depth exceeded)
+    [ "$(docker history -q "agv-$k:latest" | wc -l)" -gt 100 ] && bash tools/flatten_image.sh "agv-$k:latest"
     f=$(mktemp)
     # 多阶段构建的辅助阶段 (# @stage-begin … # @stage-end，如 sim 的 C 内核编译) + 基于现有镜像的代码层
     { awk '/^FROM/{exit} /^ARG /' "docker/Dockerfile.$k"; awk '/^# @stage-begin/{f=1} /^# @stage-end/{f=0} f' "docker/Dockerfile.$k"
