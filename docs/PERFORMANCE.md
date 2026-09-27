@@ -89,7 +89,68 @@
 4. 执行放在手机上 (B、D) 依然不可用：D 组 Nav2 这次有 3 个目标失败并发生碰撞 (之前 5/5 但偏差 236 mm)，属于该组合本来的不稳定，不建议使用。
 5. 手机 Web 网关绑到小核后 CPU 占用从 32% 升到 45~53% (小核慢，同样的工作占用时间更长)，但没有影响仿真；第二批 (P1) 会让网关空闲时不轮询。
 
-## 5. 复现
+## 5. 仿真核心 C 化 + 执行桥接 C++ 化 (2026-09-27 晚)
+
+### 5.1 改动
+
+| 部分 | 实现 | 开关 |
+|---|---|---|
+| 仿真核心 | `sim_core/native/simcore.c` → `libsimcore.so` (纯 C，ctypes 加载)：`sc_collides` 车身/触边多边形 vs 线段、`sc_raycast2d` 线段/圆柱射线 (光电，在 MuJoCo 后端下用与 MuJoCo 模型相同的 5 cm 厚墙盒体与行人圆柱)、`sc_forward` 轮系加权最小二乘 (单边 Jacobi SVD，与 `numpy.linalg.lstsq` 同解同秩判定)、`sc_se2_integrate`、`sc_kin_step` (`ChassisKinematics.step` 整体下沉) | `SIM_NATIVE=0` 回退纯 Python；加载失败自动回退；`/api/v1/sim` 的 `native` 字段显示状态 |
+| 仿真 HTTP/JSON | 激光测距 JSON 向量化 (`ranges_json`)、快照里的融合扫描按帧序号缓存；执行进程取融合扫描改二进制 (`Accept: application/octet-stream`) | — |
+| 执行桥接 | `ros2/agv_ros_bridge` (rclcpp)：`/odom` `/ground_truth/odom` `/imu` `/joint_states` `/scan` `/scan/<name>` 与 TF 广播，50 Hz 查询 TF map/odom→base_footprint 回传；Python ↔ C++ 走容器内 Unix 数据报 (`nav_runtime/cpp_bridge.py`)。时间戳偏移、`_costmap_stamp` 钳位 (`AGV_COSTMAP_SCAN_CLAMP` / `AGV_COSTMAP_SCAN_MARGIN`)、协方差、关节隔帧发布与 Python 版一致。Python 节点不再订阅 `/tf`、不再有 50 Hz 定时器 | `NAV_ROS_BRIDGE=auto` (默认，有可执行文件就用 C++) / `cpp` / `py`；`/api/v1/nav` 的 `ros_bridge` 字段显示计数 |
+| 构建 | `Dockerfile.sim` 多阶段编译 `libsimcore.so` (`tools/refresh_images.sh` 也带上该阶段，走 `APT_MIRROR`)；`Dockerfile.nav` 用 colcon 编译 `agv_ros_bridge`；手机 `proot_setup.sh` 装 gcc、`update_from_git.sh` 同步后编译 C 内核 (C++ 桥接在手机上未编译，自动用 Python) | — |
+| 其它 | `NAV_ROS_EXECUTOR=single` 可试单线程执行器 (默认仍 4 线程)；平台实例选项 `env_sim` / `env_nav` 透传环境变量；`hub/store.py write_json` 临时文件名加进程/线程号 (修复并发写同一记录时 `os.replace` 的 FileNotFoundError) | — |
+
+一致性：`tests/test_sim_core.py` 新增 6 项 C/Python 对比 (碰撞 3000 个随机位姿、射线 200×721 束、正解 400 组随机轮系含秩亏、运动学 3 车型各 3000 步含刹车/急停、SE2)，
+全部逐项一致 (误差 < 1e-9，饱和系数有 1 ulp 差)；光电 C 射线 vs `mj_multiRay` 在 300 个随机位置 × 90 束上最大偏差 < 2 mm。
+
+### 5.2 树莓派组合 A 对比 (i12，同一套流程：重启实例 → 采样 → 3 个目标 dijkstra + Nav2)
+
+`tools/perf_sample.py` 每 2 s 采样 (约 4.5 min/次)，`/api/v1/sim` 的 `step_ms` 为物理一步耗时 (EMA，含等 GIL)。
+
+| 运行 | 仿真 C 内核 | 执行桥接 | 整机 CPU | sim_server | nav_runtime | C++ 桥接 | slam_toolbox | Nav2 合计 | step_ms | 状态频率 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 基线 67c6eac | — | Python | 46.1% | 34.1% | 50.5% | — | 29.7% | 42.3% | 1.54 | 48.5 Hz |
+| 新代码全关 (对照) | 关 | Python | 45.6% | 30.2% | 50.8% | — | 28.3% | 44.2% | 1.50 | 48.5 Hz |
+| 第 1 步 | 开 | Python | 43.0% | **22.4%** | 51.0% | — | 27.8% | 42.4% | **0.56** | 48.7 Hz |
+| 第 2 步 | 开 | C++ | **37.4%** | 22.1% | **19.5%** | 3.0% | 32.2% | 40.7% | 0.55 | 49.3 Hz |
+| 第 2 步 (重复) | 开 | C++ | **37.0%** | 22.1% | **19.4%** | 2.9% | 34.5% | 40.2% | 0.55 | 49.3 Hz |
+
+- 仿真进程 34% → 22% (其中 JSON 向量化/缓存约 4 个点，C 内核约 8 个点)，物理一步 1.54 → 0.55 ms。
+- 执行进程 50% → 19.5% (+ C++ 节点 3%)：py-spy 里 rclpy 执行器 (原 44% GIL 时间) 从热点中消失。
+- 整机 46% → 37%，状态频率 48.5 → 49.3 Hz (最低值 40 → 46 Hz)，RTF 保持 1.0。
+
+单机微基准 (`tools/bench_simcore.py`，树莓派 sim 容器，MuJoCo 后端，µs/次)：
+
+| 项目 | Python | C 内核 |
+|---|---|---|
+| 物理整步 `SimCore.step` | 669 | **155** |
+| 运动学 `kin.step` | 88 | 15 |
+| 里程计 `odom.update` (含一次正解) | 68 | 12 |
+| 正解 `forward` | 57 | 6 |
+| 开关量 `update_discrete` (4 光电 + 2 触边) | 571 | 104 |
+| 单个触边 / 车身碰撞 | 84 / 129 | 9 / 11 |
+| 单个光电 (3 射线) | 86 | 21 |
+
+### 5.3 精度回归 (`precision_test.py`，目标 [[0,5,90°],[5,0,0],[0,0,0]])
+
+| 运行 | dijkstra 横偏 / 终点 / 定位 (mm) | Nav2 横偏 / 终点 / 定位 (mm) |
+|---|---|---|
+| 基线 | 20.1 / 22.5 / 34.2 | 40.0 / 18.8 / 31.3 |
+| 新代码全关 | 24.4 / 12.9 / 32.6 | 43.3 / 20.9 / 29.5 |
+| 第 1 步 | 15.4 / 14.0 / 30.8 | 28.2 / 19.3 / 27.7 |
+| 第 2 步 | 30.1 / 7.7 / 31.7 | 31.1 / 18.7 / 24.7 |
+| 第 2 步 (重复) | 21.2 / 14.0 / 29.5 | 38.3 / 20.7 / 25.9 |
+
+全部 3/3 到达；各项在同一波动范围内 (仍受 slam_toolbox 30 mm 级定位跳变限制)，没有看到 C/C++ 化引入的精度变化。
+
+### 5.4 剩余热点 (第 2 步的 py-spy)
+
+- 仿真进程：HTTP 请求处理约 60% GIL 时间 (头解析 `parse_headers`、`json.dumps`)，来自执行进程 50 Hz 状态轮询 + 20 Hz IO/光电 + 网关快照。
+- 执行进程：`sim_link` 的 HTTP 客户端 (状态轮询、激光长轮询、cmd_vel PUT) 约 50%。
+- 下一步可考虑：状态改为长轮询/推送或二进制帧，`/api/v1/nav` 状态接口里的 `ros.graph()` 改缓存。
+
+## 6. 复现
 
 ```bash
 # 两台设备都接入同一主平台后，在手机 Termux 里:
