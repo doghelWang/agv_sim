@@ -2,8 +2,9 @@
 """
 SimLink —— 执行进程侧的仿真数据接入层 (纯 REST，替代 ROS 话题订阅)
 
-  state 轮询     GET /api/v1/state            50 Hz  (真值/里程计/关节/碰撞)
-  io 轮询        GET /api/v1/io + /sensors/photoelectric  20 Hz  (急停/触边/光电 DI 与检测距离 → 执行进程安全层)
+  推送流          GET /api/v1/stream           状态 50 Hz (二进制帧) + IO/光电 20 Hz，一条长连接 (默认)
+  state 轮询     GET /api/v1/state            50 Hz  (推送流不可用时回退)
+  io 轮询        GET /api/v1/io + /sensors/photoelectric  20 Hz  (同上；急停/触边/光电 DI 与检测距离 → 执行进程安全层)
   激光长轮询      GET /api/v1/sensors/lidars/{name}?after_seq=N&wait=0.5  (二进制，每帧恰好取一次)
   融合扫描长轮询  GET /api/v1/sensors/scan?after_seq=N&wait=0.5  (二进制)
   模型/场景      GET /api/v1/model, /api/v1/world (车型/场景变化时刷新)
@@ -14,13 +15,43 @@ SimLink —— 执行进程侧的仿真数据接入层 (纯 REST，替代 ROS �
 import json
 import math
 import os
+import struct
 import threading
 import time
+from http.client import HTTPConnection
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
 from common.rest import RestClient
+
+
+# 推送流帧格式 (与 sim_server/service.py STATE_FMT 一致)
+STREAM_HDR = struct.Struct("<IB")
+STATE_FMT = struct.Struct("<Idd6d6d3d5dIBddIH")
+
+
+def decode_state(body: bytes, meta: dict) -> dict:
+    """二进制状态帧 → 与 GET /api/v1/state 相同结构的 dict"""
+    v = STATE_FMT.unpack_from(body, 0)
+    seq, t, wall = v[0], v[1], v[2]
+    tr, od, mo, im = v[3:9], v[9:15], v[15:18], v[18:23]
+    coll, fl, cx, cy, rev, nj = v[23], v[24], v[25], v[26], v[27], v[28]
+    arr = struct.unpack_from(f"<{3 * nj}d", body, STATE_FMT.size) if nj else ()
+    names = meta.get("joint_names") or []
+    if len(names) != nj:
+        names = names[:nj] + [f"j{i}" for i in range(len(names), nj)]
+    return {
+        "seq": seq, "t": round(t, 4), "wall_time": wall,
+        "truth": {"frame": "map", "x": tr[0], "y": tr[1], "yaw": tr[2], "vx": tr[3], "vy": tr[4], "wz": tr[5]},
+        "odom": {"frame": "odom", "x": od[0], "y": od[1], "yaw": od[2], "vx": od[3], "vy": od[4], "wz": od[5]},
+        "map_to_odom": {"x": mo[0], "y": mo[1], "yaw": mo[2]},
+        "imu": {"wz": round(im[0], 6), "ax": round(im[1], 6), "ay": round(im[2], 6), "az": round(im[3], 6), "yaw": round(im[4], 6)},
+        "joints": {"names": list(names), "position": list(arr[:nj]), "velocity": list(arr[nj:2 * nj]), "effort": list(arr[2 * nj:])},
+        "collision": {"count": coll, "bumper_front": bool(fl & 1), "bumper_rear": bool(fl & 2),
+                      "last_contact": (cx, cy) if fl & 8 else None},
+        "paused": bool(fl & 4), "chassis": meta.get("chassis"), "scenario": meta.get("scenario"), "model_rev": rev,
+    }
 
 
 class SimLink:
@@ -53,7 +84,11 @@ class SimLink:
         self.feedback_fn: Optional[Callable[[], dict]] = None
         self._lidar_threads: Dict[str, threading.Thread] = {}
         self._camera_threads: Dict[str, threading.Thread] = {}
-        self.stats = {"state_hz": 0.0, "lidar_frames": {}, "cmd_sent": 0, "errors": 0}
+        self.stats = {"state_hz": 0.0, "lidar_frames": {}, "cmd_sent": 0, "errors": 0, "transport": "poll"}
+        # 状态/IO/光电: 优先用仿真的推送流 (NAV_SIM_STREAM=0 关闭，或仿真版本不支持时自动回退轮询)
+        self.use_stream = os.environ.get("NAV_SIM_STREAM", "1") != "0"
+        self.stream_io = False
+        self.stream_scans = False
 
     # ------------------------------------------------------------------
     def start(self):
@@ -65,22 +100,93 @@ class SimLink:
         self.stop_evt.set()
 
     # ------------------------------------------------------------------ 拉取
+    def _handle_state(self, st):
+        self.online = True
+        prev = self.state
+        with self.lock:
+            self.state = st
+        for cb in self.on_state:
+            cb(st)
+        if prev and (prev.get("chassis") != st.get("chassis") or prev.get("model_rev") != st.get("model_rev")):
+            self.refresh_model()
+        if prev and (prev.get("scenario") != st.get("scenario")):
+            self.refresh_world()
+
+    def _stream_loop(self) -> bool:
+        """推送流；返回 False 表示仿真不支持 (回退轮询)"""
+        import urllib.parse
+        u = urllib.parse.urlparse(self.url)
+        c = HTTPConnection(u.hostname, u.port or 80, timeout=3.0)
+        try:
+            c.request("GET", u.path.rstrip("/") + "/api/v1/stream?hz=50&io_hz=20&scans=1")
+            r = c.getresponse()
+            if r.status != 200:
+                return False
+            self.stats["transport"] = "stream"
+            meta, n, t0 = {}, 0, time.time()
+            while not self.stop_evt.is_set():
+                hdr = r.read(STREAM_HDR.size)
+                if len(hdr) < STREAM_HDR.size:
+                    break
+                ln, typ = STREAM_HDR.unpack(hdr)
+                body = r.read(ln)
+                if len(body) < ln:
+                    break
+                if typ == 1:
+                    self._handle_state(decode_state(body, meta))
+                    n += 1
+                    if time.time() - t0 >= 1.0:
+                        self.stats["state_hz"] = round(n / (time.time() - t0), 1)
+                        n, t0 = 0, time.time()
+                elif typ == 2:
+                    meta = json.loads(body)
+                elif typ == 3:
+                    d = json.loads(body)
+                    self.stream_io = True
+                    with self.lock:
+                        self.io = d.get("io") or {}
+                        self.photos = {p["name"]: p for p in d.get("photos") or []}
+                elif typ == 4:
+                    self.stream_scans = True
+                    ml = struct.unpack_from("<H", body, 0)[0]
+                    m = json.loads(body[2:2 + ml])
+                    ranges = np.frombuffer(body, dtype="<f4", offset=2 + ml)
+                    name = m.pop("name")
+                    if name == "merged":
+                        m["ranges"] = ranges
+                        with self.lock:
+                            self.merged = m
+                        for cb in self.on_merged:
+                            cb(m)
+                    else:
+                        self.stats["lidar_frames"][name] = m.get("seq")
+                        for cb in self.on_lidar:
+                            cb(name, m, {"ranges": ranges})
+            return True
+        except Exception:
+            self.stats["errors"] += 1
+            return True
+        finally:
+            self.stream_io = self.stream_scans = False
+            self.stats["transport"] = "poll"
+            try:
+                c.close()
+            except Exception:
+                pass
+
     def _state_loop(self):
+        while self.use_stream and not self.stop_evt.is_set():
+            if not self._stream_loop():
+                self.log("[simlink] 仿真进程不支持推送流，改用轮询")
+                break
+            self.online = False
+            time.sleep(0.5)
         n, t0 = 0, time.time()
         while not self.stop_evt.is_set():
             ts = time.time()
             try:
                 st = self.c_state.get("/api/v1/state")
-                self.online = True
-                prev = self.state
-                with self.lock:
-                    self.state = st
-                for cb in self.on_state:
-                    cb(st)
-                if prev and (prev.get("chassis") != st.get("chassis") or prev.get("model_rev") != st.get("model_rev")):
-                    self.refresh_model()
-                if prev and (prev.get("scenario") != st.get("scenario")):
-                    self.refresh_world()
+                self._handle_state(st)
                 n += 1
             except Exception:
                 self.online = False
@@ -99,11 +205,12 @@ class SimLink:
                     self.refresh_model()
                     self.refresh_world()
                     first = False
-                io = self.c_misc.get("/api/v1/io")
-                pe = self.c_misc.get("/api/v1/sensors/photoelectric")     # 光电检测距离 (保护包络判断用)
-                with self.lock:
-                    self.io = io
-                    self.photos = {p["name"]: p for p in (pe or {}).get("sensors", [])}
+                if not self.stream_io:             # 推送流已带 IO/光电时不再轮询
+                    io = self.c_misc.get("/api/v1/io")
+                    pe = self.c_misc.get("/api/v1/sensors/photoelectric")     # 光电检测距离 (保护包络判断用)
+                    with self.lock:
+                        self.io = io
+                        self.photos = {p["name"]: p for p in (pe or {}).get("sensors", [])}
             except Exception:
                 time.sleep(0.5)
             time.sleep(0.05)   # IO/光电/触边 20 Hz
@@ -163,7 +270,11 @@ class SimLink:
     def _lidar_loop(self, name: str):
         c = RestClient(self.url, timeout=2.0)
         seq = -1
+        is2d = next((l.get("type", "2d") == "2d" for l in self.sensors.get("lidars", []) if l["name"] == name), True)
         while not self.stop_evt.is_set():
+            if is2d and self.stream_scans:          # 2D 激光由推送流送达
+                time.sleep(0.5)
+                continue
             try:
                 status, h, body = c.binary(f"/api/v1/sensors/lidars/{name}?after_seq={seq}&wait=0.5")
                 if status != 200:
@@ -251,6 +362,9 @@ class SimLink:
         c = RestClient(self.url, timeout=2.0)
         seq = -1
         while not self.stop_evt.is_set():
+            if self.stream_scans:                   # 融合扫描由推送流送达
+                time.sleep(0.5)
+                continue
             try:
                 status, h, body = c.binary(f"/api/v1/sensors/scan?after_seq={seq}&wait=0.5")
                 if status != 200:

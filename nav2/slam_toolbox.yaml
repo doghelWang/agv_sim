@@ -26,7 +26,7 @@ slam_toolbox:
     min_laser_range: 0.1
     max_laser_range: 30.0
     minimum_time_interval: 0.1
-    transform_timeout: 0.2
+    transform_timeout: 0.5
     tf_buffer_duration: 30.0
     stack_size_to_use: 40000000
     enable_interactive_mode: false

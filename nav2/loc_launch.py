@@ -40,11 +40,14 @@ def _setup(context, *args, **kwargs):
         nodes.append(Node(package="robot_localization", executable="ekf_node", name="ekf_filter_node", output="screen",
                           parameters=[os.path.join(HERE, "ekf.yaml"), common], arguments=log))
     st = [os.path.join(HERE, "slam_toolbox.yaml"), common]
-    if os.path.exists("/system/build.prop"):
-        # Android (proot): 扫描匹配滞后 0.3~0.5 s，map→odom 预先外推得更远，否则 Nav2 查 map 系位姿会"外推到未来"失败
-        st.append({"transform_timeout": float(os.environ.get("SLAM_TRANSFORM_TIMEOUT", "0.8")),
-                   # map→odom 50 Hz → 20 Hz：/tf 要扇出给十来个节点，proot 下每条都是被追踪的系统调用
-                   "transform_publish_period": float(os.environ.get("SLAM_TF_PERIOD", "0.05"))})
+    # map→odom 的时间戳 = 最近处理的那帧扫描时刻 + transform_timeout。slam_toolbox 处理扫描偶尔卡顿 (树莓派实测
+    # 最多落后 0.37 s)，预留不够时 Nav2 控制器查 map 系位姿会"外推到未来"失败，连续失败 → FollowPath ABORTED
+    # ("Nav2 线路跟随中断")。Android (proot) 扫描匹配滞后更大，预留 0.8 s；其它平台 0.5 s。
+    android = os.path.exists("/system/build.prop")
+    st.append({"transform_timeout": float(os.environ.get("SLAM_TRANSFORM_TIMEOUT", "0.8" if android else "0.5"))})
+    if android:
+        # map→odom 50 Hz → 20 Hz：/tf 要扇出给十来个节点，proot 下每条都是被追踪的系统调用
+        st.append({"transform_publish_period": float(os.environ.get("SLAM_TF_PERIOD", "0.05"))})
     if mode == "localization":
         sx, sy, syaw = (float(LaunchConfiguration(k).perform(context)) for k in ("start_x", "start_y", "start_yaw"))
         st.append({"mode": "localization", "map_file_name": LaunchConfiguration("map_file").perform(context),

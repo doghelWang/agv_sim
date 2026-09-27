@@ -352,32 +352,127 @@ def test_native_se2_integrate():
         assert np.allclose(list(out), se2_integrate(*a), atol=1e-12)
 
 
-def test_native_photo_rays_match_mujoco():
-    """光电: C 线段射线 (MuJoCo 同款盒体/圆柱几何) vs mj_multiRay，偏差应在毫米内"""
+def test_native_mujoco_rays_match_python_binding():
+    """C 直接调用 mj_multiRay (光电/激光) 与 Python 绑定调用 mj_multiRay 结果完全一致"""
     native = _need_native()
     from sim_core.mujoco_backend import MUJOCO_AVAILABLE
     if not MUJOCO_AVAILABLE:
         _skip("未安装 mujoco")
+    if not native.mj_bind():
+        _skip(f"MuJoCo C API 不可用: {native.mj_status()}")
     core = SimCore(_spec(), SCENARIO_DEFINITIONS, "grid_9_square", backend="mujoco", noise=False)
     core.set_obstacles([{"x": 1.0, "y": 0.5, "w": 0.6, "h": 0.4, "yaw": 0.3},
                         {"x": 2.5, "y": -1.5, "w": 0.5, "h": 0.5, "type": "person", "z": 1.7}])
-    w = core.world
+    mj = core.mj
     rng = np.random.default_rng(6)
-    b = w.bounds
-    ang = np.linspace(-math.pi, math.pi, 90)
-    worst, n = 0.0, 0
-    for _ in range(300):
+    b = core.world.bounds
+    ang = np.linspace(-math.pi, math.pi, 721)
+    n = 0
+    for _ in range(200):
         ox, oy = rng.uniform(b[0], b[2]), rng.uniform(b[1], b[3])
-        z = float(rng.choice([0.12, 0.3, 1.2]))
-        r1 = native.raycast2d(w.mj_segments, w.mj_circles, z, ox, oy, ang, 3.0)
-        r2 = core.mj.raycast2d(ox, oy, z, ang, 3.0)
-        both = np.isfinite(r1) & np.isfinite(r2)
-        n += int(both.sum())
-        if both.any():
-            worst = max(worst, float(np.abs(r1[both] - r2[both]).max()))
-        # 命中/未命中只允许出现在量程边缘或盒体拐角 (掠射)
-        assert int((np.isfinite(r1) != np.isfinite(r2)).sum()) <= 2
-    assert n > 1000 and worst < 2e-3, worst
+        z = float(rng.choice([0.12, 0.3, 1.2, 2.03]))
+        r1 = mj.raycast2d(ox, oy, z, ang, 12.0)
+        d = np.stack([np.cos(ang), np.sin(ang), np.zeros_like(ang)], 1)
+        r2 = mj.cast((ox, oy, z), d, 12.0)[0]
+        assert np.array_equal(np.isinf(r1), np.isinf(r2))
+        f = np.isfinite(r1)
+        assert np.allclose(r1[f], r2[f], atol=1e-12)
+        n += int(f.sum())
+    assert n > 10000
+
+
+def test_native_lidar_and_merge_match_python():
+    native = _need_native()
+    from sim_core.sensors import LidarSensor, merge_scans, merge_scans_py
+    spec = _spec()
+    w = _world()
+    lids = [LidarSensor(l) for l in spec["lidars"] if l.get("type") != "3d"]
+    rng = np.random.default_rng(7)
+    b = w.bounds
+    for _ in range(100):
+        x, y, th = rng.uniform(b[0] + 1, b[2] - 1), rng.uniform(b[1] + 1, b[3] - 1), rng.uniform(-math.pi, math.pi)
+        rs = []
+        for l in lids:
+            r1 = l.scan(w, x, y, th, noise=False)
+            c, s_ = math.cos(th), math.sin(th)
+            ox, oy = x + c * l.mx - s_ * l.my, y + s_ * l.mx + c * l.my
+            r2 = w._raycast_py(ox, oy, th + l.yaw + l.sign * l.local_angles, l.range_max, l.mz)
+            r2[r2 < l.range_min] = l.range_min
+            assert np.array_equal(np.isinf(r1), np.isinf(r2))
+            f = np.isfinite(r1)
+            assert np.allclose(r1[f], r2[f], atol=1e-9)
+            rs.append(r1)
+        m1, m2 = merge_scans(lids, rs, 720, 30.0), merge_scans_py(lids, rs, 720, 30.0)
+        assert np.array_equal(np.isinf(m1), np.isinf(m2)) and np.allclose(m1[np.isfinite(m1)], m2[np.isfinite(m2)], atol=1e-9)
+    # 噪声统计: σ ≈ std + prop·r，丢点率 ≈ dropout
+    l = lids[0]
+    r0 = l.scan(w, 0.0, 0.0, 0.0, noise=False)
+    d = np.array([l.scan(w, 0.0, 0.0, 0.0, noise=True) - r0 for _ in range(200)])
+    fin = np.isfinite(d)
+    assert abs(float(np.nanstd(np.where(fin, d, np.nan))) - l.noise_std) < 0.02
+    assert 0.0005 < 1 - fin[:, np.isfinite(r0)].mean() < 0.005
+
+
+def test_native_odometry_imu_discrete_match_python():
+    native = _need_native()
+    from sim_core.sensors import ImuModel, WheelOdometry
+    spec = _spec()
+    for ct in ("single_steer", "diff_drive", "dual_steer"):
+        kin, _ = build_kinematics(spec, ct)
+        oa, ob = WheelOdometry(kin, enabled=True, seed=3), WheelOdometry(kin, enabled=True, seed=3)
+        oa.steer_sigma = ob.steer_sigma = 0.0
+        ob._nat = None
+        for i in range(1500):
+            kin.step(0.8 if i < 800 else -0.4, 0.1, 0.3, 0.01)
+            oa.update(0.01); ob.update(0.01)
+            assert abs(oa.x - ob.x) < 1e-9 and abs(oa.y - ob.y) < 1e-9 and abs(oa.th - ob.th) < 1e-9, (ct, i)
+    # 光电/触边批量 = 逐个
+    core = SimCore(spec, SCENARIO_DEFINITIONS, "grid_9_square", backend="kinematic", noise=False)
+    core.set_obstacles([{"x": 1.0, "y": 0.5, "w": 0.6, "h": 0.4}, {"x": -1.2, "y": 2.0, "w": 0.1, "h": 0.1, "z": 0.2}])
+    rng = np.random.default_rng(9)
+    b = core.world.bounds
+    for _ in range(1000):
+        x, y, th = rng.uniform(b[0], b[2]), rng.uniform(b[1], b[3]), rng.uniform(-math.pi, math.pi)
+        ds = core._batch.photo_distances(core.world, x, y, th)
+        for p, d in zip(core.photos, ds):
+            p.update(core.world, x, y, th)
+            assert (math.isinf(d) and math.isinf(p.distance)) or abs(d - p.distance) < 1e-12
+        hits = core._batch.bumper_hits(core.world, x, y, th)
+        assert hits == [core.world._collides_py(bb.poly, x, y, th)[0] for bb in core.bumpers]
+
+
+def test_native_rt_loop_matches_python_step():
+    """C 实时循环的单步 (sc_rt_step_n) 与 Python SimCore.step 逐步一致 (无噪声；MuJoCo 与兜底后端；含撞墙/触边)"""
+    native = _need_native()
+    from sim_core import rt as _rt
+    if not _rt.available():
+        _skip("SIM_RT 不可用")
+    from sim_core.mujoco_backend import MUJOCO_AVAILABLE
+    backends = ["kinematic"] + (["mujoco"] if MUJOCO_AVAILABLE and native.mj_bind() else [])
+    obs = [{"x": 2.2, "y": 0.0, "w": 0.6, "h": 1.2, "z": 0.5}]
+    for be in backends:
+        a = SimCore(_spec(), SCENARIO_DEFINITIONS, "grid_9_square", backend=be, noise=False)
+        b = SimCore(_spec(), SCENARIO_DEFINITIONS, "grid_9_square", backend=be, noise=False)
+        for c in (a, b):
+            c.set_obstacles(obs)
+            c.reset_pose(0.0, 0.0, 0.0)
+        assert b.enable_rt()
+        cmds = [(0.8, 0.0, 0.0)] * 600 + [(-0.3, 0.0, 0.2)] * 300 + [(0.0, 0.0, 0.5)] * 200
+        worst = 0.0
+        for i, cmd in enumerate(cmds):
+            a.set_cmd(*cmd)
+            a.step()
+            with b.rt.hold():
+                b.set_cmd(*cmd)
+            with b.rt.hold(sync=False):
+                native.lib.sc_rt_step_n(b.rt.h, 1)
+                b.rt.pull()
+            worst = max(worst, abs(a.x - b.x), abs(a.y - b.y), abs(a.th - b.th), abs(a.odom.x - b.odom.x))
+            assert a.collisions == b.collisions, (be, i, a.collisions, b.collisions)
+            assert [x.pressed for x in a.bumpers] == [x.pressed for x in b.bumpers], (be, i)
+            assert [p.detected for p in a.photos] == [p.detected for p in b.photos], (be, i)
+        assert worst < 1e-6, (be, worst)
+        assert a.collisions >= 1, be       # 确实撞到了障碍物
 
 
 if __name__ == "__main__":

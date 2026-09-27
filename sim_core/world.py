@@ -17,13 +17,6 @@ WALL_HEIGHT = 6.0        # 场景外墙 (到顶)
 CEILING_HEIGHT = 6.0     # 库房屋顶 (3D 激光向上的点打在屋顶上)
 SHELF_HEIGHT = 2.5       # 货架/设备岛
 OBSTACLE_HEIGHT = 1.0    # 动态障碍物默认高度 (托盘/纸箱/人腿)
-WALL_HALF_THICK = 0.025  # MuJoCo 后端把静态线段建成 5 cm 厚的盒体 (mujoco_backend.build)
-
-
-def _box_edges(cx, cy, hx, hy, yaw, z):
-    c, s = math.cos(yaw), math.sin(yaw)
-    pts = [(cx + c * dx - s * dy, cy + s * dx + c * dy) for dx, dy in ((-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy))]
-    return [[pts[i][0], pts[i][1], pts[(i + 1) % 4][0], pts[(i + 1) % 4][1], z] for i in range(4)]
 
 
 class World:
@@ -34,10 +27,6 @@ class World:
         self.segments: np.ndarray = np.zeros((0, 5))
         self.bounds = (-10.0, -10.0, 10.0, 10.0)
         self.engine = None          # 几何引擎 (MuJoCoBackend)；存在时所有射线求交委托给它
-        # C 内核 (sim_core/native) 用的射线几何: 与 MuJoCo 模型一致的盒体边 (墙 5 cm 厚) + 圆柱 (行人)
-        self._mj_static = np.zeros((0, 5))
-        self.mj_segments: np.ndarray = np.zeros((0, 5))
-        self.mj_circles: np.ndarray = np.zeros((0, 4))
 
     # ------------------------------------------------------------------
     def load_scenario(self, scenario: dict):
@@ -47,12 +36,6 @@ class World:
             h = WALL_HEIGHT if i < 4 else SHELF_HEIGHT
             segs.append([w[0], w[1], w[2], w[3], h])
         self.static_segments = np.asarray(segs, dtype=float).reshape(-1, 5)
-        thick = []
-        for x0, y0, x1, y1, h in self.static_segments:
-            L = math.hypot(x1 - x0, y1 - y0)
-            if L >= 0.01:
-                thick += _box_edges((x0 + x1) / 2, (y0 + y1) / 2, L / 2, WALL_HALF_THICK, math.atan2(y1 - y0, x1 - x0), h)
-        self._mj_static = np.asarray(thick, dtype=float).reshape(-1, 5)
         if len(walls) >= 4:
             xs = [c for w in walls[:4] for c in (w[0], w[2])]
             ys = [c for w in walls[:4] for c in (w[1], w[3])]
@@ -64,7 +47,7 @@ class World:
         self._rebuild_dynamic()
 
     def _rebuild_dynamic(self):
-        segs, mj_segs, circles = [], [], []
+        segs = []
         for o in self.obstacles:
             ox, oy = float(o.get("x", 0.0)), float(o.get("y", 0.0))
             hw, hh = float(o.get("w", 0.8)) / 2.0, float(o.get("h", 0.8)) / 2.0
@@ -75,14 +58,8 @@ class World:
             for i in range(4):
                 a, b = pts[i], pts[(i + 1) % 4]
                 segs.append([a[0], a[1], b[0], b[1], z])
-            if o.get("type") == "person":
-                circles.append([ox, oy, max(hw, hh), z])
-            else:
-                mj_segs += segs[-4:]
         self.dynamic_segments = np.asarray(segs, dtype=float).reshape(-1, 5)
         self.segments = np.ascontiguousarray(np.vstack([self.static_segments, self.dynamic_segments]))
-        self.mj_segments = np.ascontiguousarray(np.vstack([self._mj_static, np.asarray(mj_segs, dtype=float).reshape(-1, 5)]))
-        self.mj_circles = np.asarray(circles, dtype=float).reshape(-1, 4)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -159,10 +136,8 @@ class World:
     def raycast(self, ox: float, oy: float, angles: np.ndarray, max_range: float, min_seg_height: float = 0.0,
                 few: bool = False) -> np.ndarray:
         """从 (ox, oy) 沿 angles 方向投射射线，返回命中距离 (未命中 = inf)。仅考虑 z_top > min_seg_height 的线段
-        few=True: 少量射线 (光电)，有 C 内核时直接在 C 里对 MuJoCo 同款几何求交，省掉 mj_multiRay 的 numpy 包装开销"""
-        if native.lib is not None and (few or self.engine is None):
-            if self.engine is not None:
-                return native.raycast2d(self.mj_segments, self.mj_circles, max(0.005, min_seg_height), ox, oy, angles, max_range)
+        有几何引擎 (MuJoCo) 时一律由引擎求交；兜底后端有 C 内核时用 C 线段求交 (与下面 numpy 实现一致)"""
+        if self.engine is None and native.lib is not None:
             return native.raycast2d(self.segments, None, min_seg_height, ox, oy, angles, max_range)
         if self.engine is not None:
             return self.engine.raycast2d(ox, oy, max(0.005, min_seg_height), np.asarray(angles, float), max_range)

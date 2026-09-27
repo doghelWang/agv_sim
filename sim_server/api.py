@@ -36,6 +36,7 @@
   GET  /api/v1/nav/feedback | PUT             执行进程回馈导航状态 (任务/路径/Nav2)
   GET  /api/v1/events?since=N                 仿真事件
   GET  /api/v1/snapshot?scans=1               Web 汇总快照
+  GET  /api/v1/stream?hz=50&io_hz=20&scans=1  推送流: 状态二进制帧 + IO/光电 + 2D 激光/融合 (执行进程用，替代轮询)
 """
 
 import json
@@ -322,6 +323,45 @@ def build_api(svc: SimService, port: int = 8090) -> RestServer:
 
     R("GET", "/api/v1/events", lambda q: {"events": svc.events_since(q.q("since", 0, int))}, "仿真事件")
     R("GET", "/api/v1/snapshot", lambda q: svc.snapshot(q.q("scans", False, bool)), "Web 汇总快照")
+
+    def stream(h):
+        """GET /api/v1/stream?hz=50&io_hz=20&scans=1: 长连接推送 (状态二进制帧 + IO/光电 + 2D 激光/融合扫描)，
+        替代执行进程的状态/IO/光电轮询与激光长轮询"""
+        import time as _t
+        import urllib.parse as _u
+        qs = _u.parse_qs(_u.urlparse(h.path).query)
+        hz = max(1.0, min(100.0, float((qs.get("hz") or ["50"])[0])))
+        io_hz = max(0.0, min(50.0, float((qs.get("io_hz") or ["20"])[0])))
+        scans = (qs.get("scans") or ["0"])[0] == "1"
+        sent = {}
+        h.send_response(200)
+        h.send_header("Content-Type", "application/x-agv-stream")
+        h.send_header("Cache-Control", "no-cache, no-store")
+        h.send_header("Connection", "close")
+        h.end_headers()
+        h.close_connection = True
+        meta_key, next_io, t_next = None, 0.0, _t.perf_counter()
+        try:
+            while not svc._stop.is_set():
+                frame, meta, meta_key = svc.state_frames(meta_key)
+                out = (meta or b"") + frame
+                now = _t.perf_counter()
+                if io_hz > 0 and now >= next_io:
+                    out += svc.io_frame()
+                    next_io = now + 1.0 / io_hz
+                if scans:
+                    out += svc.scan_frames(sent)
+                h.wfile.write(out)
+                t_next += 1.0 / hz
+                d = t_next - _t.perf_counter()
+                if d > 0:
+                    _t.sleep(d)
+                else:
+                    t_next = _t.perf_counter()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        return True
+    api.mount("/api/v1/stream", stream)
     return api
 
 

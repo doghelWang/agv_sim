@@ -9,6 +9,7 @@ SimCore —— 与 ROS 解耦的仿真内核 (可离线单测/基准测试)
 * 真值与估计分离: truth 位姿 (地图系) vs /odom (编码器积分，含轮径误差/量化/打滑，会漂移)
 """
 
+import contextlib
 import math
 import time
 from typing import Dict, List, Optional, Tuple
@@ -21,7 +22,7 @@ from .sensors import (CodeReader, GroundSlip, ImuModel, Lidar3DSensor, LidarSens
 import os
 from .world import World
 from . import native
-from .discrete import build_bumpers, build_photos, motion_block
+from .discrete import NativeBatch, build_bumpers, build_photos, motion_block
 
 from .cameras import build_camera
 from .mujoco_backend import MUJOCO_AVAILABLE, MUJOCO_VERSION, MuJoCoBackend
@@ -89,6 +90,7 @@ class SimCore:
         for b in self.bumpers:
             self.io.di.setdefault(b.di, False)
         self._discrete_n = 0
+        self._batch = NativeBatch(self.photos, self.bumpers) if native.lib is not None else None
         self.code_reader = CodeReader(spec.get("cameras", []))
         self.station_cam = StationTagCamera(mount_x=spec["chassis"].get("head_offset_m", 0.5) * 0.8)
         # 后端
@@ -110,20 +112,47 @@ class SimCore:
                         c.use_gl = c.kind in ("camera", "stereo")
             else:
                 print("[SimCore] 未安装 mujoco，退回 kinematic 兜底后端 (pip install mujoco)")
+        self.rt = None                 # 原生实时循环 (sim_core/rt.py)，由 enable_rt() 启用
+        self.lidar_max_hz = 10.0
+        self.merged_hz = 10.0
+        self.rtf_target = 1.0
         self.set_chassis(chassis_type)
         self.set_scenario(scenario_id or next(iter(scenarios)))
+
+    # ==================================================================
+    # 原生实时循环
+    # ==================================================================
+    def enable_rt(self) -> bool:
+        """SIM_RT=1 (默认) 且 C 内核可用时: 物理/开关量/里程计/IMU/2D 激光改由 C 线程推进 (MuJoCo 仍是物理引擎)"""
+        from . import rt as _rt
+        if self.rt is not None or not _rt.available() or not self.kin.native:
+            return self.rt is not None
+        if self.mj is not None and not native.mj_bind():
+            return False
+        self.rt = _rt.NativeRT(self)
+        return True
+
+    def _sync(self):
+        """修改仿真状态的 Python 代码: 暂停 C 线程并同步状态 (可嵌套)"""
+        return self.rt.hold() if self.rt is not None else contextlib.nullcontext()
+
+    def rt_pull(self):
+        if self.rt is not None:
+            with self.rt.hold(sync=False):
+                self.rt.pull()
 
     # ==================================================================
     # 配置
     # ==================================================================
     def set_chassis(self, chassis_type: Optional[str]):
-        keep = (self.x, self.y, self.th)
-        self.kin, self.wheels_d = build_kinematics(self.spec, chassis_type)
-        self.chassis_type = self.kin.type
-        self.odom = WheelOdometry(self.kin, enabled=self.noise)
-        self.odom.reset(*keep)
-        self._odom_origin = keep
-        return self.chassis_type
+        with self._sync():
+            keep = (self.x, self.y, self.th)
+            self.kin, self.wheels_d = build_kinematics(self.spec, chassis_type)
+            self.chassis_type = self.kin.type
+            self.odom = WheelOdometry(self.kin, enabled=self.noise)
+            self.odom.reset(*keep)
+            self._odom_origin = keep
+            return self.chassis_type
 
     def robot_urdf(self) -> str:
         from cmodel_parser import generate_urdf
@@ -132,84 +161,91 @@ class SimCore:
         return generate_urdf(sp)
 
     def set_scenario(self, scenario_id: str):
-        sc = self.scenarios[scenario_id]
-        self.scenario_id = scenario_id
-        self.scenario = sc
-        self.world.load_scenario(sc)
-        nodes = sc.get("nodes", {})
-        self.ground_tags = [{"id": f"QR_{k}", "name": k, "x": v[0], "y": v[1], "yaw": 0.0} for k, v in nodes.items()]
-        self.station_tags = [{"id": 100 + i, "name": s.get("name", s.get("id")), "x": s["x"], "y": s["y"],
-                              "yaw": s.get("dock_yaw", 0.0)} for i, s in enumerate(sc.get("stations", []))]
-        if self.mj:
-            lanes = [(nodes[a][0], nodes[a][1], nodes[b][0], nodes[b][1]) for a, b in sc.get("connections", [])
-                     if a in nodes and b in nodes]
-            self.mj.build(self.world, self.station_tags, self.ground_tags, lanes, keep_state=False)
-        o = sc.get("origin", {"x": 0.0, "y": 0.0, "yaw": 0.0})
-        self.reset_pose(o["x"], o["y"], o.get("yaw", 0.0))
+        with self._sync():
+            sc = self.scenarios[scenario_id]
+            self.scenario_id = scenario_id
+            self.scenario = sc
+            self.world.load_scenario(sc)
+            nodes = sc.get("nodes", {})
+            self.ground_tags = [{"id": f"QR_{k}", "name": k, "x": v[0], "y": v[1], "yaw": 0.0} for k, v in nodes.items()]
+            self.station_tags = [{"id": 100 + i, "name": s.get("name", s.get("id")), "x": s["x"], "y": s["y"],
+                                  "yaw": s.get("dock_yaw", 0.0)} for i, s in enumerate(sc.get("stations", []))]
+            if self.mj:
+                lanes = [(nodes[a][0], nodes[a][1], nodes[b][0], nodes[b][1]) for a, b in sc.get("connections", [])
+                         if a in nodes and b in nodes]
+                self.mj.build(self.world, self.station_tags, self.ground_tags, lanes, keep_state=False)
+            o = sc.get("origin", {"x": 0.0, "y": 0.0, "yaw": 0.0})
+            self.reset_pose(o["x"], o["y"], o.get("yaw", 0.0))
 
     def set_obstacles(self, obstacles: List[dict]):
-        self.world.set_obstacles(obstacles)
-        for o in self.world.obstacles:
-            if o.get("motion"):
-                o["motion"].setdefault("t0", self.t)
-                o["motion"].setdefault("ax", o["x"])
-                o["motion"].setdefault("ay", o["y"])
-        if self.mj:
-            self.mj.build(self.world, keep_state=True)
+        with self._sync():
+            self.world.set_obstacles(obstacles)
+            for o in self.world.obstacles:
+                if o.get("motion"):
+                    o["motion"].setdefault("t0", self.t)
+                    o["motion"].setdefault("ax", o["x"])
+                    o["motion"].setdefault("ay", o["y"])
+            if self.mj:
+                self.mj.build(self.world, keep_state=True)
 
     def update_movers(self):
         """行走人员等动态障碍物: 在 A↔B 之间往返 (motion={type:patrol, ax, ay, bx, by, speed})"""
-        poses = []
-        for i, o in enumerate(self.world.obstacles):
-            m = o.get("motion")
-            if not m or m.get("type", "patrol") != "patrol":
-                continue
-            ax, ay, bx, by = float(m["ax"]), float(m["ay"]), float(m.get("bx", m["ax"])), float(m.get("by", m["ay"]))
-            L = math.hypot(bx - ax, by - ay)
-            if L < 1e-3:
-                continue
-            s = (self.t - float(m.get("t0", 0.0))) * float(m.get("speed", 0.8)) % (2 * L)
-            k = s / L if s <= L else 2 - s / L
-            x, y = ax + (bx - ax) * k, ay + (by - ay) * k
-            yaw = math.atan2(by - ay, bx - ax) + (0.0 if s <= L else math.pi)
-            o["x"], o["y"], o["yaw"] = round(x, 3), round(y, 3), round(yaw, 3)
-            poses.append((i, x, y, yaw))
-        if poses:
-            self.world._rebuild_dynamic()
-            if self.mj:
-                self.mj.move_obstacles(poses)
+        with self._sync():
+            poses = []
+            for i, o in enumerate(self.world.obstacles):
+                m = o.get("motion")
+                if not m or m.get("type", "patrol") != "patrol":
+                    continue
+                ax, ay, bx, by = float(m["ax"]), float(m["ay"]), float(m.get("bx", m["ax"])), float(m.get("by", m["ay"]))
+                L = math.hypot(bx - ax, by - ay)
+                if L < 1e-3:
+                    continue
+                s = (self.t - float(m.get("t0", 0.0))) * float(m.get("speed", 0.8)) % (2 * L)
+                k = s / L if s <= L else 2 - s / L
+                x, y = ax + (bx - ax) * k, ay + (by - ay) * k
+                yaw = math.atan2(by - ay, bx - ax) + (0.0 if s <= L else math.pi)
+                o["x"], o["y"], o["yaw"] = round(x, 3), round(y, 3), round(yaw, 3)
+                poses.append((i, x, y, yaw))
+            if poses:
+                self.world._rebuild_dynamic()
+                if self.mj:
+                    self.mj.move_obstacles(poses)
 
     def reset_pose(self, x: float, y: float, th: float):
-        self.x, self.y, self.th = x, y, th
-        for b in getattr(self, "bumpers", []):
-            b.pressed = False
-            self.io.set_di(b.di, False)
-        self.vx = self.vy = self.wz = 0.0
-        self.kin.reset()
-        self.odom.reset(x, y, th)
-        self.cmd = (0.0, 0.0, 0.0)
-        if self.mj and self.mj.m is not None:
-            self.mj.reset_pose(x, y, th)
+        with self._sync():
+            self.x, self.y, self.th = x, y, th
+            for b in getattr(self, "bumpers", []):
+                b.pressed = False
+                self.io.set_di(b.di, False)
+            self.vx = self.vy = self.wz = 0.0
+            self.kin.reset()
+            self.odom.reset(x, y, th)
+            self.cmd = (0.0, 0.0, 0.0)
+            if self.mj and self.mj.m is not None:
+                self.mj.reset_pose(x, y, th)
 
     def set_cmd(self, vx: float, vy: float, wz: float):
         self.cmd = (float(vx), float(vy), float(wz))
         self.cmd_time = self.t
+        if self.rt is not None:
+            self.rt.set_cmd(*self.cmd)
 
     def set_lidar_config(self, beams: Optional[int] = None, res_deg: Optional[float] = None,
                          range_max: Optional[float] = None, freq_hz: Optional[float] = None):
         """beams → 融合扫描 (/scan) 的 360° 点数；res_deg → 所有物理激光的角分辨率；range_max → 量程上限"""
-        if beams:
-            self.merged_bins = int(max(90, min(3600, beams)))
-        if res_deg:
-            for l in self.lidars:
-                l.set_resolution(math.radians(float(res_deg)))
-        if range_max:
-            for l in self.lidars:
-                l.range_max = min(l.native_range_max, float(range_max)) if float(range_max) < l.native_range_max else float(range_max)
-            self.merged_range = max(l.range_max for l in self.lidars)
-        if freq_hz:
-            for l in self.lidars:
-                l.freq_hz = float(freq_hz)
+        with self._sync():
+            if beams:
+                self.merged_bins = int(max(90, min(3600, beams)))
+            if res_deg:
+                for l in self.lidars:
+                    l.set_resolution(math.radians(float(res_deg)))
+            if range_max:
+                for l in self.lidars:
+                    l.range_max = min(l.native_range_max, float(range_max)) if float(range_max) < l.native_range_max else float(range_max)
+                self.merged_range = max(l.range_max for l in self.lidars)
+            if freq_hz:
+                for l in self.lidars:
+                    l.freq_hz = float(freq_hz)
 
     # ==================================================================
     # 物理步进
@@ -278,9 +314,14 @@ class SimCore:
     def update_discrete(self, force: bool = False):
         """触边每步检测 (安全链)；光电 50 Hz"""
         changed = False
-        for b in self.bumpers:
+        nb = self._batch
+        hits = nb.bumper_hits(self.world, self.x, self.y, self.th) if nb is not None else None
+        for i, b in enumerate(self.bumpers):
             was = b.pressed
-            b.update(self.world, self.x, self.y, self.th, self.t)
+            if hits is not None:
+                b.apply_hit(hits[i], self.t)
+            else:
+                b.update(self.world, self.x, self.y, self.th, self.t)
             if b.pressed != was:
                 if b.pressed and not was:
                     self.collisions += 1
@@ -289,9 +330,11 @@ class SimCore:
                 changed = True
         self._discrete_n += 1
         if force or self._discrete_n % 2 == 0:
-            for p in self.photos:
+            ds = nb.photo_distances(self.world, self.x, self.y, self.th) if nb is not None else None
+            for i, p in enumerate(self.photos):
                 was = p.detected
-                if p.update(self.world, self.x, self.y, self.th) != was:
+                det = p.apply_distance(float(ds[i])) if ds is not None else p.update(self.world, self.x, self.y, self.th)
+                if det != was:
                     self.io.set_di(p.di, p.detected)
                     changed = True
         return changed
@@ -366,7 +409,7 @@ class SimCore:
             "cameras": [{"name": c.name, "type": c.kind, "res": f"{c.W}x{c.H}", "fps": c.fps, "ms": round(c.last_ms, 2),
                          "render": "gl" if getattr(c, "use_gl", False) and self.mj and not self.mj.gl_error else "ray"} for c in self.cameras],
             "camera_gl_error": self.mj.gl_error if self.mj else None,
-            "native": native.info()["status"],
+            "native": native.summary(),
         }
 
     def capture_camera(self, cam) -> dict:

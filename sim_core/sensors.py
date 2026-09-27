@@ -9,8 +9,19 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+import ctypes
+import os
+
+from . import native
 from .kinematics import ChassisKinematics, se2_integrate, wrap
 from .world import World
+
+# 2D 激光: native = 噪声/丢点在 C 里做 (有 MuJoCo 时求交仍由 mj_multiRay 完成)；engine = 原 Python/numpy 路径
+LIDAR_RAY = os.environ.get("SIM_LIDAR_RAY", "native").strip().lower()
+
+
+def _native_lidar() -> bool:
+    return native.lib is not None and LIDAR_RAY != "engine"
 
 
 # ======================================================================
@@ -58,6 +69,20 @@ class LidarSensor:
         c, s = math.cos(th), math.sin(th)
         ox = x + c * self.mx - s * self.my
         oy = y + s * self.mx + c * self.my
+        if _native_lidar():
+            if not hasattr(self, "_rng"):
+                self._rng = native.Rng()
+            if world.engine is not None:     # MuJoCo 求交 (经 C 调 mj_multiRay)，噪声/丢点在 C 里做
+                r = world.engine.raycast2d(ox, oy, max(0.005, self.mz), th + self.yaw + self.sign * self.local_angles, self.range_max)
+                native.lib.sc_lidar_post(r.ctypes.data, self.n, self.range_min, 1 if noise else 0, self.noise_std, self.noise_prop,
+                                         self.dropout, self._rng.addr)
+                return r
+            r = np.empty(self.n)
+            segs = world.segments
+            native.lib.sc_lidar_scan(native.ptr(segs), len(segs), self.mz, ox, oy, th + self.yaw, self.sign, self.angle_min,
+                                     self.angle_inc, self.n, self.range_max, self.range_min, 1 if noise else 0, self.noise_std,
+                                     self.noise_prop, self.dropout, self._rng.addr, r.ctypes.data)
+            return r
         world_angles = th + self.yaw + self.sign * self.local_angles
         r = world.raycast(ox, oy, world_angles, self.range_max, min_seg_height=self.mz)
         if noise:
@@ -174,6 +199,17 @@ def slice_to_scan(pts_base: np.ndarray, zmin: float, zmax: float, n_bins: int, r
 def merge_scans(lidars: List[LidarSensor], ranges: List[np.ndarray], n_bins: int, range_max: float) -> np.ndarray:
     """所有激光点 → 以 base_link 为中心的 360° 虚拟扫描 (每个角度取最近点)"""
     out = np.full(n_bins, np.inf)
+    if native.lib is not None:
+        for l, r in zip(lidars, ranges):
+            r = np.ascontiguousarray(r, dtype=np.float64)
+            native.lib.sc_merge_add(out.ctypes.data, n_bins, r.ctypes.data, len(r), l.mx, l.my, l.yaw, l.sign, l.angle_min, l.angle_inc)
+        native.lib.sc_merge_finish(out.ctypes.data, n_bins, range_max)
+        return out
+    return merge_scans_py(lidars, ranges, n_bins, range_max)
+
+
+def merge_scans_py(lidars, ranges, n_bins: int, range_max: float) -> np.ndarray:
+    out = np.full(n_bins, np.inf)
     inc = 2 * math.pi / n_bins
     for l, r in zip(lidars, ranges):
         pts = l.points_base(r)
@@ -199,8 +235,15 @@ class WheelOdometry:
         self.radius_err = {w.name: (1.0 + rnd.gauss(0, 0.001)) if enabled else 1.0 for w in kin.wheels}
         self.steer_bias = {w.name: math.radians(rnd.gauss(0, 0.08)) if enabled else 0.0 for w in kin.wheels}
         self.cpr = 4096 * 4
+        self.steer_sigma = math.radians(0.05)      # 舵角读数噪声
         self.x = self.y = self.th = 0.0
         self.vx = self.vy = self.wz = 0.0
+        self._nat = None
+        if getattr(kin, "native", False):
+            n = len(kin.wheels)
+            self._nat = ((ctypes.c_double * n)(*[self.radius_err[w.name] for w in kin.wheels]),
+                         (ctypes.c_double * n)(*[self.steer_bias[w.name] for w in kin.wheels]),
+                         (ctypes.c_double * 6)(), native.Rng(rnd.getrandbits(64)))
 
     def reset(self, x=0.0, y=0.0, th=0.0):
         self.x, self.y, self.th = x, y, th
@@ -208,6 +251,16 @@ class WheelOdometry:
 
     def update(self, dt: float):
         kin = self.kin
+        if self.enabled and self._nat is not None and kin.native:
+            re, sb, pose, rng = self._nat
+            for c, w in zip(kin._cw, kin.wheels):
+                c.steer, c.speed = w.steer, w.speed
+            pose[0], pose[1], pose[2] = self.x, self.y, self.th
+            native.lib.sc_odom_update(ctypes.addressof(kin._cw), len(kin.wheels), 1 if kin.holonomic else 0, kin.axle_x,
+                                      ctypes.addressof(re), ctypes.addressof(sb), self.steer_sigma, float(self.cpr), dt,
+                                      rng.addr, ctypes.addressof(pose))
+            self.x, self.y, self.th, self.vx, self.vy, self.wz = pose[0], pose[1], pose[2], pose[3], pose[4], pose[5]
+            return
         if not self.enabled:
             vx, vy, wz = kin.vx, kin.vy, kin.wz
         else:
@@ -220,7 +273,7 @@ class WheelOdometry:
                 q = round(w.speed * dt * ticks_per_m) / max(ticks_per_m * dt, 1e-9)
                 spd[w.name] = q * self.radius_err[w.name]
                 if w.kind == "steer":
-                    st[w.name] = w.steer + self.steer_bias[w.name] + random.gauss(0, math.radians(0.05))
+                    st[w.name] = w.steer + self.steer_bias[w.name] + random.gauss(0, self.steer_sigma)
             vx, vy, wz, _ = kin.forward(steer_override=st, speed_override=spd)
         self.vx, self.vy, self.wz = vx, vy, wz
         self.x, self.y, self.th = se2_integrate(self.x, self.y, self.th, vx, vy, wz, dt)
@@ -257,6 +310,7 @@ class ImuModel:
         self.yaw = 0.0
 
     def sample(self, vx, vy, wz, th, dt) -> dict:
+
         ax = (vx - self.prev[0]) / max(dt, 1e-3) - wz * vy
         ay = (vy - self.prev[1]) / max(dt, 1e-3) + wz * vx
         self.prev = (vx, vy)

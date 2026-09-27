@@ -21,9 +21,47 @@ import threading
 import time
 import traceback
 import urllib.parse
+import http.client
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------- 快速 HTTP 头解析
+# 标准库 http.client.parse_headers 用 email.feedparser 解析头 (每个请求/响应约 0.3~0.5 ms，树莓派上是
+# 仿真/执行进程最大的单项开销)。这里逐行解析后直接填进 HTTPMessage，结果对象与原来同类型、同用法。
+# 服务端 (BaseHTTPRequestHandler.parse_request) 与客户端 (HTTPResponse.begin) 都经过这个函数。AGV_FAST_HEADERS=0 关闭。
+_orig_parse_headers = http.client.parse_headers
+
+
+def _fast_parse_headers(fp, _class=http.client.HTTPMessage):
+    msg = _class()
+    last = None
+    n = 0
+    while True:
+        line = fp.readline(http.client._MAXLINE + 1)
+        if len(line) > http.client._MAXLINE:
+            raise http.client.LineTooLong("header line")
+        if line in (b"\r\n", b"\n", b""):
+            break
+        n += 1
+        if n > http.client._MAXHEADERS:
+            raise http.client.HTTPException(f"got more than {http.client._MAXHEADERS} headers")
+        s = line.decode("iso-8859-1")
+        if s[0] in " \t" and last is not None:          # 折叠行 (已废弃，但保持兼容)
+            v = msg[last] + " " + s.strip()
+            del msg[last]
+            msg[last] = v
+            continue
+        k, sep, v = s.partition(":")
+        if not sep:
+            continue
+        last = k.strip()
+        msg[last] = v.strip()
+    return msg
+
+
+if os.environ.get("AGV_FAST_HEADERS", "1") != "0":
+    http.client.parse_headers = _fast_parse_headers
 
 
 class ApiError(Exception):
@@ -130,6 +168,17 @@ class RestServer:
 
             def log_message(self, *a):  # 静默
                 pass
+
+            _date_cache = (0, "")
+
+            def date_time_string(self, timestamp=None):   # Date 头按秒缓存 (标准实现每次走 email.utils 格式化)
+                if timestamp is not None:
+                    return super().date_time_string(timestamp)
+                now = int(time.time())
+                c = Handler._date_cache
+                if c[0] != now:
+                    c = Handler._date_cache = (now, super().date_time_string(now))
+                return c[1]
 
             def setup(self):
                 super().setup()

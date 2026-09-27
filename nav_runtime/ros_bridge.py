@@ -389,6 +389,15 @@ class RosBridge(Node):
             self.link.send_cmd(vx, vy, wz, source="nav2")
 
     def graph(self):
+        """ROS 图 (节点/话题)；遍历 DDS 发现数据较慢，2 s 缓存 (/api/v1/nav 被网页与采样工具频繁调用)"""
+        c = getattr(self, "_graph_cache", None)
+        if c and time.time() - c[0] < 2.0:
+            return c[1]
+        g = self._graph()
+        self._graph_cache = (time.time(), g)
+        return g
+
+    def _graph(self):
         try:
             nodes = sorted({(ns.rstrip("/") + "/" + n) for n, ns in self.get_node_names_and_namespaces()})
             topics = sorted(t for t, _ in self.get_topic_names_and_types() if not t.startswith("/rosout"))

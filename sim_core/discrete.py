@@ -17,8 +17,11 @@
 import math
 from typing import Dict, List, Optional
 
+import ctypes
+
 import numpy as np
 
+from . import native
 from .world import World
 
 
@@ -37,12 +40,18 @@ class PhotoSensor:
         self.detected = False
         self.distance = math.inf
 
-    def update(self, world: World, x: float, y: float, th: float) -> bool:
+    def measure(self, world: World, x: float, y: float, th: float) -> float:
         c, s = math.cos(th), math.sin(th)
         ox, oy = x + c * self.x - s * self.y, y + s * self.x + c * self.y
         a = th + self.yaw
-        d = world.raycast(ox, oy, np.array([a - self.half, a, a + self.half]), self.range_m, min_seg_height=self.z, few=True)
-        self.distance = float(np.min(d))
+        d = world.raycast(ox, oy, np.array([a - self.half, a, a + self.half]), self.range_m, min_seg_height=self.z)
+        return float(np.min(d))
+
+    def update(self, world: World, x: float, y: float, th: float) -> bool:
+        return self.apply_distance(self.measure(world, x, y, th))
+
+    def apply_distance(self, d: float) -> bool:
+        self.distance = d
         thr = self.trigger_m + (self.hyst if self.detected else 0.0)
         self.detected = self.distance <= thr
         return self.detected
@@ -64,6 +73,9 @@ class BumperStrip:
 
     def update(self, world: World, x: float, y: float, th: float, t: float, forced: bool = False) -> bool:
         hit, _ = world.collides(self._poly_np, x, y, th)
+        return self.apply_hit(hit, t, forced)
+
+    def apply_hit(self, hit: bool, t: float, forced: bool = False) -> bool:
         if hit or forced:
             if not self.pressed:
                 self.press_count += 1
@@ -139,3 +151,32 @@ def motion_block(strips: List[BumperStrip], vx: float, vy: float, wz: float):
     if any(b.pressed for b in strips):
         wz = 0.0   # 接触状态下禁止原地旋转 (车角扫刮)
     return vx, vy, wz
+
+
+class NativeBatch:
+    """C 内核批量更新: 所有光电 (每个 3 条射线) 一次调用、所有触边一次调用"""
+
+    def __init__(self, photos: List[PhotoSensor], strips: List[BumperStrip]):
+        self.photos, self.strips = photos, strips
+        self.P = np.ascontiguousarray([[p.x, p.y, p.z, p.yaw, p.half, p.range_m] for p in photos], dtype=np.float64).reshape(-1, 6)
+        self.pd = np.empty(len(photos))
+        self.polys = np.ascontiguousarray(np.concatenate([b._poly_np for b in strips]) if strips else np.zeros((0, 2)))
+        self.counts = (ctypes.c_int * max(1, len(strips)))(*[len(b._poly_np) for b in strips])
+        self.hits = (ctypes.c_int * max(1, len(strips)))()
+
+    def photo_distances(self, world: World, x, y, th) -> np.ndarray:
+        if world.engine is not None:        # MuJoCo 求交 (经 C 调 mj_multiRay)
+            for i, p in enumerate(self.photos):
+                self.pd[i] = p.measure(world, x, y, th)
+            return self.pd
+        segs = world.segments
+        native.lib.sc_photo_batch(native.ptr(segs), len(segs), native.ptr(self.P), len(self.photos), x, y, th, self.pd.ctypes.data)
+        return self.pd
+
+    def bumper_hits(self, world: World, x, y, th):
+        segs = world.segments
+        if len(segs) == 0 or not self.strips:
+            return [False] * len(self.strips)
+        native.lib.sc_collides_batch(self.polys.ctypes.data, ctypes.addressof(self.counts), len(self.strips), x, y, th,
+                                     segs.ctypes.data, len(segs), ctypes.addressof(self.hits))
+        return [bool(self.hits[i]) for i in range(len(self.strips))]

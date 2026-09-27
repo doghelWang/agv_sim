@@ -32,6 +32,7 @@ except Exception:  # pragma: no cover
     MUJOCO_AVAILABLE = False
     MUJOCO_VERSION = None
 
+from . import native as _native
 from .world import CEILING_HEIGHT
 
 # 几何类别 → 颜色 (相机着色)
@@ -382,6 +383,18 @@ class MuJoCoBackend:
         return dist, gid, (nrm if want_normal else None)
 
     def raycast2d(self, ox, oy, oz, angles, max_range):
+        """水平射线 (激光/光电)。有 C 内核时经 C 直接调用 mj_multiRay (同一个 MuJoCo 库，省掉 numpy 包装)；
+        水平射线不会打到地面/屋顶解析平面，结果与 cast() 相同"""
+        if _native.mj_bind():
+            angles = np.ascontiguousarray(angles, dtype=np.float64)
+            m, d = self._ray_data()
+            out = np.empty(len(angles))
+            t0 = time.perf_counter()
+            _native.lib.sc_mj_raycast2d(m._address, d._address, self.GEOMGROUP.ctypes.data, self.robot_body, float(ox), float(oy),
+                                        float(oz), angles.ctypes.data, len(angles), float(max_range), out.ctypes.data)
+            self.ray_count += len(angles)
+            self.ray_ms += (time.perf_counter() - t0) * 1000.0
+            return out
         d = np.stack([np.cos(angles), np.sin(angles), np.zeros_like(angles)], 1)
         return self.cast((ox, oy, oz), d, max_range)[0]
 

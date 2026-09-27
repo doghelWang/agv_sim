@@ -6,20 +6,11 @@
 # 构建: docker build -f docker/Dockerfile.sim -t agv-sim:latest .
 # ============================================================================
 ARG PY_BASE=python:3.10-slim-bookworm
-# @stage-begin simcore —— C 内核 libsimcore.so (tools/refresh_images.sh 也会带上这一段)
-FROM ${PY_BASE} AS simcore
-ARG http_proxy
-ARG https_proxy
-ARG APT_MIRROR=""
-RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|http://deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null; fi; \
-    (apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev) || echo "[警告] 未能安装 gcc"
-COPY sim_core/native/simcore.c sim_core/native/build.sh /src/
-# 编译失败 (离线装不上 gcc) 时留一个空文件: 运行时加载失败 → 自动回退纯 Python 实现
-RUN bash /src/build.sh gcc || { echo "[警告] 未能编译 libsimcore，仿真将使用纯 Python 实现"; : > /src/libsimcore.so; }
-# @stage-end
+# C 内核编译阶段的基础镜像: 完整构建时 = 下面的 deps 阶段 (带 MuJoCo pip 包，其 include/ 提供 C 头文件)；
+# tools/refresh_images.sh 传入现有 agv-sim:latest
+ARG SIMCORE_BASE=deps
 
-FROM ${PY_BASE}
-
+FROM ${PY_BASE} AS deps
 ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG http_proxy
 ARG https_proxy
@@ -36,6 +27,19 @@ RUN (pip install --no-cache-dir ${PIP_INDEX:+-i $PIP_INDEX} "numpy<2" "mujoco>=3
      || pip install --no-cache-dir "numpy<2" "mujoco>=3.3" pillow psutil "protobuf>=3.12") \
     && python -c "import mujoco, numpy, PIL, psutil, google.protobuf; print('mujoco', mujoco.__version__, 'numpy', numpy.__version__)"
 
+# @stage-begin simcore —— C 内核 libsimcore.so：碰撞/运动学/传感器 + 调用 MuJoCo C API 的原生实时循环
+FROM ${SIMCORE_BASE} AS simcore
+ARG http_proxy
+ARG https_proxy
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|http://deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null; fi; \
+    (apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev) || echo "[警告] 未能安装 gcc"
+COPY sim_core/native/simcore.c sim_core/native/simcore_rt.c sim_core/native/build.sh /src/
+# 编译失败 (离线装不上 gcc) 时留一个空文件: 运行时加载失败 → 自动回退纯 Python 实现
+RUN bash /src/build.sh gcc python || { echo "[警告] 未能编译 libsimcore，仿真将使用纯 Python 实现"; : > /src/libsimcore.so; }
+# @stage-end
+
+FROM deps
 ARG AGV_VERSION=1.0
 LABEL org.agv.kind=sim org.agv.api=v1 org.agv.version=${AGV_VERSION}
 WORKDIR /opt/agv

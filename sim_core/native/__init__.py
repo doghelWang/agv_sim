@@ -13,7 +13,7 @@ import sys
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ABI = 1
+ABI = 3
 
 _D = ctypes.c_double
 _I = ctypes.c_int
@@ -72,6 +72,44 @@ def _load():
     lib.sc_kin_step.restype = None
     lib.sc_wrap.argtypes = [_D]
     lib.sc_wrap.restype = _D
+    lib.sc_rng_seed.argtypes = [_P, ctypes.c_uint64]
+    lib.sc_rng_seed.restype = None
+    lib.sc_rng_gauss.argtypes = [_P]
+    lib.sc_rng_gauss.restype = _D
+    lib.sc_photo_batch.argtypes = [_P, _I, _P, _I, _D, _D, _D, _P]
+    lib.sc_photo_batch.restype = None
+    lib.sc_collides_batch.argtypes = [_P, _P, _I, _D, _D, _D, _P, _I, _P]
+    lib.sc_collides_batch.restype = None
+    lib.sc_odom_update.argtypes = [_P, _I, _I, _D, _P, _P, _D, _D, _D, _P, _P]
+    lib.sc_odom_update.restype = None
+    lib.sc_imu_sample.argtypes = [_P, _P, _D, _D, _D, _D, _P, _P]
+    lib.sc_imu_sample.restype = None
+    lib.sc_slip.argtypes = [_P, _P, _D, _P]
+    lib.sc_slip.restype = None
+    lib.sc_lidar_scan.argtypes = [_P, _I, _D, _D, _D, _D, _D, _D, _D, _I, _D, _D, _I, _D, _D, _D, _P, _P]
+    lib.sc_lidar_scan.restype = None
+    lib.sc_lidar_post.argtypes = [_P, _I, _D, _I, _D, _D, _D, _P]
+    lib.sc_lidar_post.restype = None
+    lib.sc_mj_bind.argtypes = [ctypes.c_char_p]
+    lib.sc_mj_bind.restype = _I
+    lib.sc_mj_header_version.restype = _I
+    lib.sc_mj_raycast2d.argtypes = [_P, _P, _P, _I, _D, _D, _D, _P, _I, _D, _P]
+    lib.sc_mj_raycast2d.restype = _I
+    for fn, args, res in (("sc_rt_create", [ctypes.c_uint64], _P), ("sc_rt_destroy", [_P], None), ("sc_rt_start", [_P], _I),
+                          ("sc_rt_stop", [_P], None), ("sc_rt_lock", [_P], None), ("sc_rt_unlock", [_P], None),
+                          ("sc_rt_set_config", [_P, _P], None), ("sc_rt_get_state", [_P, _P], None), ("sc_rt_set_state", [_P, _P], None),
+                          ("sc_rt_set_kin", [_P, _P, _P, _I, _P, _P], None), ("sc_rt_set_geom", [_P, _P, _I, _P, _I], None),
+                          ("sc_rt_set_mj", [_P, _P, _P, _P, _I], None), ("sc_rt_set_photos", [_P, _P, _I], None),
+                          ("sc_rt_set_bumpers", [_P, _P, _P, _P, _P, _I], None), ("sc_rt_set_lidars", [_P, _P, _I, _I], None),
+                          ("sc_rt_read_lidar", [_P, _I, ctypes.c_uint32, _P, _I, _P, _P, _P], _I),
+                          ("sc_rt_set_cmd", [_P, _D, _D, _D], None), ("sc_rt_step_n", [_P, _I], None), ("sc_rt_sizeof_state", [], _I), ("sc_rt_sizeof_config", [], _I),
+                          ("sc_rt_sizeof_lidar", [], _I)):
+        f = getattr(lib, fn)
+        f.argtypes, f.restype = args, res
+    lib.sc_merge_add.argtypes = [_P, _I, _P, _I, _D, _D, _D, _D, _D, _D]
+    lib.sc_merge_add.restype = None
+    lib.sc_merge_finish.argtypes = [_P, _I, _D]
+    lib.sc_merge_finish.restype = None
     return lib, "ok"
 
 
@@ -85,6 +123,17 @@ def available() -> bool:
 
 def info() -> dict:
     return {"enabled": lib is not None, "status": status, "path": _lib_path() if lib is not None else None}
+
+
+def summary() -> str:
+    """/api/v1/sim 的 native 字段"""
+    if lib is None:
+        return status
+    try:
+        import mujoco  # noqa: F401
+        return f"ok (mujoco C API: {mj_status()})"
+    except ImportError:
+        return "ok"
 
 
 # ---------------------------------------------------------------------- 几何
@@ -109,3 +158,47 @@ def raycast2d(segs: np.ndarray, circles, zmin: float, ox: float, oy: float, angl
                      len(circles) if circles is not None else 0, zmin, ox, oy, angles.ctypes.data, len(angles), max_range,
                      out.ctypes.data)
     return out
+
+
+class Rng:
+    """C 侧随机数状态 (xoshiro256**)。种子取自 Python random，便于整体用 random.seed 复现"""
+
+    def __init__(self, seed=None):
+        import random
+        self.s = (ctypes.c_uint64 * 6)()
+        self.addr = ctypes.addressof(self.s)
+        lib.sc_rng_seed(self.addr, random.getrandbits(64) if seed is None else int(seed) & (2 ** 64 - 1))
+
+    def gauss(self) -> float:
+        return lib.sc_rng_gauss(self.addr)
+
+
+def ptr(a: np.ndarray):
+    return a.ctypes.data if a is not None and len(a) else None
+
+
+# ---------------------------------------------------------------------- MuJoCo C API (经 C 直接调用 mj_multiRay / mj_step)
+_mj = {"status": None}
+
+
+def mj_bind() -> bool:
+    """dlopen pip 包自带的 libmujoco (与 Python 绑定同一个库)；头文件版本与运行库一致才启用"""
+    if _mj["status"] is None:
+        if lib is None:
+            _mj["status"] = "no libsimcore"
+        else:
+            try:
+                import glob
+                import mujoco
+                cands = sorted(glob.glob(os.path.join(os.path.dirname(mujoco.__file__), "libmujoco*")))
+                r = lib.sc_mj_bind(cands[0].encode()) if cands else 2
+                _mj["status"] = {0: "ok", 1: "built without MuJoCo headers", 2: "dlopen failed",
+                                 3: f"version mismatch (header {lib.sc_mj_header_version()} / runtime {mujoco.mj_version()})"}.get(r, str(r))
+            except Exception as e:
+                _mj["status"] = f"unavailable: {e}"
+    return _mj["status"] == "ok"
+
+
+def mj_status() -> str:
+    mj_bind()
+    return _mj["status"]

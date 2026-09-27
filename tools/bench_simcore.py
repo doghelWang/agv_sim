@@ -68,6 +68,9 @@ def main():
         "photo_update_us": timeit(lambda: [p.update(w, core.x, core.y, core.th) for p in core.photos], n) / max(1, len(core.photos)),
         "bumper_update_us": timeit(lambda: [b.update(w, core.x, core.y, core.th, core.t) for b in core.bumpers], n) / max(1, len(core.bumpers)),
         "collides_footprint_us": timeit(lambda: w.collides(core.footprint, core.x, core.y, core.th), n),
+        "imu_us": timeit(lambda: core.imu.sample(0.5, 0.0, 0.1, 0.0, 0.01), n),
+        "slip_us": timeit(lambda: core.slip.apply(0.5, 0.0, 0.1, 0.01), n),
+        "scan_all_ms": timeit(core.scan_all, max(50, n // 20)) / 1000.0,
         "n_photos": len(core.photos), "n_bumpers": len(core.bumpers), "n_segments": int(len(w.segments)),
     }
     print(json.dumps({k: (round(v, 2) if isinstance(v, float) else v) for k, v in res.items()}, ensure_ascii=False))

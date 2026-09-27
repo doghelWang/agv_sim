@@ -11,10 +11,11 @@
  * 结构体布局必须与 sim_core/native/__init__.py 中的 ctypes 定义保持一致 (SC_ABI 版本号)。
  */
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define SC_ABI 1
+#define SC_ABI 3
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -458,4 +459,168 @@ void sc_kin_step(sc_chassis *ch, sc_wheel *w, int n, double cvx, double cvy, dou
         }
     }
     out[0] = vx; out[1] = vy; out[2] = wz;
+}
+
+/* ================================================================== 随机数 (xoshiro256**，每个传感器一份状态) */
+static inline uint64_t rotl(const uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
+
+static uint64_t rng_next(uint64_t *s) {
+    const uint64_t r = rotl(s[1] * 5, 7) * 9;
+    const uint64_t t = s[1] << 17;
+    s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = rotl(s[3], 45);
+    return r;
+}
+
+static double rng_uniform(uint64_t *s) { return (rng_next(s) >> 11) * 0x1.0p-53; }
+
+/* 标准正态 (Box-Muller，缓存第二个值在 s[4]/s[5]) */
+static double rng_gauss(uint64_t *s) {
+    if (s[5]) {
+        s[5] = 0;
+        double v;
+        memcpy(&v, &s[4], sizeof(v));
+        return v;
+    }
+    double u1, u2;
+    do { u1 = rng_uniform(s); } while (u1 <= 1e-300);
+    u2 = rng_uniform(s);
+    double r = sqrt(-2.0 * log(u1)), a = 2.0 * M_PI * u2;
+    double z1 = r * sin(a);
+    memcpy(&s[4], &z1, sizeof(z1));
+    s[5] = 1;
+    return r * cos(a);
+}
+
+void sc_rng_seed(uint64_t *s, uint64_t seed) {
+    for (int i = 0; i < 4; i++) {           /* splitmix64 */
+        seed += 0x9e3779b97f4a7c15ULL;
+        uint64_t z = seed;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+        s[i] = z ^ (z >> 31);
+    }
+    s[4] = s[5] = 0;
+}
+
+double sc_rng_gauss(uint64_t *s) { return rng_gauss(s); }
+
+/* ================================================================== 开关量传感器 (批量) */
+/* 光电 (兜底后端，线段几何): P[n][6] = x y z yaw half range (车体系)。out[n] = 3 条射线最近距离 */
+void sc_photo_batch(const double *segs, int ns, const double *P, int n, double x, double y, double th, double *out) {
+    double c = cos(th), s = sin(th);
+    for (int i = 0; i < n; i++) {
+        const double *p = P + 6 * i;
+        double ox = x + c * p[0] - s * p[1], oy = y + s * p[0] + c * p[1];
+        double a = th + p[3];
+        double ang[3] = {a - p[4], a, a + p[4]}, d[3];
+        sc_raycast2d(segs, ns, NULL, 0, p[2], ox, oy, ang, 3, p[5], d);
+        out[i] = fmin(d[0], fmin(d[1], d[2]));
+    }
+}
+
+/* 触边: polys = 各条带多边形顶点依次拼接，counts[k] = 第 k 条的顶点数；hits[k] = 是否接触 */
+void sc_collides_batch(const double *polys, const int *counts, int k, double x, double y, double th,
+                       const double *segs, int ns, int *hits) {
+    double pt[2];
+    for (int i = 0; i < k; i++) {
+        hits[i] = sc_collides(polys, counts[i], x, y, th, segs, ns, pt);
+        polys += 2 * counts[i];
+    }
+}
+
+/* ================================================================== 编码器里程计 */
+/* 驱动轮: 编码器量化 (电机端 cpr·减速比) × 轮径误差；舵轮角: + 零偏 + 噪声。之后正解 + SE2 积分。
+ * pose[6]: 入 x y th，出 x y th vx vy wz */
+void sc_odom_update(const sc_wheel *w, int n, int holonomic, double axle_x, const double *radius_err, const double *steer_bias,
+                    double steer_sigma, double cpr, double dt, uint64_t *rng, double *pose) {
+    double hov[64], sov[64], fo[4];
+    if (n > 64) n = 64;
+    for (int i = 0; i < n; i++) {
+        hov[i] = NAN;
+        sov[i] = NAN;
+        if (!(w[i].kind == K_DRIVE || w[i].kind == K_STEER)) continue;
+        double tpm = cpr * w[i].gear_ratio / (2 * M_PI * w[i].radius);
+        double q = nearbyint(w[i].speed * dt * tpm) / fmax(tpm * dt, 1e-9);   /* Python round(): 银行家舍入 */
+        sov[i] = q * radius_err[i];
+        if (w[i].kind == K_STEER) hov[i] = w[i].steer + steer_bias[i] + (steer_sigma > 0 ? rng_gauss(rng) * steer_sigma : 0.0);
+    }
+    sc_forward(w, n, holonomic, axle_x, hov, sov, fo);
+    double o[3];
+    sc_se2_integrate(pose[0], pose[1], pose[2], fo[0], fo[1], fo[2], dt, o);
+    pose[0] = o[0]; pose[1] = o[1]; pose[2] = o[2];
+    pose[3] = fo[0]; pose[4] = fo[1]; pose[5] = fo[2];
+}
+
+/* ================================================================== IMU / 轮地打滑 */
+/* st[4] = prev_vx prev_vy gyro_bias yaw；par[3] = bias_walk gyro_noise acc_noise (enabled=0 时全 0)；out[5] = wz ax ay az yaw */
+void sc_imu_sample(double *st, const double *par, double vx, double vy, double wz, double dt, uint64_t *rng, double *out) {
+    double k = fmax(dt, 1e-3);
+    double ax = (vx - st[0]) / k - wz * vy;
+    double ay = (vy - st[1]) / k + wz * vx;
+    st[0] = vx; st[1] = vy;
+    if (par[0] > 0) st[2] += rng_gauss(rng) * par[0];
+    double gz = wz + st[2] + (par[1] > 0 ? rng_gauss(rng) * par[1] : 0.0);
+    st[3] = wrap(st[3] + gz * dt);
+    out[0] = gz;
+    out[1] = ax + (par[2] > 0 ? rng_gauss(rng) * par[2] : 0.0);
+    out[2] = ay + (par[2] > 0 ? rng_gauss(rng) * par[2] : 0.0);
+    out[3] = 9.81 + (par[2] > 0 ? rng_gauss(rng) * par[2] : 0.0);
+    out[4] = st[3];
+}
+
+/* prev[3] = 上一步 vx vy wz；v[3] 入/出 */
+void sc_slip(double *prev, double *v, double dt, uint64_t *rng) {
+    double acc = hypot(v[0] - prev[0], v[1] - prev[1]) / fmax(dt, 1e-3);
+    prev[0] = v[0]; prev[1] = v[1]; prev[2] = v[2];
+    double k = 1.0 - fmin(0.03, 0.004 + 0.01 * acc) - rng_gauss(rng) * 0.002;
+    double kw = 1.0 - fmin(0.05, 0.01 * fabs(v[2])) - rng_gauss(rng) * 0.002;
+    v[0] *= k; v[1] *= k; v[2] *= kw;
+}
+
+/* ================================================================== 2D 激光 */
+/* 测距后处理: noise → N(0,1)·(std + prop·r)，dropout 概率置 inf；最后 r < rmin → rmin (与 LidarSensor.scan 一致) */
+void sc_lidar_post(double *out, int n, double rmin, int noise, double std, double prop, double dropout, uint64_t *rng) {
+    if (noise) {
+        for (int i = 0; i < n; i++)
+            if (isfinite(out[i])) out[i] += rng_gauss(rng) * (std + prop * out[i]);
+        if (dropout > 0)
+            for (int i = 0; i < n; i++)
+                if (rng_uniform(rng) < dropout) out[i] = INFINITY;
+    }
+    for (int i = 0; i < n; i++)
+        if (out[i] < rmin) out[i] = rmin;
+}
+
+/* 兜底 (无 MuJoCo) 后端的一次扫描: 世界系射线角 = th + yaw + sign·(a0 + i·inc)，对场景线段求交 */
+void sc_lidar_scan(const double *segs, int ns, double z, double ox, double oy, double base_angle, double sign, double a0,
+                   double inc, int n, double rmax, double rmin, int noise, double std, double prop, double dropout,
+                   uint64_t *rng, double *out) {
+    double *ang = (double *)malloc(sizeof(double) * (size_t)n);
+    if (!ang) return;
+    for (int i = 0; i < n; i++) ang[i] = base_angle + sign * (a0 + i * inc);
+    sc_raycast2d(segs, ns, NULL, 0, z, ox, oy, ang, n, rmax, out);
+    free(ang);
+    sc_lidar_post(out, n, rmin, noise, std, prop, dropout, rng);
+}
+
+/* 融合扫描: 激光 (安装 mx my yaw sign，角度 a0 inc) 的有限测距点 → 机体系 → 360° 分箱取最近 (bins 需先置 inf) */
+void sc_merge_add(double *bins, int nb, const double *r, int n, double mx, double my, double yaw, double sign, double a0, double inc) {
+    double binw = 2 * M_PI / nb;
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(r[i])) continue;
+        double a = yaw + sign * (a0 + i * inc);
+        double px = mx + r[i] * cos(a), py = my + r[i] * sin(a);
+        double d = hypot(px, py);
+        long k = (long)((atan2(py, px) + M_PI) / binw);
+        if (k < 0) k = 0;
+        if (k > nb - 1) k = nb - 1;
+        if (d < bins[k]) bins[k] = d;
+    }
+}
+
+void sc_merge_finish(double *bins, int nb, double rmax) {
+    for (int i = 0; i < nb; i++)
+        if (bins[i] > rmax) bins[i] = INFINITY;
 }

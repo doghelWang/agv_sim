@@ -84,7 +84,8 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
     # 动态障碍由局部代价地图 (odom 坐标系) 负责。NAV2_GLOBAL_OBSTACLES=1/0 强制开/关。
     _go = os.environ.get("NAV2_GLOBAL_OBSTACLES", "0" if os.path.exists("/system/build.prop") else "1") == "1"
     ctrl_hz = 20.0 if os.path.exists("/system/build.prop") else 30.0
-    rpp_tf_tol = 0.3 if os.path.exists("/system/build.prop") else 0.1
+    # RPP 查 map→odom 时最多等待 (s)；0.1 在树莓派上不够 (slam_toolbox 的 map→odom 偶尔落后 0.1~0.4 s → 线路跟随中断)
+    rpp_tf_tol = float(os.environ.get("NAV2_TF_TOLERANCE", "0.3"))
     global_plugins = '["static_layer", "obstacle_layer", "inflation_layer"]' if _go else '["static_layer", "inflation_layer"]'
 
     def src_block(indent):

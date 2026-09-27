@@ -15,6 +15,7 @@ SimService —— 仿真进程的核心服务 (不依赖 ROS)
 import json
 import math
 import os
+import struct
 import sys
 import threading
 import time
@@ -55,6 +56,14 @@ def ranges_json(v: np.ndarray, nd: int = 4) -> list:
     for i in np.flatnonzero(~fin).tolist():
         out[i] = None
     return out
+
+
+# ---------------------------------------------------------------------------- 状态推送流 (/api/v1/stream)
+# 帧 = <u32 负载长度><u8 类型><负载>；类型: 1 状态 (二进制，见 STATE_FMT)，2 元信息 JSON (车型/场景/关节名，变化时)，
+# 3 IO+光电 JSON (20 Hz)，4 2D 激光/融合扫描 (<u16 元信息长度><元信息 JSON><float32 ranges>，有新帧时)。状态字段与 GET /api/v1/state 相同 (nav_runtime/sim_link.decode_state 还原成同样的 dict)
+STREAM_HDR = struct.Struct("<IB")
+STATE_FMT = struct.Struct("<Idd6d6d3d5dIBddIH")
+F_BUMPER_FRONT, F_BUMPER_REAR, F_PAUSED, F_CONTACT = 1, 2, 4, 8
 
 
 class ScanBuffer:
@@ -112,10 +121,16 @@ class SimService:
     def _build(self, spec: dict, scenario: str, chassis: Optional[str]):
         self.model_rev = getattr(self, "model_rev", 0) + 1
         self.spec = spec
+        old = getattr(self, "core", None)
+        if old is not None and old.rt is not None:     # 旧的原生实时线程先停
+            old.rt.stop()
         self.core = SimCore(spec, SCENARIO_DEFINITIONS, scenario,
                             backend=os.environ.get("SIM_PHYSICS", "mujoco"),
                             dt=float(os.environ.get("SIM_DT", "0.01")),
                             noise=os.environ.get("SIM_NOISE", "1") == "1", chassis_type=chassis)
+        self.core.lidar_max_hz, self.core.merged_hz = self.lidar_max_hz, self.merged_hz
+        if self.core.enable_rt() and getattr(self, "_started", False):
+            self.core.rt.start()
         self.planner = DijkstraPlanner(scenario)
         self.lidar_bufs = {l.name: ScanBuffer() for l in self.core.lidars + self.core.lidars3d}
         self._next_scan = {n: 0.0 for n in self.lidar_bufs}
@@ -133,6 +148,9 @@ class SimService:
 
     # ================================================================== 线程
     def start(self):
+        self._started = True
+        if self.core.rt is not None:
+            self.core.rt.start()
         threading.Thread(target=self._physics_loop, daemon=True, name="physics").start()
         threading.Thread(target=self._sensor_loop, daemon=True, name="sensors").start()
         threading.Thread(target=self._camera_loop, daemon=True, name="cameras").start()
@@ -141,12 +159,36 @@ class SimService:
 
     def stop(self):
         self._stop.set()
+        if self.core.rt is not None:
+            self.core.rt.stop()
 
     def _physics_loop(self):
         last = time.perf_counter()
         last_coll = 0
         self._last_discrete = self._discrete_sig()
+        last_t = -1.0
         while not self._stop.is_set():
+            if self.core.rt is not None:
+                # 原生实时循环在 C 线程里推进物理；这里 100 Hz 做管家: 同步快照、急停/暂停/倍速、IO、行人、事件
+                time.sleep(0.01)
+                with self.lock:
+                    core = self.core
+                    if core.rt is None:
+                        continue
+                    self._rt_housekeeping(core)
+                    if core.t != last_t:
+                        last_t = core.t
+                        self.state_seq += 1
+                    last = time.perf_counter()
+                    ds = self._discrete_sig()
+                    if ds != self._last_discrete:
+                        self._discrete_events(self._last_discrete, ds)
+                        self._last_discrete = ds
+                    if core.collisions != last_coll:
+                        last_coll = core.collisions
+                        self.emit("COLLISION", "danger", f"车体碰撞 (累计 {last_coll} 次)，防撞触边触发",
+                                  {"contact": core.last_contact, "count": last_coll})
+                continue
             dt = self.core.dt
             time.sleep(dt * 0.5)          # 累加器保证物理时间精确，睡眠只决定调度粒度
             now = time.perf_counter()
@@ -164,10 +206,73 @@ class SimService:
                     self.emit("COLLISION", "danger", f"车体碰撞 (累计 {last_coll} 次)，防撞触边触发",
                               {"contact": self.core.last_contact, "count": last_coll})
 
+    def _rt_housekeeping(self, core):
+        """(持 self.lock) 拉取 C 实时循环快照 → DI；急停/暂停/倍速下发；行人 20 Hz；顶升机构"""
+        rt = core.rt
+        with rt.hold(sync=False):
+            rt.pull()
+            rt.set_flags(core.paused, core.estop, self.rtf_target)
+        for b in core.bumpers:
+            if core.io.di.get(b.di) != b.pressed:
+                core.io.set_di(b.di, b.pressed)
+        for p in core.photos:
+            if core.io.di.get(p.di) != p.detected:
+                core.io.set_di(p.di, p.detected)
+        prev = getattr(self, "_hk_t", core.t)
+        self._hk_t = core.t
+        if core.t > prev:
+            core.io.update_lift_physics(core.t - prev)
+            core._mover_acc = getattr(core, "_mover_acc", 0.0) + (core.t - prev)
+            if core._mover_acc >= 0.05:
+                core._mover_acc = 0.0
+                if any(o.get("motion") for o in core.world.obstacles):
+                    core.update_movers()
+
+    def _rt_sensor_poll(self, core):
+        """(持 self.lock) 从 C 双缓冲取新的 2D 激光/融合帧"""
+        rt = core.rt
+        got = False
+        last = getattr(rt, "_read_seq", None)
+        if last is None:
+            last = rt._read_seq = {}            # 已读的 C 侧帧序号 (缓冲序号自身保持单调递增，重建模型后不回退)
+        with rt.hold(sync=False):
+            for i, l in enumerate(core.lidars):
+                b = self.lidar_bufs[l.name]
+                r = rt.read_lidar(i, last.get(i, 0))
+                if r is None:
+                    continue
+                cseq, t, (px, py, pth), ranges = r
+                last[i] = cseq
+                hz = min(l.freq_hz, self.lidar_max_hz) if self.lidar_max_hz > 0 else l.freq_hz
+                b.seq += 1
+                seq = b.seq
+                b.data = {"type": "2d", "seq": seq, "t": round(t, 4), "frame_id": l.frame_id,
+                          "pose": {"x": round(px, 4), "y": round(py, 4), "yaw": round(pth, 5)},
+                          "angle_min": l.angle_min, "angle_increment": l.angle_inc, "range_min": l.range_min,
+                          "range_max": l.range_max, "scan_hz": hz, "ranges": ranges}
+                got = True
+            r = rt.read_lidar(-1, last.get(-1, 0))
+            if r is not None:
+                cseq, t, (px, py, pth), merged = r
+                last[-1] = cseq
+                n = len(merged)
+                self.merged.seq += 1
+                seq = self.merged.seq
+                self.merged.data = {"seq": seq, "t": round(t, 4), "frame_id": "base_link",
+                                    "pose": {"x": round(px, 4), "y": round(py, 4), "yaw": round(pth, 5)},
+                                    "angle_min": -math.pi + math.pi / n, "angle_increment": 2 * math.pi / n, "range_min": 0.05,
+                                    "range_max": core.merged_range, "scan_hz": self.merged_hz, "ranges": merged}
+                got = True
+        if got:
+            self.cond.notify_all()
+
     def _sensor_loop(self):
         while not self._stop.is_set():
             time.sleep(0.01)
             with self.lock:
+                if self.core.rt is not None and self.core.rt.lidars_on:
+                    self._rt_sensor_poll(self.core)
+                    continue
                 t = self.core.t
                 due = [n for n, nt in self._next_scan.items() if t >= nt]
                 mdue = t >= self._next_merged
@@ -440,6 +545,7 @@ class SimService:
     def state(self) -> dict:
         with self.lock:
             c = self.core
+            c.rt_pull()
             names, pos, vel, eff = c.kin.joint_state()
             mx, my, mth = c.map_to_odom()
             return {
@@ -453,6 +559,52 @@ class SimService:
                               "bumper_rear": c.io.di.get("di_bumper_rear", False), "last_contact": c.last_contact},
                 "paused": c.paused, "chassis": c.chassis_type, "scenario": c.scenario_id, "model_rev": self.model_rev,
             }
+
+    def state_frames(self, last_meta):
+        """推送流: (状态帧 bytes, 元信息帧 bytes|None, 当前元信息键)"""
+        with self.lock:
+            c = self.core
+            c.rt_pull()
+            names, pos, vel, eff = c.kin.joint_state()
+            mx, my, mth = c.map_to_odom()
+            im = c.imu_sample or {}
+            fl = ((F_BUMPER_FRONT if c.io.di.get("di_bumper_front", False) else 0) | (F_BUMPER_REAR if c.io.di.get("di_bumper_rear", False) else 0)
+                  | (F_PAUSED if c.paused else 0) | (F_CONTACT if c.last_contact else 0))
+            lc = c.last_contact or (0.0, 0.0)
+            od = c.odom
+            body = STATE_FMT.pack(self.state_seq, c.t, time.time(), c.x, c.y, c.th, c.vx, c.vy, c.wz,
+                                  od.x, od.y, od.th, od.vx, od.vy, od.wz, mx, my, mth,
+                                  float(im.get("wz", 0.0)), float(im.get("ax", 0.0)), float(im.get("ay", 0.0)),
+                                  float(im.get("az", 9.81)), float(im.get("yaw", 0.0)),
+                                  c.collisions, fl, float(lc[0]), float(lc[1]), self.model_rev, len(names))
+            body += struct.pack(f"<{3 * len(names)}d", *pos, *vel, *eff)
+            key = (c.chassis_type, c.scenario_id, tuple(names))
+        meta = None
+        if key != last_meta:
+            m = json.dumps({"chassis": key[0], "scenario": key[1], "joint_names": list(key[2])}, ensure_ascii=False).encode()
+            meta = STREAM_HDR.pack(len(m), 2) + m
+        return STREAM_HDR.pack(len(body), 1) + body, meta, key
+
+    def scan_frames(self, sent: dict) -> bytes:
+        """推送流: 自上次发送后有新帧的 2D 激光与融合扫描 (sent: 名称 → 已发送的帧序号，就地更新)"""
+        out = []
+        with self.lock:
+            items = [(n, b) for n, b in self.lidar_bufs.items() if b.data and b.data.get("type") == "2d"] + [("merged", self.merged)]
+            for name, b in items:
+                d = b.data
+                if not d or b.seq <= sent.get(name, 0):
+                    continue
+                sent[name] = b.seq
+                meta = {k: v for k, v in d.items() if not isinstance(v, np.ndarray)}
+                meta["name"] = name
+                mj = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode()
+                body = struct.pack("<H", len(mj)) + mj + np.asarray(d["ranges"], dtype="<f4").tobytes()
+                out.append(STREAM_HDR.pack(len(body), 4) + body)
+        return b"".join(out)
+
+    def io_frame(self) -> bytes:
+        b = json.dumps({"io": self.io(), "photos": self.photoelectric()["sensors"]}, ensure_ascii=False, separators=(",", ":")).encode()
+        return STREAM_HDR.pack(len(b), 3) + b
 
     def imu(self) -> dict:
         with self.lock:
@@ -555,6 +707,9 @@ class SimService:
             self.core.set_lidar_config(beams=beams, range_max=cfg.get("range_max"), res_deg=cfg.get("sensor_resolution_deg"))
             if cfg.get("freq_hz"):
                 self.merged_hz = max(1.0, min(50.0, float(cfg["freq_hz"])))
+                self.core.merged_hz = self.merged_hz
+                with self.core._sync():
+                    pass
             return {"beams": self.core.merged_bins, "angle_resolution_deg": round(360.0 / self.core.merged_bins, 3),
                     "freq_hz": self.merged_hz, "range_max": self.core.merged_range}
 
@@ -592,10 +747,12 @@ class SimService:
     # ================================================================== 仿真控制
     def set_sim(self, paused: Optional[bool] = None, rtf: Optional[float] = None):
         with self.lock:
-            if paused is not None:
-                self.core.paused = bool(paused)
-            if rtf is not None:
-                self.rtf_target = max(0.1, min(5.0, float(rtf)))
+            with self.core._sync():
+                if paused is not None:
+                    self.core.paused = bool(paused)
+                if rtf is not None:
+                    self.rtf_target = max(0.1, min(5.0, float(rtf)))
+                self.core.rtf_target = self.rtf_target
         if paused is not None:
             self.emit("SIM_PAUSE", "info", "仿真暂停" if paused else "仿真恢复")
 
