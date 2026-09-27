@@ -380,6 +380,7 @@ def main():
             scenario = register_scenario(json.load(f))
     svc = SimService(a.config, scenario)
     svc.start()
+    svc.start_cmd_udp(a.port)
     api = build_api(svc, a.port)
     print(f"[sim_server] REST API http://0.0.0.0:{a.port}/api/v1  车型={svc.core.chassis_type} 场景={svc.core.scenario_id} "
           f"激光={[l.name for l in svc.core.lidars + svc.core.lidars3d]}", flush=True)

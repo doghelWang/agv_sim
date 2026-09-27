@@ -102,7 +102,9 @@ def _load():
                           ("sc_rt_set_mj", [_P, _P, _P, _P, _I], None), ("sc_rt_set_photos", [_P, _P, _I], None),
                           ("sc_rt_set_bumpers", [_P, _P, _P, _P, _P, _I], None), ("sc_rt_set_lidars", [_P, _P, _I, _I], None),
                           ("sc_rt_read_lidar", [_P, _I, ctypes.c_uint32, _P, _I, _P, _P, _P], _I),
-                          ("sc_rt_set_cmd", [_P, _D, _D, _D], None), ("sc_rt_step_n", [_P, _I], None), ("sc_rt_sizeof_state", [], _I), ("sc_rt_sizeof_config", [], _I),
+                          ("sc_rt_set_cmd", [_P, _D, _D, _D], None), ("sc_rt_step_n", [_P, _I], None),
+                          ("sc_rt_udp_start", [_P, ctypes.c_char_p, _I], _I), ("sc_rt_udp_retarget", [_P], None),
+                          ("sc_rt_udp_meta", [_P, _P], None), ("sc_rt_sizeof_state", [], _I), ("sc_rt_sizeof_config", [], _I),
                           ("sc_rt_sizeof_lidar", [], _I)):
         f = getattr(lib, fn)
         f.argtypes, f.restype = args, res

@@ -568,6 +568,7 @@ class Gateway:
         self.model, self.world, self.nav_status = {}, {}, {}
         self.sim_online = self.nav_online = False
         self.want_scans_until = 0.0
+        self.last_client = time.time()   # 最近一次有网页/工具访问网关的时刻 (空闲时降低对仿真的轮询频率)
         self._sim_ev = self._nav_ev = 0
         self._last_mission = None
         self._last_status = None
@@ -601,7 +602,13 @@ class Gateway:
             except Exception:
                 self.sim_online = False
                 time.sleep(0.5)
-            time.sleep(max(0.0, 0.05 - (time.time() - t0)))
+            # 有客户端 (网页/工作台/测试工具) 在看或任务执行中 (录制) → 20 Hz；空闲 → 1 Hz
+            # (快照是仿真进程最大的 JSON 负载；GW_IDLE_POLL_S=0.05 恢复一直 20 Hz)
+            with self.lock:
+                busy = self.telemetry.get("nav_status") in ("NAVIGATING", "PLANNING", "OBSTACLE_WAIT", "DOCKING")
+            idle = float(os.environ.get("GW_IDLE_POLL_S", "1.0"))
+            period = 0.05 if busy or time.time() - self.last_client < 3.0 else idle
+            time.sleep(max(0.0, period - (time.time() - t0)))
 
     def _nav_loop(self):
         while True:
@@ -1126,18 +1133,24 @@ class TeleopHTTPHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_PUT(self):
+        if bridge_node is not None:
+            bridge_node.last_client = time.time()
         if self._v2("PUT"):
             return
         if not self._proxy("PUT"):
             self.send_response(404); self.end_headers()
 
     def do_DELETE(self):
+        if bridge_node is not None:
+            bridge_node.last_client = time.time()
         if self._v2("DELETE"):
             return
         if not self._proxy("DELETE"):
             self.send_response(404); self.end_headers()
 
     def do_GET(self):
+        if bridge_node is not None:
+            bridge_node.last_client = time.time()
         parsed = urllib.parse.urlparse(self.path)
         if self._v2("GET"):
             return
@@ -1308,6 +1321,8 @@ class TeleopHTTPHandler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        if bridge_node is not None:
+            bridge_node.last_client = time.time()
         if self._v2("POST"):
             return
         if self._proxy("POST"):

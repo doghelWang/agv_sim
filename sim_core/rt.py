@@ -254,16 +254,24 @@ class NativeRT:
             self.lib.sc_rt_destroy(self.h)
             self.h = None
 
-    def __del__(self):  # pragma: no cover
-        try:
-            self.close()
-        except Exception:
-            pass
+    # 注意: 不在 __del__ 里释放 C 对象 —— UDP 指令线程可能仍持有旧实例指针 (模型重建时改指向新实例)，
+    # 旧实例只停线程不释放 (每次重建几 KB)。
 
     def set_cmd(self, vx, vy, wz):
         if self._depth:            # 已在 hold() 内: 退出时 push 会带上 core.cmd / cmd_time
             return
         self.lib.sc_rt_set_cmd(self.h, float(vx), float(vy), float(wz))
+
+    def udp_start(self, host: str, port: int) -> int:
+        return self.lib.sc_rt_udp_start(self.h, (host or "").encode(), int(port))
+
+    def udp_retarget(self):
+        self.lib.sc_rt_udp_retarget(self.h)
+
+    def udp_meta(self):
+        out, src = (_D * 5)(), ctypes.create_string_buffer(17)
+        self.lib.sc_rt_udp_meta(ctypes.addressof(out), ctypes.addressof(src))
+        return int(out[0]), out[1], (out[2], out[3], out[4]), src.value.decode("utf-8", "replace")
 
     def read_lidar(self, i: int, after: int):
         """i = -1: 融合扫描。返回 (seq, t, pose(x,y,th), ranges) 或 None；须在 hold(sync=False) 内"""

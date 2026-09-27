@@ -131,6 +131,8 @@ class SimService:
         self.core.lidar_max_hz, self.core.merged_hz = self.lidar_max_hz, self.merged_hz
         if self.core.enable_rt() and getattr(self, "_started", False):
             self.core.rt.start()
+            if getattr(self, "cmd_udp", None) == "native":
+                self.core.rt.udp_retarget()
         self.planner = DijkstraPlanner(scenario)
         self.lidar_bufs = {l.name: ScanBuffer() for l in self.core.lidars + self.core.lidars3d}
         self._next_scan = {n: 0.0 for n in self.lidar_bufs}
@@ -139,6 +141,40 @@ class SimService:
         old = getattr(self, "cam_bufs", {})
         self.cam_bufs = {c.name: old.get(c.name, ScanBuffer()) for c in self.core.cameras}
         self._next_cam = {c.name: 0.0 for c in self.core.cameras}
+
+    # ================================================================== UDP 速度指令通道
+    def start_cmd_udp(self, port: int):
+        """执行进程 → 仿真的速度指令走 UDP (同号端口)；C 实时循环在时由原生线程直接写入指令，否则 Python 线程接收。
+        SIM_CMD_UDP=0 关闭 (执行进程随之继续用 PUT /api/v1/control/cmd_vel)"""
+        if os.environ.get("SIM_CMD_UDP", "1") == "0":
+            return
+        host = os.environ.get("AGV_BIND", "")
+        host = "" if host in ("", "0.0.0.0") else host
+        if self.core.rt is not None and self.core.rt.udp_start(host, port) == 0:
+            self.cmd_udp, self.cmd_udp_port = "native", port
+            return
+        import socket
+        try:
+            sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sk.bind((host, port))
+        except OSError as e:
+            print(f"[sim] UDP 指令通道未启用: {e}", flush=True)
+            return
+        self.cmd_udp, self.cmd_udp_port = "python", port
+
+        def loop():
+            while not self._stop.is_set():
+                try:
+                    b = sk.recv(128)
+                except OSError:
+                    continue
+                if len(b) >= 48 and b[:4] == b"AGVC":
+                    vx, vy, wz = struct.unpack_from("<3d", b, 8)
+                    src = b[32:48].split(b"\0", 1)[0].decode("utf-8", "replace")
+                    if all(math.isfinite(v) for v in (vx, vy, wz)):
+                        self.set_cmd(vx, vy, wz, src or "udp")
+        threading.Thread(target=loop, daemon=True, name="cmd-udp").start()
 
     def emit(self, kind: str, level: str, message: str, data: Optional[dict] = None):
         with self.lock:
@@ -615,7 +651,8 @@ class SimService:
     def sim_status(self) -> dict:
         with self.lock:
             s = self.core.status()
-            s.update({"paused": self.core.paused, "rtf_target": self.rtf_target, "api_version": API_VERSION})
+            s.update({"paused": self.core.paused, "rtf_target": self.rtf_target, "api_version": API_VERSION,
+                      "cmd_udp_port": getattr(self, "cmd_udp_port", None), "cmd_udp": getattr(self, "cmd_udp", None)})
             return s
 
     # ---- 开关量传感器
@@ -722,6 +759,10 @@ class SimService:
 
     def control(self) -> dict:
         with self.lock:
+            if getattr(self, "cmd_udp", None) == "native" and self.core.rt is not None:
+                n, wall, (vx, vy, wz), src = self.core.rt.udp_meta()
+                if n and wall > self.cmd_meta["t_wall"]:
+                    self.cmd_meta = {"source": src or "udp", "t_wall": wall, "vx": vx, "vy": vy, "wz": wz}
             age = time.time() - self.cmd_meta["t_wall"]
             return dict(self.cmd_meta, age_s=round(age, 3), watchdog_timeout_s=self.core.cmd_timeout,
                         watchdog_active=age > self.core.cmd_timeout, estop=self.core.estop)

@@ -8,7 +8,7 @@ SimLink —— 执行进程侧的仿真数据接入层 (纯 REST，替代 ROS �
   激光长轮询      GET /api/v1/sensors/lidars/{name}?after_seq=N&wait=0.5  (二进制，每帧恰好取一次)
   融合扫描长轮询  GET /api/v1/sensors/scan?after_seq=N&wait=0.5  (二进制)
   模型/场景      GET /api/v1/model, /api/v1/world (车型/场景变化时刷新)
-  指令回馈       PUT /api/v1/control/cmd_vel
+  指令回馈       UDP (仿真 /api/v1/sim 声明 cmd_udp_port 时) 或 PUT /api/v1/control/cmd_vel
   状态回馈       PUT /api/v1/nav/feedback     5 Hz
 """
 
@@ -89,6 +89,7 @@ class SimLink:
         self.use_stream = os.environ.get("NAV_SIM_STREAM", "1") != "0"
         self.stream_io = False
         self.stream_scans = False
+        self.cmd_udp = None           # (host, port)：仿真声明了 UDP 指令通道时 send_cmd 走 UDP
 
     # ------------------------------------------------------------------
     def start(self):
@@ -215,7 +216,23 @@ class SimLink:
                 time.sleep(0.5)
             time.sleep(0.05)   # IO/光电/触边 20 Hz
 
+    def _refresh_cmd_channel(self):
+        try:
+            import socket
+            import urllib.parse
+            port = (self.c_misc.get("/api/v1/sim") or {}).get("cmd_udp_port")
+            if port and os.environ.get("NAV_CMD_UDP", "1") != "0":
+                host = urllib.parse.urlparse(self.url).hostname
+                if getattr(self, "_udp", None) is None:
+                    self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.cmd_udp = (socket.gethostbyname(host), int(port))
+            else:
+                self.cmd_udp = None
+        except Exception:
+            self.cmd_udp = None
+
     def refresh_model(self):
+        self._refresh_cmd_channel()
         try:
             m = self.c_misc.get("/api/v1/model")
             s = self.c_misc.get("/api/v1/sensors")
@@ -385,6 +402,16 @@ class SimLink:
 
     # ------------------------------------------------------------------ 回馈
     def send_cmd(self, vx: float, vy: float = 0.0, wz: float = 0.0, source: str = "nav") -> bool:
+        if self.cmd_udp is not None:
+            try:
+                self._cmd_seq = getattr(self, "_cmd_seq", 0) + 1
+                self._udp.sendto(struct.pack("<4sI3d16s", b"AGVC", self._cmd_seq & 0xFFFFFFFF, float(vx), float(vy), float(wz),
+                                             source.encode()[:16]), self.cmd_udp)
+                self.stats["cmd_sent"] += 1
+                return True
+            except OSError:
+                self.stats["errors"] += 1
+                self.cmd_udp = None           # 回退 HTTP
         try:
             self.c_cmd.put("/api/v1/control/cmd_vel", {"vx": float(vx), "vy": float(vy), "wz": float(wz), "source": source})
             self.stats["cmd_sent"] += 1

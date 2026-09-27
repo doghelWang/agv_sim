@@ -631,3 +631,88 @@ void sc_rt_step_n(sc_rt *rt, int n) {
         if (!rt->s.paused) lidars_update(rt);
     }
 }
+
+/* ================================================================== UDP 速度指令通道 (执行进程 → 仿真，替代 PUT /api/v1/control/cmd_vel)
+ * 报文: "AGVC" u32 seq, f64 vx vy wz, char source[16]  (小端，48 字节)。收到即写入指令 (cmd_time = 当前仿真时间) */
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+typedef struct {
+    sc_rt *rt;
+    int fd;
+    volatile int stop;
+    pthread_t th;
+    uint32_t count;
+    double wall;
+    char source[17];
+    double cmd[3];
+} rt_udp;
+
+static rt_udp g_udp = {0};
+
+static double wall_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+static void *udp_main(void *arg) {
+    rt_udp *u = (rt_udp *)arg;
+    unsigned char b[128];
+    while (!u->stop) {
+        ssize_t n = recv(u->fd, b, sizeof(b), 0);
+        if (n < 48 || memcmp(b, "AGVC", 4) != 0) continue;
+        double v[3];
+        memcpy(v, b + 8, sizeof(v));
+        if (!isfinite(v[0]) || !isfinite(v[1]) || !isfinite(v[2])) continue;
+        sc_rt *rt = u->rt;
+        pthread_mutex_lock(&rt->mu);
+        rt->s.cmd[0] = v[0]; rt->s.cmd[1] = v[1]; rt->s.cmd[2] = v[2];
+        rt->s.cmd_time = rt->s.t;
+        u->count++;
+        u->wall = wall_s();
+        memcpy(u->source, b + 32, 16);
+        u->source[16] = 0;
+        memcpy(u->cmd, v, sizeof(v));
+        pthread_mutex_unlock(&rt->mu);
+    }
+    return NULL;
+}
+
+/* 绑定 host:port (host 为空 = 0.0.0.0)。返回 0 成功 */
+int sc_rt_udp_start(sc_rt *rt, const char *host, int port) {
+    if (g_udp.fd > 0) return 0;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct timeval tv = {0, 200000};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons((uint16_t)port);
+    a.sin_addr.s_addr = (host && *host) ? inet_addr(host) : htonl(INADDR_ANY);
+    if (bind(fd, (struct sockaddr *)&a, sizeof(a)) != 0) { close(fd); return -2; }
+    g_udp.rt = rt; g_udp.fd = fd; g_udp.stop = 0;
+    if (pthread_create(&g_udp.th, NULL, udp_main, &g_udp) != 0) { close(fd); g_udp.fd = 0; return -3; }
+    return 0;
+}
+
+/* 模型重建换了 sc_rt 实例时改指向 (须持新实例的锁以外调用) */
+void sc_rt_udp_retarget(sc_rt *rt) {
+    if (g_udp.fd <= 0) return;
+    pthread_mutex_t *old = &g_udp.rt->mu;
+    pthread_mutex_lock(old);
+    g_udp.rt = rt;
+    pthread_mutex_unlock(old);
+}
+
+/* 最近一条 UDP 指令: out[5] = count wall vx vy wz；source 至少 17 字节 */
+void sc_rt_udp_meta(double *out, char *source) {
+    out[0] = g_udp.count; out[1] = g_udp.wall;
+    out[2] = g_udp.cmd[0]; out[3] = g_udp.cmd[1]; out[4] = g_udp.cmd[2];
+    memcpy(source, g_udp.source, 17);
+}

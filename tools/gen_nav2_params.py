@@ -59,14 +59,21 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
     ch = spec["chassis"]
     fp = ch["footprint"]
     pad = 0.03
+    pad_local = 0.02
     try:   # 保护空间: 静态代价地图外形取 车体 ∪ 带载外形，footprint_padding = 车体净空
         from planning import protection as _pr
         _P = _pr.effective(spec)
         _h, _t, _l, _r = _pr.nav2_outline(ch, _P)
         fp = _pr.rect(_h, _t, _l, _r)
         pad = round(_P["body_margin"], 3)
+        # 局部代价地图 (RPP / RotationShim 的碰撞预测) 与执行进程原地转向防护同一余量 (rotate_margin)：
+        # 车体净空 0.05 时，贴墙拓扑节点 (如 grid_9_square 离外墙 1.5 m 的 (0, ±7.5)) 原地转 90° 的车角扫掠会压到
+        # 墙面致命栅格 → "detected collision ahead" → 线路跟随中断反复重试；自研导引按 0.02 余量可以转过去
+        pad_local = round(min(pad, float(_P.get("rotate_margin", 0.02))), 3)
     except Exception:
         pass
+    if os.environ.get("NAV2_LOCAL_PADDING"):
+        pad_local = float(os.environ["NAV2_LOCAL_PADDING"])
     lim = effective_limits(spec, chassis_type)
     v, w, a, d, aw, dw = lim["v"], lim["w"], lim["a"], lim["d"], lim["aw"], lim["dw"]
     holo = lim["holonomic"]
@@ -280,7 +287,7 @@ local_costmap:
       resolution: 0.05
       transform_tolerance: 0.3
       footprint: "{_fmt_fp(fp)}"
-      footprint_padding: {pad}
+      footprint_padding: {pad_local}
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
