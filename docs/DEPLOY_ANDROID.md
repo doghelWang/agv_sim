@@ -89,6 +89,23 @@ JOIN_TOKEN=xxxxxxxx
 在主平台「部署仿真」里：**仿真节点选手机、执行节点选板卡** (推荐)，程序包分别选 `process:sim` 与板卡的 `agv-nav`。
 手机当主平台时浏览器打开 `http://<手机IP>:8082`。
 
+### 4.1 单手机使用 (开机自动带工作台)
+
+外出只带手机时，让手机自己当平台，开机后自动拉起一个实例 (仿真 + 执行 + Web 工作台都在手机上)。在 Termux 里：
+
+```bash
+echo 'AGV_LOCAL_HUB=1' >> ~/.agv.env     # 忽略 HUB_API，本机当平台
+echo 'AGV_AUTOSTART=1' >> ~/.agv.env     # 节点启动后自动拉起实例
+bash ~/stop_agv.sh; bash ~/start_agv.sh
+tail -f ~/autostart.log                  # 2~5 分钟后打印工作台地址，也写在 ~/agv_url.txt
+```
+
+- 自动拉起的逻辑 (`deploy/android/autostart.py`)：本机实例已在运行就不动；否则重启本机最近的一个实例 (保留它的地图)；一个都没有就新部署 (`AGV_AUTOSTART_SCENE`，默认九宫格)。`AGV_AUTOSTART_INSTANCE=i03` 可指定实例。
+- 规划器自动设为自研导引 (`AGV_AUTOSTART_PLANNER=dijkstra`)：执行进程在手机上时 Nav2 跟线偏差 200~300 mm，自研约 50 mm。
+- 工作台：手机浏览器打开 `http://127.0.0.1:<Web 端口>`；其它设备连手机热点或同一 WiFi 后用手机 IP 访问 (手机 IP 会变，看 `~/agv_url.txt`)。装了 Termux:API 时会弹一条通知，点「打开工作台」即可。
+- 开机自启需要 Termux:Boot (打开过一次)；手机重启后幽灵进程设置仍有效。
+- 回到集群模式 (接入板卡主平台)：把 `~/.agv.env` 里两行改成 `AGV_LOCAL_HUB=0`、`AGV_AUTOSTART=0`，再 `bash ~/stop_agv.sh; bash ~/start_agv.sh`。手机在两个平台上的节点记录互不影响。
+
 ## 5. 关闭幽灵进程限制 (Android 12+ 必做)
 
 Android 12 起系统限制 App 的子进程数 (默认 32)，超过会被随机杀掉。一个实例在手机上有二三十个进程 (每个 ROS 节点一个 proot 会话)，必须关闭。

@@ -11,6 +11,9 @@
 #     JOIN_TOKEN=<集群令牌>              主平台 ~/.agv-hub/cluster_token (或平台「添加计算节点」生成的一次性令牌)
 #     AGENT_HOST=<本机局域网IP>           可选，缺省自动取 wlan0 地址
 #     AGV_PROXY=http://127.0.0.1:7890    可选，访问 GitHub 用的 HTTP 代理 (git 克隆/更新、下载 ROS 密钥)
+#     AGV_LOCAL_HUB=1                    可选，忽略 HUB_API，本机自己当平台 (单手机外出使用)
+#     AGV_AUTOSTART=1                    可选，启动节点后自动拉起实例 (本机仿真 + 执行 + 网关)；
+#                                        AGV_AUTOSTART_INSTANCE=i03 指定实例，AGV_AUTOSTART_SCENE=grid_9_square 新部署时的场景
 #     AGV_CPUS_SIM=4-7                   可选，仿真进程绑定的核 (缺省自动取大核；none = 不绑定)
 #     AGV_CPUS_WEB=0-3 AGV_CPUS_NAV=     可选，Web 网关 / 执行进程绑定的核 (缺省: 网关放小核，执行不绑定)
 #   兼容旧文件 ~/.agv-hub.env (HUB_API/JOIN_TOKEN/AGENT_HOST)

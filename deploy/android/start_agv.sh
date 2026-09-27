@@ -4,7 +4,8 @@
 #   1. proot 派生服务 :8069 (Termux 原生 Python；每个仿真/执行/ROS 进程独立 proot 会话)
 #   2. 资源平台 agv-hub :AGV_HUB_PORT (只有未配置 HUB_API，即手机自己当平台时)
 #   3. 节点代理 agv-agent :8070 (process 运行时)，接入本机平台或 HUB_API 指定的主平台
-# 实例 (仿真/执行进程) 由平台部署，不在这里启动。配置见 ~/.agv.env (agv_common.sh)
+#   4. AGV_AUTOSTART=1 时自动拉起一个实例 (deploy/android/autostart.py)
+# 其它情况下实例 (仿真/执行进程) 由平台部署，不在这里启动。配置见 ~/.agv.env (agv_common.sh)
 # ============================================================================
 . ~/agv_common.sh
 echo "=== AMR 仿真节点启动 ($(getprop ro.product.model 2>/dev/null)) ==="
@@ -46,6 +47,13 @@ if ! http_ok http://127.0.0.1:8070/api/v1/health; then
     echo "[info] 节点代理 :8070 启动中${AGV_CPUS_SIM:+ (仿真绑核 $AGV_CPUS_SIM，网关 ${AGV_CPUS_WEB:-不绑定})}"
 fi
 for i in $(seq 1 30); do http_ok http://127.0.0.1:8070/api/v1/health && break; sleep 1; done
+
+# ---- 4. 开机自动拉起实例 (AGV_AUTOSTART=1): 重启本机最近的实例 / 没有就新部署，仿真 + 执行都在本机
+if [ "${AGV_AUTOSTART:-0}" = 1 ]; then
+    setsid nohup python3 "$AGV_CODE/deploy/android/autostart.py" --hub "$HUB" --node "${AGENT_NAME:-phone}" \
+        > ~/autostart.log 2>&1 < /dev/null &
+    echo "[info] 自动拉起实例中 (约 2~5 分钟)，进度: tail -f ~/autostart.log，完成后地址写在 ~/agv_url.txt"
+fi
 
 echo "==================================================="
 if remote_hub; then
