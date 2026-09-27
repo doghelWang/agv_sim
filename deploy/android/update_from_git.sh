@@ -38,6 +38,10 @@ for f in model_overrides.json robot_config.json sensor_overrides.json robot.urdf
   [ -f /opt/agv/\$f ] || cp /opt/agv-git/\$f /opt/agv/\$f
 done
 git log --oneline -1 > /opt/agv/.agv_version
+# 仿真 C 内核 (sim_core/native)：有 gcc 就编译，没有则仿真自动回退纯 Python
+if command -v gcc >/dev/null || apt-get install -y -q gcc libc6-dev >/dev/null 2>&1; then
+  bash /opt/agv/sim_core/native/build.sh gcc >/dev/null && echo 'libsimcore 已编译' || echo '[警告] libsimcore 编译失败，仿真使用纯 Python 实现'
+fi
 echo '已同步到 /opt/agv'
 " || exit 1
 # Termux 侧脚本 (启动/停止/状态/更新/派生服务/开机自启) 随仓库更新

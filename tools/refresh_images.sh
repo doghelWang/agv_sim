@@ -11,9 +11,11 @@ KINDS="${*:-sim nav}"
 for k in $KINDS; do
     docker image inspect "agv-$k:latest" >/dev/null 2>&1 || { echo "没有 agv-$k:latest，请先 deploy.sh build"; exit 1; }
     f=$(mktemp)
-    { echo "FROM agv-$k:latest"; awk '/^WORKDIR/{f=1} f' "docker/Dockerfile.$k"; } > "$f"
+    # 多阶段构建的辅助阶段 (# @stage-begin … # @stage-end，如 sim 的 C 内核编译) + 基于现有镜像的代码层
+    { grep -m1 '^ARG PY_BASE' "docker/Dockerfile.$k"; awk '/^# @stage-begin/{f=1} /^# @stage-end/{f=0} f' "docker/Dockerfile.$k"
+      echo "FROM agv-$k:latest"; awk '/^WORKDIR/{f=1} f' "docker/Dockerfile.$k"; } > "$f"
     echo "== 刷新 agv-$k:latest ($(git log --oneline -1 2>/dev/null || cat .agv_version 2>/dev/null))"
-    docker build -q -f "$f" --label "agv.code=$(git rev-parse --short HEAD 2>/dev/null)" -t "agv-$k:latest" . || { rm -f "$f"; exit 1; }
+    docker build -q --network host ${BUILD_PROXY:+--build-arg http_proxy=$BUILD_PROXY --build-arg https_proxy=$BUILD_PROXY} -f "$f" --label "agv.code=$(git rev-parse --short HEAD 2>/dev/null)" -t "agv-$k:latest" . || { rm -f "$f"; exit 1; }
     rm -f "$f"
 done
 docker image prune -f >/dev/null 2>&1

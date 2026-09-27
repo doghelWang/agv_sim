@@ -47,6 +47,16 @@ def _upgrade_spec(spec: dict) -> dict:
     return spec
 
 
+def ranges_json(v: np.ndarray, nd: int = 4) -> list:
+    """测距数组 → JSON 列表 (无回波 = None)。向量化: round/tolist 在 C 里做，只对少量无回波点逐个替换"""
+    v = np.asarray(v, dtype=np.float64)
+    fin = np.isfinite(v)
+    out = np.round(np.where(fin, v, 0.0), nd).tolist()
+    for i in np.flatnonzero(~fin).tolist():
+        out[i] = None
+    return out
+
+
 class ScanBuffer:
     def __init__(self):
         self.seq = 0
@@ -608,8 +618,12 @@ class SimService:
         with self.lock:
             m = self.merged.data
             if m:
+                # 同一帧会被多个网页/网关反复取: 按帧序号缓存 JSON 化结果
+                cache = getattr(self, "_merged_json", None)
+                if cache is None or cache[0] != m["seq"]:
+                    cache = self._merged_json = (m["seq"], ranges_json(m["ranges"], 3))
                 snap["merged_scan"] = {k: v for k, v in m.items() if k != "ranges"}
-                snap["merged_scan"]["ranges"] = [round(float(r), 3) if np.isfinite(r) else None for r in m["ranges"]]
+                snap["merged_scan"]["ranges"] = cache[1]
             if scans:
                 out = {}
                 for name, b in self.lidar_bufs.items():
@@ -618,9 +632,10 @@ class SimService:
                         continue
                     if d["type"] == "2d":
                         step = max(1, len(d["ranges"]) // 360)
+                        r = np.asarray(d["ranges"][::step], dtype=np.float64)
                         out[name] = {"type": "2d", "seq": d["seq"], "pose": d["pose"], "angle_min": d["angle_min"],
                                      "angle_inc": d["angle_increment"] * step,
-                                     "ranges": [round(float(r), 2) if np.isfinite(r) else -1.0 for r in d["ranges"][::step]]}
+                                     "ranges": np.round(np.where(np.isfinite(r), r, -1.0), 2).tolist()}
                     else:
                         l3 = next(l for l in self.core.lidars3d if l.name == name)
                         P = l3.points_base({"points": d["points"]})

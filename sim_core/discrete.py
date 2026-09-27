@@ -41,7 +41,7 @@ class PhotoSensor:
         c, s = math.cos(th), math.sin(th)
         ox, oy = x + c * self.x - s * self.y, y + s * self.x + c * self.y
         a = th + self.yaw
-        d = world.raycast(ox, oy, np.array([a - self.half, a, a + self.half]), self.range_m, min_seg_height=self.z)
+        d = world.raycast(ox, oy, np.array([a - self.half, a, a + self.half]), self.range_m, min_seg_height=self.z, few=True)
         self.distance = float(np.min(d))
         thr = self.trigger_m + (self.hyst if self.detected else 0.0)
         self.detected = self.distance <= thr
@@ -57,12 +57,13 @@ class PhotoSensor:
 class BumperStrip:
     def __init__(self, name: str, side: str, poly_body: List[List[float]], di: str, hold_s: float = 0.5):
         self.name, self.side, self.poly, self.di, self.hold_s = name, side, poly_body, di, hold_s
+        self._poly_np = np.ascontiguousarray(poly_body, dtype=np.float64)
         self.pressed = False
         self.contact_t = -1e9
         self.press_count = 0
 
     def update(self, world: World, x: float, y: float, th: float, t: float, forced: bool = False) -> bool:
-        hit, _ = world.collides(self.poly, x, y, th)
+        hit, _ = world.collides(self._poly_np, x, y, th)
         if hit or forced:
             if not self.pressed:
                 self.press_count += 1

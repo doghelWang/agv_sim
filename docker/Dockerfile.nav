@@ -51,6 +51,10 @@ COPY nav2_bridge.py ./
 COPY nav2/nav2_launch.py nav2/loc_launch.py nav2/ekf.yaml nav2/slam_toolbox.yaml nav2/
 COPY tools/__init__.py tools/gen_nav2_params.py tools/
 COPY docker/nav_entrypoint.sh /usr/local/bin/agv-nav-entrypoint
+# C++ ROS 2 发布端 (NAV_ROS_BRIDGE=cpp|auto)；编译失败时执行进程自动回退 Python 发布
+COPY ros2/ ros2/
+RUN cd ros2 && (bash -c ". /opt/ros/humble/setup.bash && colcon build --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release" \
+        || echo "[警告] agv_ros_bridge 编译失败，执行进程将使用 Python 发布") && rm -rf build log
 RUN mkdir -p maps /data/slam_maps
 
 EXPOSE 8091

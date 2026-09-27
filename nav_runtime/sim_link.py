@@ -5,7 +5,7 @@ SimLink —— 执行进程侧的仿真数据接入层 (纯 REST，替代 ROS �
   state 轮询     GET /api/v1/state            50 Hz  (真值/里程计/关节/碰撞)
   io 轮询        GET /api/v1/io + /sensors/photoelectric  20 Hz  (急停/触边/光电 DI 与检测距离 → 执行进程安全层)
   激光长轮询      GET /api/v1/sensors/lidars/{name}?after_seq=N&wait=0.5  (二进制，每帧恰好取一次)
-  融合扫描长轮询  GET /api/v1/sensors/scan?after_seq=N&wait=0.5
+  融合扫描长轮询  GET /api/v1/sensors/scan?after_seq=N&wait=0.5  (二进制)
   模型/场景      GET /api/v1/model, /api/v1/world (车型/场景变化时刷新)
   指令回馈       PUT /api/v1/control/cmd_vel
   状态回馈       PUT /api/v1/nav/feedback     5 Hz
@@ -247,14 +247,21 @@ class SimLink:
                 time.sleep(0.5)
 
     def _merged_loop(self):
+        """融合扫描: 二进制帧 (float32 ranges，inf = 无回波)，省掉 JSON 编解码；d["ranges"] 为 np.ndarray"""
         c = RestClient(self.url, timeout=2.0)
         seq = -1
         while not self.stop_evt.is_set():
             try:
-                d = c.get(f"/api/v1/sensors/scan?after_seq={seq}&wait=0.5")
-                if d.get("seq", seq) == seq:
+                status, h, body = c.binary(f"/api/v1/sensors/scan?after_seq={seq}&wait=0.5")
+                if status != 200:
+                    time.sleep(0.2)
                     continue
-                seq = d["seq"]
+                s = int(h.get("x-seq", seq))
+                if s == seq:
+                    continue
+                seq = s
+                d = json.loads(h.get("x-meta", "{}"))
+                d["ranges"] = np.frombuffer(body, dtype="<f4")
                 with self.lock:
                     self.merged = d
                 for cb in self.on_merged:

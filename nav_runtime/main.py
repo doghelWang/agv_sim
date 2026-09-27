@@ -52,6 +52,7 @@ def build_api(nav: Navigator, link: SimLink, ros=None, port: int = 8091) -> Rest
         fb = nav.feedback()
         fb["link"] = {"sim_url": link.url, "online": link.online, **link.stats}
         fb["ros"] = ros.graph() if ros else None
+        fb["ros_bridge"] = ros.bridge_status() if ros else None
         return fb
     R("GET", "/api/v1/nav", status, "执行状态")
 

@@ -16,6 +16,8 @@ import time
 from collections import deque
 from typing import Optional
 
+import numpy as np
+
 from common.events import EventHub
 from planning import AStarPlanner, DijkstraPlanner
 from planning.dijkstra_planner import SCENARIO_DEFINITIONS, register_scenario
@@ -179,7 +181,11 @@ class Navigator:
 
     def _on_merged(self, d):
         rmax = float(d.get("range_max", 12.0))
-        rs = [rmax if r is None else float(r) for r in d.get("ranges", [])]
+        r0 = d.get("ranges", [])
+        if isinstance(r0, np.ndarray):          # SimLink 二进制帧 (inf = 无回波)
+            rs = np.where(np.isfinite(r0), r0, rmax).astype(float).tolist()
+        else:
+            rs = [rmax if r is None else float(r) for r in r0]
         a0, inc = float(d.get("angle_min", -math.pi)), float(d.get("angle_increment", 0.0))
         with self.lock:
             self.telemetry["scan_ranges"] = rs

@@ -50,7 +50,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from common.rest import ApiError, BinaryBody, RawBody, RestServer  # noqa: E402
-from sim_server.service import API_VERSION, SimService  # noqa: E402
+from sim_server.service import API_VERSION, SimService, ranges_json  # noqa: E402
 
 
 def _jsonable_scan(d: dict) -> dict:
@@ -58,7 +58,7 @@ def _jsonable_scan(d: dict) -> dict:
     for k, v in d.items():
         if isinstance(v, np.ndarray):
             if k in ("ranges", "slice"):
-                out[k] = [round(float(x), 4) if np.isfinite(x) else None for x in v]
+                out[k] = ranges_json(v, 4)
             elif k == "points":
                 out[k] = np.round(v.astype(np.float64), 4).ravel().tolist()
                 out["point_fields"] = ["x", "y", "z"]
@@ -74,7 +74,7 @@ def _jsonable_scan(d: dict) -> dict:
 def _binary_scan(d: dict) -> BinaryBody:
     """二进制帧: 2D = float32 ranges (inf 表示无回波)；3D = 每点 [x,y,z,intensity] float32 + line uint8 数组"""
     meta = {k: v for k, v in d.items() if not isinstance(v, np.ndarray)}
-    if d["type"] == "2d":
+    if d.get("type", "2d") == "2d":         # 融合扫描 (merged) 没有 type 字段
         body = np.asarray(d["ranges"], dtype="<f4").tobytes()
         meta["layout"] = "float32[ranges]"
     else:

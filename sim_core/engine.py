@@ -20,6 +20,7 @@ from .sensors import (CodeReader, GroundSlip, ImuModel, Lidar3DSensor, LidarSens
                       merge_scans, slice_to_scan)
 import os
 from .world import World
+from . import native
 from .discrete import build_bumpers, build_photos, motion_block
 
 from .cameras import build_camera
@@ -365,6 +366,7 @@ class SimCore:
             "cameras": [{"name": c.name, "type": c.kind, "res": f"{c.W}x{c.H}", "fps": c.fps, "ms": round(c.last_ms, 2),
                          "render": "gl" if getattr(c, "use_gl", False) and self.mj and not self.mj.gl_error else "ray"} for c in self.cameras],
             "camera_gl_error": self.mj.gl_error if self.mj else None,
+            "native": native.info()["status"],
         }
 
     def capture_camera(self, cam) -> dict:

@@ -90,12 +90,23 @@ class RosBridge(Node):
         self.link, self.nav = link, navigator
         self.localization = os.environ.get("SIM_LOCALIZATION", "ground_truth")
         sensor_qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST)
-        self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
-        self.gt_pub = self.create_publisher(Odometry, "/ground_truth/odom", 10)
-        self.js_pub = self.create_publisher(JointState, "/joint_states", 10)
-        self.scan_pub = self.create_publisher(LaserScan, "/scan", 10)
-        self.imu_pub = self.create_publisher(Imu, "/imu", 20)
-        self.tf = TransformBroadcaster(self)
+        # 状态/激光/TF 发布端: C++ 节点 (ros2/agv_ros_bridge，NAV_ROS_BRIDGE=cpp|auto) 或本进程 rclpy (py)
+        from nav_runtime.cpp_bridge import CppBridge, wanted_mode
+        self.cpp = None
+        self.bridge_mode = wanted_mode()
+        if self.bridge_mode == "cpp":
+            try:
+                self.cpp = CppBridge(log=self.get_logger().info)
+            except Exception as e:
+                self.get_logger().warn(f"C++ 发布端启动失败，改用 Python 发布: {e}")
+                self.bridge_mode = "py"
+        if self.cpp is None:
+            self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
+            self.gt_pub = self.create_publisher(Odometry, "/ground_truth/odom", 10)
+            self.js_pub = self.create_publisher(JointState, "/joint_states", 10)
+            self.scan_pub = self.create_publisher(LaserScan, "/scan", 10)
+            self.imu_pub = self.create_publisher(Imu, "/imu", 20)
+            self.tf = TransformBroadcaster(self)
         self.sensor_qos = sensor_qos
         self.lidar_pubs, self.cloud_pubs = {}, {}
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
@@ -151,6 +162,9 @@ class RosBridge(Node):
     # ------------------------------------------------------------------ REST → ROS
     def _on_state(self, st):
         self._track_offset(st.get("t"))
+        if self.cpp is not None:
+            self._on_state_cpp(st)
+            return
         stamp = self.sim_stamp(st.get("t"))
         o, tr, m2o = st["odom"], st["truth"], st["map_to_odom"]
         od = Odometry()
@@ -219,6 +233,22 @@ class RosBridge(Node):
             js.name, js.position, js.velocity, js.effort = j.get("names", []), j.get("position", []), j.get("velocity", []), j.get("effort", [])
             self.js_pub.publish(js)
 
+    def _on_state_cpp(self, st):
+        """C++ 发布端: 发布标志与 map→odom 仍由这里决定 (与 Python 发布逻辑同一套判断)"""
+        from nav_runtime.cpp_bridge import F_MAP_ODOM, F_OWN_ODOM
+        slam = getattr(self.nav, "slam", None)
+        ext_tf = slam is not None and slam.ros_active()
+        loc = getattr(self, "loc", None)
+        own_odom = not ext_tf or (loc is not None and not getattr(loc, "ekf", True))
+        flags = F_OWN_ODOM if own_odom else 0
+        m2o = (0.0, 0.0, 0.0)
+        if self.localization != "amcl" and not ext_tf:
+            m = st["map_to_odom"]
+            m2o = slam.M if slam is not None else (m["x"], m["y"], m["yaw"])
+            flags |= F_MAP_ODOM
+        self._own_odom_tf = own_odom
+        self.cpp.send_state(st, m2o, flags)
+
     def _lidar_cfg(self, name):
         for l in self.link.sensors.get("lidars", []):
             if l["name"] == name:
@@ -245,6 +275,9 @@ class RosBridge(Node):
             m.is_bigendian, m.point_step, m.row_step, m.is_dense = False, 26, 26 * len(arr), True
             m.data = array.array("B", arr.tobytes())
             self.cloud_pubs[name].publish(m)
+            return
+        if self.cpp is not None:
+            self.cpp.send_scan(False, name, meta, payload["ranges"])
             return
         if name not in self.lidar_pubs:
             self.lidar_pubs[name] = self.create_publisher(LaserScan, f"/scan/{name}", self.sensor_qos)
@@ -329,7 +362,11 @@ class RosBridge(Node):
             self._pub((name, st, "info"), CameraInfo, f"{base}/camera_info").publish(ci)
 
     def _on_merged(self, d):
-        rs = np.array([np.inf if r is None else r for r in d["ranges"]], dtype=np.float32)
+        r0 = d["ranges"]
+        rs = r0.astype(np.float32) if isinstance(r0, np.ndarray) else np.array([np.inf if r is None else r for r in r0], dtype=np.float32)
+        if self.cpp is not None:
+            self.cpp.send_scan(True, "merged", d, rs)
+            return
         self.scan_pub.publish(self._scan(self.sim_stamp(d.get("t")), d, rs))
 
     @staticmethod
@@ -359,7 +396,12 @@ class RosBridge(Node):
         except Exception:
             return {"nodes": [], "topics": []}
 
+    def bridge_status(self) -> dict:
+        return self.cpp.status() if self.cpp is not None else {"mode": "py"}
+
     def shutdown(self):
         self.rsp.stop()
+        if self.cpp is not None:
+            self.cpp.stop()
         if self.loc is not None:
             self.loc.stop()

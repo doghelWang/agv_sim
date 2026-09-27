@@ -19,6 +19,7 @@ import time
 import urllib.request
 
 GROUPS = [
+    ("agv_ros_bridge", "agv_ros_bridge --in"),
     ("sim_server", "sim_server.api"), ("web_gateway", "web_gateway"), ("nav_runtime", "nav_runtime.main"),
     ("slam_toolbox", "slam_toolbox"), ("ekf", "ekf_node"), ("controller_server", "controller_server"),
     ("planner_server", "planner_server"), ("bt_navigator", "bt_navigator"), ("behavior_server", "behavior_server"),
@@ -125,7 +126,7 @@ def main():
     ap.add_argument("--stop-file", default="", help="该文件出现时提前结束采样")
     a = ap.parse_args()
     series = {"t": [], "cpu": {}, "rss_mb": {}, "host_cpu": [], "freq_mhz": [], "temp_c": [], "rtf": [], "state_hz": [],
-              "tf_age_s": [], "nav2_active": []}
+              "tf_age_s": [], "nav2_active": [], "step_ms": [], "lidar_ms": []}
     prev, prev_tot, t_prev = procs(), total_cpu(), time.time()
     t0 = time.time()
     while time.time() - t0 < a.secs and not (a.stop_file and os.path.exists(a.stop_file)):
@@ -148,8 +149,10 @@ def main():
         series["temp_c"].append(temp())
         series["t"].append(round(now - t0, 1))
         if a.sim:
-            h = get_json(a.sim + "/api/v1/health")
+            h = get_json(a.sim + "/api/v1/sim")        # rtf + 物理步/激光耗时 (EMA，含 GIL 等待)
             series["rtf"].append(h.get("rtf") if h else None)
+            series["step_ms"].append(h.get("step_ms") if h else None)
+            series["lidar_ms"].append(h.get("lidar_ms") if h else None)
         if a.nav:
             n = get_json(a.nav + "/api/v1/nav")
             series["state_hz"].append(((n or {}).get("link") or {}).get("state_hz"))
@@ -171,7 +174,8 @@ def main():
         "host_cpu_percent": stats(series["host_cpu"]),
         "freq_mhz_by_core": {c: stats(v) for c, v in fr.items()},
         "temp_c": stats(series["temp_c"]),
-        "rtf": stats(series["rtf"]), "state_hz": stats(series["state_hz"]), "tf_age_s": stats(series["tf_age_s"]),
+        "rtf": stats(series["rtf"]), "step_ms": stats(series["step_ms"]), "lidar_ms": stats(series["lidar_ms"]),
+        "state_hz": stats(series["state_hz"]), "tf_age_s": stats(series["tf_age_s"]),
         "nav2_active_ratio": (sum(1 for x in series["nav2_active"] if x) / len(series["nav2_active"])) if series["nav2_active"] else None,
     }
     with open(a.out, "w") as f:

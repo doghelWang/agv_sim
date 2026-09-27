@@ -71,12 +71,19 @@ class RosLocalization:
         self.last_tf = 0.0
         self.started_at = 0.0
         self.err = None
-        self.buf = tf2_ros.Buffer() if tf2_ros else None
-        self.tfl = tf2_ros.TransformListener(self.buf, node) if tf2_ros else None
+        # C++ 发布端 (ros_bridge.cpp) 在时: TF 监听与 50 Hz 查询都在 C++ 里做，结果经 on_tf 回调送来；
+        # 否则本进程 rclpy 订阅 /tf (每条 TF 消息都要在 Python 里反序列化) + 50 Hz 定时器
+        self.cpp = getattr(node, "cpp", None)
+        if self.cpp is not None:
+            self.buf = self.tfl = None
+            self.cpp.on_tf = self._on_cpp_tf
+        else:
+            self.buf = tf2_ros.Buffer() if tf2_ros else None
+            self.tfl = tf2_ros.TransformListener(self.buf, node) if tf2_ros else None
+            node.create_timer(0.02, self.poll)
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         node.create_subscription(OccupancyGrid, "/map", self._on_map, qos)
         self.set_pose_pub = node.create_publisher(PoseWithCovarianceStamped, "/set_pose", 10)
-        node.create_timer(0.02, self.poll)
 
     # ------------------------------------------------------------------ 进程
     def running(self) -> bool:
@@ -121,6 +128,11 @@ class RosLocalization:
             self.set_pose_pub.publish(m)
             time.sleep(0.3)
             try:
+                if self.cpp is not None:
+                    ob = self.cpp.odom_base
+                    if ob is not None and math.hypot(ob[0] - pose[0], ob[1] - pose[1]) < 0.3:
+                        return
+                    continue
                 tr = self.buf.lookup_transform("odom", "base_footprint", Time())
                 p = tr.transform.translation
                 if math.hypot(p.x - pose[0], p.y - pose[1]) < 0.3:
@@ -168,6 +180,13 @@ class RosLocalization:
         if off is None:
             return
         self.slam.set_external(stamp - off, (t.x, t.y, _yaw(q)))
+
+    def _on_cpp_tf(self, stamp, toff, pose):
+        """C++ 发布端回传的 map→base_footprint (stamp 为 ROS 墙钟时间，toff = 墙钟 - 仿真时间)"""
+        if not self.running() or stamp <= self.last_tf:
+            return
+        self.last_tf = stamp
+        self.slam.set_external(stamp - toff, pose)
 
     def grid(self):
         m = self.map_msg

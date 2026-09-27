@@ -20,12 +20,15 @@
 * 位姿积分: SE(2) 指数映射 (精确圆弧)，与步长无关。
 """
 
+import ctypes
 import math
 import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+from . import native as _native
 
 
 def wrap(a: float) -> float:
@@ -127,6 +130,76 @@ class ChassisKinematics:
         self.kt = 0.12                   # 电机转矩常数 Nm/A
         self.rolling_coeff = 0.012       # 滚动阻力系数
         self.efficiency = 0.85
+        # C 内核 (sim_core/native)：step / forward 整体下沉；Python 对象仍是状态的权威副本，每步前后同步
+        self.native = _native.lib is not None and 0 < len(wheels) <= 32
+        if self.native:
+            n = len(wheels)
+            self._cw = (_native.CWheel * n)()
+            self._cc = _native.CChassis()
+            self._out = (ctypes.c_double * 4)()
+            self._h_ovr = (ctypes.c_double * n)()
+            self._s_ovr = (ctypes.c_double * n)()
+            self._widx = {w.name: i for i, w in enumerate(wheels)}
+            self._sync_params()
+
+    # ------------------------------------------------------------------
+    def _sync_params(self):
+        """几何/限值参数 → C 结构体 (构建时一次；改了 lim / 轮参数后需再调用)"""
+        L, cc = self.lim, self._cc
+        cc.max_speed, cc.max_accel, cc.max_decel = L.max_speed, L.max_accel, L.max_decel
+        cc.max_ang_speed, cc.max_ang_accel, cc.max_ang_decel, cc.mass = L.max_ang_speed, L.max_ang_accel, L.max_ang_decel, L.mass
+        cc.axle_x, cc.kt, cc.rolling_coeff, cc.efficiency = self.axle_x, self.kt, self.rolling_coeff, self.efficiency
+        cc.holonomic = 1 if self.holonomic else 0
+        for c, w in zip(self._cw, self.wheels):
+            c.kind = _native.KIND[w.kind]
+            for k in _native.WHEEL_PARAMS:
+                setattr(c, k, getattr(w, k))
+        self._params_sig = self._param_sig()
+
+    def _param_sig(self):
+        L = self.lim
+        return (L.max_speed, L.max_accel, L.max_decel, L.max_ang_speed, L.max_ang_accel, L.max_ang_decel, L.mass,
+                self.axle_x, self.holonomic)
+
+    def _step_native(self, cvx, cvy, cwz, dt, brake):
+        if self._param_sig() != self._params_sig:
+            self._sync_params()
+        cc = self._cc
+        sh = self.shaped
+        cc.shaped[0], cc.shaped[1], cc.shaped[2] = sh[0], sh[1], sh[2]
+        cc.vx, cc.vy, cc.wz = self.vx, self.vy, self.wz
+        for c, w in zip(self._cw, self.wheels):     # Python 侧可能改过状态 (reset/stop_now)
+            c.steer, c.steer_target, c.speed, c.speed_target, c.cmd_speed = w.steer, w.steer_target, w.speed, w.speed_target, w.cmd_speed
+            c.angle = w.angle
+        o = self._out
+        _native.lib.sc_kin_step(ctypes.addressof(cc), ctypes.addressof(self._cw), len(self.wheels), cvx, cvy, cwz, dt,
+                                1 if brake else 0, ctypes.addressof(o))
+        for c, w in zip(self._cw, self.wheels):
+            w.steer, w.steer_target, w.speed, w.speed_target, w.cmd_speed = c.steer, c.steer_target, c.speed, c.speed_target, c.cmd_speed
+            w.angle, w.motor_rpm, w.current_a, w.torque_nm, w.steer_current_a = c.angle, c.motor_rpm, c.current_a, c.torque_nm, c.steer_current_a
+        self.shaped = [cc.shaped[0], cc.shaped[1], cc.shaped[2]]
+        self.vx, self.vy, self.wz = o[0], o[1], o[2]
+        self.slip_residual, self.saturation = cc.slip_residual, cc.saturation
+        return o[0], o[1], o[2]
+
+    def _forward_native(self, steer_override, speed_override):
+        nan = _native.NAN
+        h, sp = self._h_ovr, self._s_ovr
+        for i, (c, w) in enumerate(zip(self._cw, self.wheels)):
+            c.steer, c.speed = w.steer, w.speed
+            h[i] = nan
+            sp[i] = nan
+        idx = self._widx
+        for k, v in (steer_override or {}).items():
+            if k in idx:
+                h[idx[k]] = v
+        for k, v in (speed_override or {}).items():
+            if k in idx:
+                sp[idx[k]] = v
+        o = self._out
+        _native.lib.sc_forward(ctypes.addressof(self._cw), len(self.wheels), 1 if self.holonomic else 0, self.axle_x,
+                               ctypes.addressof(h), ctypes.addressof(sp), ctypes.addressof(o))
+        return o[0], o[1], o[2], o[3]
 
     # ------------------------------------------------------------------
     # 指令整形: 限速 + 加减速限制 (模拟车载运动控制器)
@@ -205,6 +278,12 @@ class ChassisKinematics:
     # ------------------------------------------------------------------
     def forward(self, steer_override: Optional[Dict[str, float]] = None,
                 speed_override: Optional[Dict[str, float]] = None) -> Tuple[float, float, float, float]:
+        if self.native:
+            return self._forward_native(steer_override, speed_override)
+        return self._forward_py(steer_override, speed_override)
+
+    def _forward_py(self, steer_override: Optional[Dict[str, float]] = None,
+                    speed_override: Optional[Dict[str, float]] = None) -> Tuple[float, float, float, float]:
         rows, rhs, wts = [], [], []
         for w in self.wheels:
             if not w.constrained:
@@ -230,6 +309,11 @@ class ChassisKinematics:
     # 单步: 指令 → 执行器 → 车体速度
     # ------------------------------------------------------------------
     def step(self, cvx: float, cvy: float, cwz: float, dt: float, brake: bool = False) -> Tuple[float, float, float]:
+        if self.native:
+            return self._step_native(float(cvx), float(cvy), float(cwz), float(dt), brake)
+        return self._step_py(cvx, cvy, cwz, dt, brake)
+
+    def _step_py(self, cvx: float, cvy: float, cwz: float, dt: float, brake: bool = False) -> Tuple[float, float, float]:
         if brake:
             cvx = cvy = cwz = 0.0
         vx_c, vy_c, wz_c = self.shape_command(cvx, cvy, cwz, dt)
@@ -268,7 +352,7 @@ class ChassisKinematics:
                     w.cmd_speed = 0.0
                 w.speed = w.cmd_speed   # 运动学层: 实际 = 指令 (一阶惯性)；MuJoCo 后端再叠加接触/碰撞
 
-        vx, vy, wz, resid = self.forward()
+        vx, vy, wz, resid = self._forward_py()
         self.slip_residual = resid
         # 被动轮 & 电气量
         acc = (vx - self.vx) / dt if dt > 0 else 0.0

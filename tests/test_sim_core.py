@@ -224,6 +224,162 @@ def test_model_overrides_roundtrip():
     assert "cam_a_optical_frame" in u and "lift_joint" in u
 
 
+# ---------------------------------------------------------------------- C 内核 (sim_core/native) 与 Python 实现一致性
+class _Skip(Exception):
+    pass
+
+
+def _skip(msg):
+    try:
+        import pytest
+    except ImportError:
+        raise _Skip(msg)
+    pytest.skip(msg)
+
+
+def _need_native():
+    from sim_core import native
+    if native.lib is None:
+        _skip(f"libsimcore 不可用: {native.status}")
+    return native
+
+
+def _world(sid="grid_9_square", obstacles=True):
+    from sim_core.world import World
+    w = World()
+    w.load_scenario(SCENARIO_DEFINITIONS[sid])
+    if obstacles:
+        w.set_obstacles([{"x": 1.0, "y": 0.5, "w": 0.6, "h": 0.4, "yaw": 0.3},
+                         {"x": -1.2, "y": 2.0, "w": 0.1, "h": 0.1, "z": 0.2},
+                         {"x": 2.5, "y": -1.5, "w": 0.5, "h": 0.5, "type": "person", "z": 1.7}])
+    return w
+
+
+def test_native_collides_matches_python():
+    native = _need_native()
+    w = _world()
+    rng = np.random.default_rng(1)
+    b = w.bounds
+    fps = [np.asarray(_spec()["chassis"]["footprint"], float), np.array([[0.3, 0.1], [0.33, 0.1], [0.33, -0.1], [0.3, -0.1]])]
+    n_hit = 0
+    for k in range(3000):
+        fp = fps[k % 2]
+        x, y, th = rng.uniform(b[0] - 0.5, b[2] + 0.5), rng.uniform(b[1] - 0.5, b[3] + 0.5), rng.uniform(-math.pi, math.pi)
+        h1, p1 = native.collides(native.f64(fp), x, y, th, w.segments)
+        h2, p2 = w._collides_py(fp, x, y, th)
+        assert h1 == h2, (x, y, th)
+        if h1:
+            n_hit += 1
+            assert np.allclose(p1, p2, atol=1e-9), (p1, p2)
+    assert n_hit > 50
+
+
+def test_native_raycast_matches_python():
+    native = _need_native()
+    w = _world()
+    rng = np.random.default_rng(2)
+    b = w.bounds
+    ang = np.linspace(-math.pi, math.pi, 721)
+    for _ in range(200):
+        ox, oy = rng.uniform(b[0], b[2]), rng.uniform(b[1], b[3])
+        zmin = float(rng.choice([0.0, 0.15, 0.5, 2.03]))
+        r1 = native.raycast2d(w.segments, None, zmin, ox, oy, ang, 12.0)
+        r2 = w._raycast_py(ox, oy, ang, 12.0, zmin)
+        assert np.array_equal(np.isinf(r1), np.isinf(r2))
+        f = np.isfinite(r1)
+        assert np.allclose(r1[f], r2[f], atol=1e-9)
+
+
+def test_native_forward_matches_lstsq():
+    native = _need_native()
+    from sim_core.kinematics import ChassisKinematics, ChassisLimits, Wheel
+    rng = np.random.default_rng(3)
+    for k in range(400):
+        kinds = rng.choice(["drive", "steer", "fixed", "caster"], size=int(rng.integers(1, 6)))
+        ws = [Wheel(f"w{i}", str(kd), float(rng.uniform(-1, 1)), float(rng.uniform(-0.6, 0.6)), 0.1) for i, kd in enumerate(kinds)]
+        if k % 7 == 0:          # 退化: 同一点的轮子 (秩亏)
+            for x in ws:
+                x.x, x.y = 0.3, 0.0
+        for x in ws:
+            x.steer, x.speed = float(rng.uniform(-2, 2)), float(rng.uniform(-1.5, 1.5))
+        kin = ChassisKinematics("t", ws, ChassisLimits())
+        assert kin.native
+        st = {x.name: float(rng.uniform(-1, 1)) for x in ws if rng.random() < 0.5}
+        sp = {x.name: float(rng.uniform(-1, 1)) for x in ws if rng.random() < 0.5}
+        a = kin._forward_native(st, sp)
+        b = kin._forward_py(st, sp)
+        assert np.allclose(a, b, atol=1e-9), (kinds, a, b)
+
+
+def test_native_kin_step_matches_python():
+    native = _need_native()
+    spec = _spec()
+    rng = np.random.default_rng(4)
+    for ct in ("single_steer", "diff_drive", "dual_steer"):
+        ka, _ = build_kinematics(spec, ct)
+        kb, _ = build_kinematics(spec, ct)
+        assert ka.native
+        kb.native = False
+        cmd = (0.0, 0.0, 0.0)
+        for i in range(3000):
+            if i % 150 == 0:
+                cmd = (float(rng.uniform(-1.5, 1.5)), float(rng.uniform(-0.5, 0.5)), float(rng.uniform(-1.2, 1.2)))
+                if i % 600 == 0:
+                    cmd = (0.0, 0.0, cmd[2])      # 原地旋转
+            brake = 900 <= i < 960
+            if i == 2000:
+                ka.stop_now(); kb.stop_now()
+            va = ka.step(*cmd, 0.01, brake=brake)
+            vb = kb.step(*cmd, 0.01, brake=brake)
+            assert np.allclose(va, vb, atol=1e-9), (ct, i, va, vb)
+            for wa, wb in zip(ka.wheels, kb.wheels):
+                for f in ("steer", "steer_target", "speed", "speed_target", "cmd_speed", "angle", "motor_rpm", "current_a", "torque_nm"):
+                    assert abs(getattr(wa, f) - getattr(wb, f)) < 1e-6, (ct, i, wa.name, f, getattr(wa, f), getattr(wb, f))
+            assert abs(ka.slip_residual - kb.slip_residual) < 1e-9 and abs(ka.saturation - kb.saturation) < 1e-12
+
+
+def test_native_se2_integrate():
+    native = _need_native()
+    import ctypes
+    out = (ctypes.c_double * 3)()
+    rng = np.random.default_rng(5)
+    for _ in range(500):
+        a = [float(v) for v in rng.uniform(-3, 3, 7)]
+        a[6] = abs(a[6]) * 0.01
+        if rng.random() < 0.2:
+            a[5] = 0.0
+        native.lib.sc_se2_integrate(*a, ctypes.addressof(out))
+        assert np.allclose(list(out), se2_integrate(*a), atol=1e-12)
+
+
+def test_native_photo_rays_match_mujoco():
+    """光电: C 线段射线 (MuJoCo 同款盒体/圆柱几何) vs mj_multiRay，偏差应在毫米内"""
+    native = _need_native()
+    from sim_core.mujoco_backend import MUJOCO_AVAILABLE
+    if not MUJOCO_AVAILABLE:
+        _skip("未安装 mujoco")
+    core = SimCore(_spec(), SCENARIO_DEFINITIONS, "grid_9_square", backend="mujoco", noise=False)
+    core.set_obstacles([{"x": 1.0, "y": 0.5, "w": 0.6, "h": 0.4, "yaw": 0.3},
+                        {"x": 2.5, "y": -1.5, "w": 0.5, "h": 0.5, "type": "person", "z": 1.7}])
+    w = core.world
+    rng = np.random.default_rng(6)
+    b = w.bounds
+    ang = np.linspace(-math.pi, math.pi, 90)
+    worst, n = 0.0, 0
+    for _ in range(300):
+        ox, oy = rng.uniform(b[0], b[2]), rng.uniform(b[1], b[3])
+        z = float(rng.choice([0.12, 0.3, 1.2]))
+        r1 = native.raycast2d(w.mj_segments, w.mj_circles, z, ox, oy, ang, 3.0)
+        r2 = core.mj.raycast2d(ox, oy, z, ang, 3.0)
+        both = np.isfinite(r1) & np.isfinite(r2)
+        n += int(both.sum())
+        if both.any():
+            worst = max(worst, float(np.abs(r1[both] - r2[both]).max()))
+        # 命中/未命中只允许出现在量程边缘或盒体拐角 (掠射)
+        assert int((np.isfinite(r1) != np.isfinite(r2)).sum()) <= 2
+    assert n > 1000 and worst < 2e-3, worst
+
+
 if __name__ == "__main__":
     fails = 0
     for k, f in list(globals().items()):
@@ -231,6 +387,8 @@ if __name__ == "__main__":
             try:
                 f()
                 print("PASS", k)
+            except _Skip as e:
+                print("SKIP", k, e)
             except Exception as e:  # pragma: no cover
                 fails += 1
                 print("FAIL", k, repr(e))

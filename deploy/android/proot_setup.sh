@@ -49,7 +49,7 @@ echo "== 安装 ROS 2 Humble + Nav2 + slam_toolbox + robot_localization (耗时�
 apt-get install -y -q --no-install-recommends \
     ros-humble-ros-base ros-humble-navigation2 ros-humble-nav2-bringup ros-humble-robot-state-publisher \
     ros-humble-slam-toolbox ros-humble-robot-localization \
-    python3-pip python3-numpy python3-pil python3-psutil python3-protobuf libopenblas0-pthread
+    python3-pip python3-numpy python3-pil python3-psutil python3-protobuf libopenblas0-pthread gcc libc6-dev
 
 # ---- MuJoCo (pip)。proot 里 ANDROID_* 环境变量会让 pip 误判成 Android 而启动失败，先去掉
 if ! python3 -c "import mujoco" 2>/dev/null; then
