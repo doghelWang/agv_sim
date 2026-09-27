@@ -113,6 +113,12 @@ class Nav2Bridge:
                                    if NavigateThroughPoses is not None else None)
             self.load_map_cli = node.create_client(LoadMap, "/map_server/load_map")
             self.follow_client = ActionClient(node, FollowPath, "follow_path") if FollowPath is not None else None
+            try:   # Nav2 behavior_server 的 BackUp 行为 (转向空间不足时后退一点再转)
+                from nav2_msgs.action import BackUp
+                self._BackUp = BackUp
+                self.backup_client = ActionClient(node, BackUp, "backup")
+            except Exception:
+                self._BackUp = self.backup_client = None
             self._fp_handle = None
             self._active = False
             try:
@@ -274,6 +280,42 @@ class Nav2Bridge:
                 return "CANCELED" if cancelled() else "TIMEOUT"
             time.sleep(0.02)
         self._fp_handle = None
+        try:
+            st = rf.result().status
+        except Exception:
+            st = 6
+        return self.RESULT_TEXT.get(st, f"STATUS_{st}")
+
+    def backup(self, dist: float, speed: float, cancelled, timeout: float = 20.0) -> str:
+        """Nav2 BackUp 行为 (阻塞)：沿车头反方向后退 dist 米 (behavior_server 按局部代价地图做后方碰撞检查)"""
+        if not self.available or self.backup_client is None:
+            return "BackUp 不可用"
+        if not self.backup_client.wait_for_server(timeout_sec=2.0):
+            return "Nav2 backup 服务未就绪"
+        from builtin_interfaces.msg import Duration
+        g = self._BackUp.Goal()
+        g.target.x = float(abs(dist))
+        g.speed = float(abs(speed))
+        g.time_allowance = Duration(sec=int(timeout))
+        fut = self.backup_client.send_goal_async(g)
+        t_end = time.time() + 5.0
+        while not fut.done():
+            if time.time() > t_end:
+                return "BackUp 目标未被接受 (超时)"
+            time.sleep(0.02)
+        gh = fut.result()
+        if gh is None or not gh.accepted:
+            return "BackUp 目标被拒绝"
+        rf = gh.get_result_async()
+        t_end = time.time() + timeout + 2.0
+        while not rf.done():
+            if cancelled() or time.time() > t_end:
+                try:
+                    gh.cancel_goal_async()
+                except Exception:
+                    pass
+                return "CANCELED" if cancelled() else "TIMEOUT"
+            time.sleep(0.02)
         try:
             st = rf.result().status
         except Exception:

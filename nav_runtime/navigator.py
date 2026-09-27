@@ -25,6 +25,10 @@ from planning import maneuver, protection
 from nav_runtime.slam import SlamLocalizer
 
 
+# 段起点转向受阻时依次后退的距离 (m)，NAV2_BACKUP_STEPS="0.2,0.35" 可调
+BACKUP_STEPS = tuple(float(v) for v in os.environ.get("NAV2_BACKUP_STEPS", "0.2,0.35").split(",") if v.strip())
+
+
 class _Recorder:
     """记录任务元数据 (原 flight_recorder 的位置；回放录制在 Web 网关进行)"""
 
@@ -1480,7 +1484,8 @@ class Navigator:
             if i < n - 1:
                 h_out = math.atan2(path[i + 1][1] - b[1], path[i + 1][0] - b[0])
                 if abs(math.atan2(math.sin(h_out - h_in), math.cos(h_out - h_in))) > 0.02:
-                    cur[-1] = (b[0], b[1], h_out)
+                    # 段终点保持到达方向 (不在段末原地转)；转向交给下一段开头的 RotationShim ——
+                    # 转向空间不足时车停在下一段起点，可由 _nav2_follow_loop 后退一点再转 (Nav2 BackUp)
                     segs.append((cur, i))
                     cur = [(b[0], b[1], h_out)]
         cur[-1] = (cur[-1][0], cur[-1][1], final_yaw)
@@ -1509,7 +1514,7 @@ class Navigator:
                         self.telemetry["nav_dist_rem"] = round(dist + rest, 2)
                         self.telemetry["nav2_feedback"] = {"distance_remaining": round(dist + rest, 2), "speed": round(speed, 3),
                                                            "segment": k + 1, "segments": len(segs)}
-            tries = 0
+            tries = backups = 0
             while True:
                 self.approach_left = None
                 try:
@@ -1525,6 +1530,24 @@ class Navigator:
                     return
                 if res == "SUCCEEDED":
                     break
+                # 段起点原地转向受阻 (车头前方空间不够转，如贴墙拓扑节点/工位)：先用 Nav2 BackUp 后退一点再重试转向
+                if res == "ABORTED" and backups < len(BACKUP_STEPS) and self._turn_blocked_at(poses):
+                    d = BACKUP_STEPS[backups]
+                    backups += 1
+                    self.event_hub.emit("navigation", "NAV2_BACKUP", "warning", f"转向空间不足，后退 {d:.2f} m 再转",
+                                        f"第 {k + 1}/{len(segs)} 段起点原地转向受阻 (第 {backups} 次)", {"mission_id": mission_id})
+                    with self.lock:
+                        self.telemetry["nav_status"] = "OBSTACLE_WAIT"
+                    r = self.nav2.backup(d, 0.1, cancelled)
+                    for _ in range(3):
+                        self.link.send_cmd(0.0, 0.0, 0.0, source="nav2")
+                        time.sleep(0.02)
+                    if cancelled():
+                        return
+                    with self.lock:
+                        self.telemetry["nav_status"] = "NAVIGATING"
+                    if r == "SUCCEEDED":
+                        continue
                 tries += 1
                 if tries > retries:
                     on_result(mission_id, "ABORTED")
@@ -1539,6 +1562,18 @@ class Navigator:
                         return
                     self.telemetry["nav_status"] = "NAVIGATING"
         on_result(mission_id, "SUCCEEDED")
+
+    def _turn_blocked_at(self, poses) -> bool:
+        """车在本段起点附近 (≤ 0.6 m) 且车头与路径方向相差 > 0.2 rad —— 说明卡在段起点的原地转向上"""
+        if len(poses) < 2:
+            return False
+        with self.lock:
+            x, y, yaw = self.telemetry.get("x", 0.0), self.telemetry.get("y", 0.0), self.telemetry.get("yaw", 0.0)
+        p0 = poses[0]
+        j = min(len(poses) - 1, 6)
+        h = math.atan2(poses[j][1] - p0[1], poses[j][0] - p0[0])
+        err = abs(math.atan2(math.sin(yaw - h), math.cos(yaw - h)))
+        return math.hypot(x - p0[0], y - p0[1]) <= 0.6 and err > 0.2
 
     def _wait_until_stopped(self, mission_id, timeout=6.0):
         t0 = time.time()
