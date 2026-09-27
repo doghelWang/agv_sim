@@ -106,6 +106,7 @@ class RosBridge(Node):
         link.on_merged.append(self._on_merged)
         link.on_camera.append(self._on_camera)
         self.cam_pubs = {}
+        link.camera_wanted = self._camera_wanted
         link._ensure_camera_threads()
         # 开源定位栈 (robot_localization + slam_toolbox)；LOC_ENGINE=builtin 强制使用内置 SLAM
         self.loc = None
@@ -275,6 +276,18 @@ class RosBridge(Node):
         if key not in self.cam_pubs:
             self.cam_pubs[key] = self.create_publisher(typ, topic, self.sensor_qos)
         return self.cam_pubs[key]
+
+    def _camera_wanted(self, name, info) -> bool:
+        """相机话题当前是否有订阅者 (图像/点云/camera_info 任一)。预先建好发布者，订阅方才能匹配上"""
+        n = 0
+        for st in info.get("streams", []):
+            topic = f"/{name}/{self.TOPICS.get(st, st)}"
+            if st == "points":
+                n += self._pub((name, st), PointCloud2, topic).get_subscription_count()
+                continue
+            n += self._pub((name, st), Image, topic).get_subscription_count()
+            n += self._pub((name, st, "info"), CameraInfo, f"{topic.rsplit('/', 1)[0]}/camera_info").get_subscription_count()
+        return n > 0
 
     def _on_camera(self, name, info, frames, meta):
         stamp = self.now()

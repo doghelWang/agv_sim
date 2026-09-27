@@ -10,7 +10,7 @@ AGV_SPAWNER=http://127.0.0.1:8069 时走派生服务 (见 deploy/android/proot_s
 其它情况 (树莓派 Docker、x86) 与原来完全一样。
 
 命令行 (在 shell 脚本里把一个命令放到独立 proot 里，前台等待并转发 SIGTERM/SIGINT):
-  python3 -m common.spawn exec <name> -- <cmd> [args...]
+  python3 -m common.spawn exec <name> -- <cmd> [args...]     (环境变量 AGV_CPUS_<NAME> 指定绑核，如 AGV_CPUS_WEB=0-3)
 """
 import json
 import os
@@ -134,7 +134,7 @@ def _cli():
     name, cmd = a[1], a[a.index("--") + 1:]
     if not available():
         os.execvp(cmd[0], cmd)
-    p = popen(name, cmd)
+    p = popen(name, cmd, cpus=os.environ.get("AGV_CPUS_" + name.upper().replace("-", "_")) or None)
     def fwd(sig, _f):
         p.stop(6)
         sys.exit(128 + sig)

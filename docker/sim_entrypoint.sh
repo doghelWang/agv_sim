@@ -4,6 +4,8 @@
 set -e
 cd "${AGV_HOME:-/opt/agv}"
 PY="${PYTHON:-python3}"
+# 数学库线程: 仿真/执行进程自己已有多线程，OpenBLAS/OpenMP 默认按核数开线程会互相抢核 (OPTIMIZATION R2)
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}" OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 DATA="${AGV_DATA:-/data}"
 export AGV_DATA="$DATA"
 mkdir -p "$DATA"

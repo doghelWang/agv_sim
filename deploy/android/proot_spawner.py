@@ -112,6 +112,24 @@ def stop_session(name, timeout=8.0):
                 pass
 
 
+def parse_cpus(spec):
+    """"4-7" / "4,5,6,7" / "0-1,4" → {4,5,6,7}；空或无效 → None"""
+    out = set()
+    for part in str(spec or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        try:
+            a, _, b = part.partition("-")
+            out.update(range(int(a), int(b or a) + 1))
+        except ValueError:
+            return None
+    try:
+        out &= os.sched_getaffinity(0)
+    except (AttributeError, OSError):
+        pass
+    return out or None
+
+
 def spawn(req):
     name = req["name"]
     argv = [str(a) for a in req["argv"]]
@@ -128,17 +146,31 @@ def spawn(req):
     if req.get("log"):
         lines.append(f"exec >> {shlex.quote(req['log'])} 2>&1")
     cmd = " ".join(shlex.quote(a) for a in argv)
-    if req.get("cpus"):
-        cmd = f"taskset -c {shlex.quote(str(req['cpus']))} {cmd}"
     lines.append(f"exec {cmd}")
     with open(script, "w") as f:
         f.write("\n".join(lines) + "\n")
+    # CPU 绑定在 proot 外面做 (sched_setaffinity 继承给 proot-distro → proot 追踪进程 → 被追踪的全部进程)，
+    # 这样追踪进程也在同一组核上 (在 proot 里 taskset 只绑得住被追踪进程)
+    cpus = parse_cpus(req.get("cpus"))
+    pre = None
+    if cpus:
+        def pre():
+            try:
+                os.sched_setaffinity(0, cpus)
+            except OSError:
+                pass        # 例如 Termux 在后台 cgroup 里没有大核: 不绑定
     p = subprocess.Popen(["proot-distro", "login", DISTRO, "--", "bash", script],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+                         start_new_session=True, preexec_fn=pre)
     with lock:
         procs[name] = {"p": p, "argv": argv, "started": time.time()}
-    log("spawn", name, p.pid, cmd[:160])
+    aff = ""
+    if cpus:
+        try:
+            aff = " cpus=" + ",".join(map(str, sorted(os.sched_getaffinity(p.pid))))
+        except OSError:
+            aff = " cpus=?"
+    log("spawn", name, p.pid, cmd[:160] + aff)
     return {"name": name, "pid": p.pid}
 
 

@@ -53,7 +53,7 @@ class MuJoCoBackend:
         if not MUJOCO_AVAILABLE:
             raise RuntimeError("mujoco 未安装 (pip install mujoco)")
         self.dt = dt
-        self.threads = int(threads or os.environ.get("SIM_RAY_THREADS", str(max(1, min(4, os.cpu_count() or 1)))))
+        self.threads = int(threads or os.environ.get("SIM_RAY_THREADS", str(max(1, min(2, os.cpu_count() or 1)))))
         self.pool = ThreadPoolExecutor(self.threads) if self.threads > 1 else None
         self.m = self.d = None
         self.robot_body = -1

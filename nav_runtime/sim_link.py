@@ -13,6 +13,7 @@ SimLink —— 执行进程侧的仿真数据接入层 (纯 REST，替代 ROS �
 
 import json
 import math
+import os
 import threading
 import time
 from typing import Callable, Dict, List, Optional
@@ -44,6 +45,9 @@ class SimLink:
         self.on_lidar: List[Callable] = []       # cb(name, meta, payload(np))
         self.on_merged: List[Callable] = []
         self.on_camera: List[Callable] = []      # cb(name, info, {stream: ndarray}, meta)
+        # 相机拉取策略 NAV_CAMERAS: auto = 有人订阅才拉 (camera_wanted 判定), on = 一直拉, off = 不拉
+        self.camera_mode = os.environ.get("NAV_CAMERAS", "auto").strip().lower()
+        self.camera_wanted: Optional[Callable] = None   # cb(name, info) -> bool
         self.on_model_change: List[Callable] = []
         self.on_world_change: List[Callable] = []
         self.feedback_fn: Optional[Callable[[], dict]] = None
@@ -184,8 +188,8 @@ class SimLink:
                 time.sleep(0.5)
 
     def _ensure_camera_threads(self):
-        if not self.on_camera:
-            return      # 无消费者 (未启用 ROS) 时不拉取图像，节省带宽
+        if not self.on_camera or self.camera_mode in ("off", "0", "false"):
+            return      # 无消费者 (未启用 ROS) 或关闭时不拉取图像，节省带宽
         for c in self.sensors.get("camera_streams", []):
             n = c["name"]
             if n not in self._camera_threads:
@@ -202,6 +206,16 @@ class SimLink:
             if info is None:
                 time.sleep(1.0)
                 continue
+            if self.camera_mode == "auto" and self.camera_wanted is not None:
+                try:
+                    wanted = self.camera_wanted(name, info)
+                except Exception:
+                    wanted = True
+                if not wanted:      # 没有订阅者: 不拉取 (仿真端相机随之闲置、停止成像)
+                    self.stats.setdefault("camera_idle", {})[name] = True
+                    time.sleep(0.5)
+                    continue
+                self.stats.setdefault("camera_idle", {})[name] = False
             try:
                 frames, meta0 = {}, None
                 for i, st in enumerate(info["streams"]):

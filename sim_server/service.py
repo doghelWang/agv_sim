@@ -70,6 +70,9 @@ class SimService:
         self.merged_hz = 10.0
         self.lidar_max_hz = float(os.environ.get("SIM_LIDAR_MAX_HZ", "10"))
         self.camera_max_hz = float(os.environ.get("SIM_CAMERA_MAX_HZ", "10"))
+        # 相机按需成像: 最近 SIM_CAMERA_IDLE_S 秒内没有人取帧就不渲染 (0 = 一直渲染，旧行为)
+        self.camera_idle_s = float(os.environ.get("SIM_CAMERA_IDLE_S", "3"))
+        self._cam_req: Dict[str, float] = {}
         self.cam_bufs: Dict[str, ScanBuffer] = {}
         # 模型 = 基线 (cmodel 解析, robot_config.base.json) + 人工补全 (model_overrides.json)
         from model_overrides import apply_overrides, load_overrides
@@ -194,7 +197,8 @@ class SimService:
             with self.lock:
                 core = self.core
                 t = core.t
-                due = [c for c in core.cameras if t >= self._next_cam.get(c.name, 0.0)]
+                now = time.time()
+                due = [c for c in core.cameras if t >= self._next_cam.get(c.name, 0.0) and self._cam_wanted(c.name, now)]
                 pose = (core.x, core.y, core.th)
                 for c in due:
                     hz = min(c.fps, self.camera_max_hz) if self.camera_max_hz > 0 else c.fps
@@ -217,15 +221,26 @@ class SimService:
                     self.cond.notify_all()
 
     # ================================================================== 相机
+    def _cam_wanted(self, name: str, now: float) -> bool:
+        return self.camera_idle_s <= 0 or now - self._cam_req.get(name, 0.0) <= self.camera_idle_s
+
     def cameras(self) -> list:
+        now = time.time()
         with self.lock:
             return [dict(c.info(), seq=self.cam_bufs[c.name].seq, capture_ms=round(c.last_ms, 1),
+                         active=self._cam_wanted(c.name, now),
                          render=("gl" if getattr(c, "use_gl", False) else "ray")) for c in self.core.cameras]
 
     def wait_camera(self, name: str, after_seq: int, wait: float) -> Optional[dict]:
         if name not in self.cam_bufs:
             raise KeyError(name)
         buf = self.cam_bufs[name]
+        now = time.time()
+        if not self._cam_wanted(name, now):
+            # 相机闲置过 (缓冲里是旧帧): 唤醒后等一帧新的，最多 wait 秒 (无 wait 时至少等 1 s)
+            after_seq = max(after_seq, buf.seq)
+            wait = max(wait, 1.0)
+        self._cam_req[name] = now
         deadline = time.time() + max(0.0, min(wait, 5.0))
         with self.cond:
             while (buf.seq <= after_seq or not buf.data) and time.time() < deadline:
