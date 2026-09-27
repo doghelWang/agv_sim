@@ -350,7 +350,11 @@ export function tab36(el) {
     $('[data-planner]', el).value = W.tel.planner_type || 'dijkstra';
     $('[data-chassis]', el).value = (W.tel.robot_spec || {}).active_chassis || 'cmodel';
     $('[data-editor]', el).href = `/model-editor?api=${encodeURIComponent(W.base + '/sim/api/v1')}&lockkey=${encodeURIComponent(lockKey())}`;
-    $('[data-legacy]', el).href = W.inst?.web_url || '#';
+    // 网关只监听本机 (单手机模式 WEB_BIND=127.0.0.1) 时，经典调度台只能在手机本机浏览器打开
+    const wu = W.inst?.web_url || '', lg = $('[data-legacy]', el);
+    const loop = /^https?:\/\/(127\.|localhost)/.test(wu), here = /^(127\.|localhost)/.test(location.hostname);
+    lg.href = wu && (!loop || here) ? wu : '#';
+    if (loop && !here) { lg.title = '网关只对本机开放，请在手机浏览器里打开'; lg.classList.add('opacity-50'); }
   }
   let perf = null, pt = 0;
   function render(t) {

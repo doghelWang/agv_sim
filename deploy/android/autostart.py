@@ -145,17 +145,17 @@ def main():
         log("规划器", a.planner, "已设置" if ok else "设置失败 (可在工作台里手动选)")
     hub_port = HUB.rsplit(":", 1)[-1]
     lines = [f"实例 {iid} 运行中",
-             f"工作台 (本机浏览器): http://127.0.0.1:{port}",
-             f"工作台 (同网络其它设备): http://{ip}:{port}",
-             f"资源平台: http://{ip}:{hub_port}"]
+             f"资源平台 (本机浏览器): http://127.0.0.1:{hub_port}",
+             f"资源平台 (同网络其它设备): http://{ip}:{hub_port}",
+             f"工作台: http://{ip}:{hub_port}/inst/{iid}/  (或在资源平台的实例列表里点「工作台」)"]
     for ln in lines:
         log(ln)
     with open(os.path.expanduser("~/agv_url.txt"), "w") as f:
         f.write(time.strftime("%F %T") + "\n" + "\n".join(lines) + "\n")
     try:
         subprocess.run(["termux-notification", "--id", "agv", "--title", f"AMR 仿真 {iid} 已启动",
-                        "--content", f"工作台 http://127.0.0.1:{port}  (局域网 {ip}:{port})",
-                        "--button1", "打开工作台", "--button1-action", f"termux-open-url http://127.0.0.1:{port}"],
+                        "--content", f"资源平台 http://{ip}:{hub_port}",
+                        "--button1", "打开工作台", "--button1-action", f"termux-open-url http://127.0.0.1:{hub_port}/inst/{iid}/"],
                        timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass

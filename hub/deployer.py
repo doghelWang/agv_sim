@@ -221,6 +221,8 @@ class Deployer:
             env = {"SIM_API_PORT": ports["sim_api"], "WEB_PORT": ports["web"], "NAV_API": f"http://{nav_host}:{ports['nav_api']}",
                    "HUB_API": hub_url, "INSTANCE_ID": iid, "MODEL_ID": i["model_id"], "MODEL_VER": i["model_ver"],
                    "SCENE_ID": i["scene_id"], "INSTANCE_NAME": i["name"], "SIM_CAMERA_RENDER": opts.get("camera_render", "ray")}
+            if hs.startswith("127.") and ((sim_n.get("info") or {}).get("runtime") or {}).get("runtime") == "process":
+                env["WEB_BIND"] = "127.0.0.1"   # 仿真与平台同机 (如单手机): 工作台只经平台 /inst/<实例>/ 访问，网关端口不对外
             cname_s, cname_n = f"agv-sim-{iid}", f"agv-nav-{iid}"
             ag_s.call("POST", "/api/v1/containers/run", {"name": cname_s, "image": sim_p["image_ref"], "role": "sim", "instance": iid,
                                                           "env": {k: str(v) for k, v in env.items()}}, timeout=60)

@@ -128,6 +128,8 @@ class PackageRepo:
                 if node["id"] not in nodes:
                     nodes.add(node["id"])
                     self.s.update("packages", exists["id"], nodes=sorted(nodes))
+                if rt == "process" and im.get("version") and exists.get("version") != im["version"]:
+                    self.s.update("packages", exists["id"], version=im["version"])   # 源码运行时: 版本跟随节点代码
                 continue
             pid = new_id("pkg-", {p["id"]: 1 for p in self.s.list("packages")})
             self.s.put("packages", {"id": pid, "kind": im["kind"], "source": "process" if rt == "process" else "node",

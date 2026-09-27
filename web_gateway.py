@@ -1442,7 +1442,8 @@ class TeleopHTTPHandler(SimpleHTTPRequestHandler):
 
 
 def run_server(port=8088):
-    server_address = ("0.0.0.0", port)
+    # WEB_BIND=127.0.0.1: 只给同机的资源平台反向代理用 (平台 /inst/<实例>/)，不在局域网单独开放端口
+    server_address = (os.environ.get("WEB_BIND", "0.0.0.0"), port)
     httpd = ThreadingHTTPServer(server_address, TeleopHTTPHandler)
     httpd.serve_forever()
 
@@ -1454,7 +1455,7 @@ def main():
     bridge_node.start()
     from gateway_v2 import GatewayV2
     v2 = GatewayV2(bridge_node, SIM_API, NAV_API)
-    print(f"[web_gateway] http://0.0.0.0:{port}  ←→ 仿真进程 {SIM_API} / 执行进程 {NAV_API}", flush=True)
+    print(f"[web_gateway] http://{os.environ.get('WEB_BIND', '0.0.0.0')}:{port}  ←→ 仿真进程 {SIM_API} / 执行进程 {NAV_API}", flush=True)
     try:
         run_server(port)
     except KeyboardInterrupt:

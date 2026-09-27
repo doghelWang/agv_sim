@@ -151,6 +151,13 @@ class ProcessRuntime:
 
     def images(self) -> List[dict]:
         v = "src-" + time.strftime("%Y%m%d", time.localtime(os.path.getmtime(os.path.join(self.code_dir, "web_gateway.py"))))
+        try:   # 手机 update_from_git.sh 写入的 git 版本 (如 "044c4dd android: …") → src-044c4dd
+            with open(os.path.join(self.code_dir, ".agv_version")) as f:
+                h = f.read().split()[0]
+            if h:
+                v = "src-" + h
+        except (OSError, IndexError):
+            pass
         return [{"ref": "process:sim", "id": "process:sim", "kind": "sim", "size": 0, "created": 0, "version": v, "api": "v1", "labels": {}},
                 {"ref": "process:nav", "id": "process:nav", "kind": "nav", "size": 0, "created": 0, "version": v, "api": "v1", "labels": {}}]
 
