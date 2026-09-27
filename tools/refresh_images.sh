@@ -15,7 +15,7 @@ for k in $KINDS; do
     { grep -m1 '^ARG PY_BASE' "docker/Dockerfile.$k"; awk '/^# @stage-begin/{f=1} /^# @stage-end/{f=0} f' "docker/Dockerfile.$k"
       echo "FROM agv-$k:latest"; awk '/^WORKDIR/{f=1} f' "docker/Dockerfile.$k"; } > "$f"
     echo "== 刷新 agv-$k:latest ($(git log --oneline -1 2>/dev/null || cat .agv_version 2>/dev/null))"
-    docker build -q --network host ${BUILD_PROXY:+--build-arg http_proxy=$BUILD_PROXY --build-arg https_proxy=$BUILD_PROXY} -f "$f" --label "agv.code=$(git rev-parse --short HEAD 2>/dev/null)" -t "agv-$k:latest" . || { rm -f "$f"; exit 1; }
+    docker build -q --network host --build-arg APT_MIRROR="${APT_MIRROR-http://mirrors.tuna.tsinghua.edu.cn}" ${BUILD_PROXY:+--build-arg http_proxy=$BUILD_PROXY --build-arg https_proxy=$BUILD_PROXY} -f "$f" --label "agv.code=$(git rev-parse --short HEAD 2>/dev/null)" -t "agv-$k:latest" . || { rm -f "$f"; exit 1; }
     rm -f "$f"
 done
 docker image prune -f >/dev/null 2>&1

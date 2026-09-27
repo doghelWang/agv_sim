@@ -227,6 +227,7 @@ class Deployer:
                     and ((sim_n.get("info") or {}).get("runtime") or {}).get("runtime") == "process")
             if solo:
                 env.update(WEB_BIND="127.0.0.1", AGV_BIND="127.0.0.1")
+            env.update(opts.get("env_sim") or {})      # 实例选项里的额外环境变量 (如 SIM_NATIVE=0 做对比)
             cname_s, cname_n = f"agv-sim-{iid}", f"agv-nav-{iid}"
             ag_s.call("POST", "/api/v1/containers/run", {"name": cname_s, "image": sim_p["image_ref"], "role": "sim", "instance": iid,
                                                           "env": {k: str(v) for k, v in env.items()}}, timeout=60)
@@ -246,6 +247,7 @@ class Deployer:
                      "NAV_LOCALIZATION": opts.get("localization", "slam")}
             if solo:
                 env_n["AGV_BIND"] = "127.0.0.1"
+            env_n.update(opts.get("env_nav") or {})    # 如 NAV_ROS_BRIDGE=py|cpp
             ag_n.call("POST", "/api/v1/containers/run", {"name": cname_n, "image": nav_p["image_ref"], "role": "nav", "instance": iid,
                                                           "env": {k: str(v) for k, v in env_n.items()}}, timeout=60)   # /data: SLAM 地图
             started.append((ag_n, cname_n))

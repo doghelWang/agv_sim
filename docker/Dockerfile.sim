@@ -10,7 +10,9 @@ ARG PY_BASE=python:3.10-slim-bookworm
 FROM ${PY_BASE} AS simcore
 ARG http_proxy
 ARG https_proxy
-RUN (apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev) || echo "[警告] 未能安装 gcc"
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|http://deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null; fi; \
+    (apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev) || echo "[警告] 未能安装 gcc"
 COPY sim_core/native/simcore.c sim_core/native/build.sh /src/
 # 编译失败 (离线装不上 gcc) 时留一个空文件: 运行时加载失败 → 自动回退纯 Python 实现
 RUN bash /src/build.sh gcc || { echo "[警告] 未能编译 libsimcore，仿真将使用纯 Python 实现"; : > /src/libsimcore.so; }
