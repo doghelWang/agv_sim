@@ -221,8 +221,12 @@ class Deployer:
             env = {"SIM_API_PORT": ports["sim_api"], "WEB_PORT": ports["web"], "NAV_API": f"http://{nav_host}:{ports['nav_api']}",
                    "HUB_API": hub_url, "INSTANCE_ID": iid, "MODEL_ID": i["model_id"], "MODEL_VER": i["model_ver"],
                    "SCENE_ID": i["scene_id"], "INSTANCE_NAME": i["name"], "SIM_CAMERA_RENDER": opts.get("camera_render", "ray")}
-            if hs.startswith("127.") and ((sim_n.get("info") or {}).get("runtime") or {}).get("runtime") == "process":
-                env["WEB_BIND"] = "127.0.0.1"   # 仿真与平台同机 (如单手机): 工作台只经平台 /inst/<实例>/ 访问，网关端口不对外
+            # 仿真、执行都和平台在同一台 process 运行时节点上 (单手机模式): 实例端口只监听本机，
+            # 工作台经平台 /inst/<实例>/ 反向代理访问，局域网只开放平台端口
+            solo = (sim_n["id"] == nav_n["id"] and hs.startswith("127.")
+                    and ((sim_n.get("info") or {}).get("runtime") or {}).get("runtime") == "process")
+            if solo:
+                env.update(WEB_BIND="127.0.0.1", AGV_BIND="127.0.0.1")
             cname_s, cname_n = f"agv-sim-{iid}", f"agv-nav-{iid}"
             ag_s.call("POST", "/api/v1/containers/run", {"name": cname_s, "image": sim_p["image_ref"], "role": "sim", "instance": iid,
                                                           "env": {k: str(v) for k, v in env.items()}}, timeout=60)
@@ -240,6 +244,8 @@ class Deployer:
             env_n = {"NAV_API_PORT": ports["nav_api"], "SIM_API": f"http://{sim_host_for_nav}:{ports['sim_api']}",
                      "ROS_DOMAIN_ID": dom, "INSTANCE_ID": iid, "NAV_USE_ROS": "0" if opts.get("no_ros") else "1",
                      "NAV_LOCALIZATION": opts.get("localization", "slam")}
+            if solo:
+                env_n["AGV_BIND"] = "127.0.0.1"
             ag_n.call("POST", "/api/v1/containers/run", {"name": cname_n, "image": nav_p["image_ref"], "role": "nav", "instance": iid,
                                                           "env": {k: str(v) for k, v in env_n.items()}}, timeout=60)   # /data: SLAM 地图
             started.append((ag_n, cname_n))

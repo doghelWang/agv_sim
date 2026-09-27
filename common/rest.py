@@ -13,6 +13,7 @@
   * 每线程一条持久连接；超时/断线自动重连；json()/binary() 两种取数
 """
 
+import os
 import json
 import re
 import socket
@@ -81,7 +82,8 @@ class Request:
 
 
 class RestServer:
-    def __init__(self, name: str, host: str = "0.0.0.0", port: int = 8090):
+    def __init__(self, name: str, host: str = "", port: int = 8090):
+        host = host or os.environ.get("AGV_BIND", "0.0.0.0")   # 单手机模式实例进程只监听本机 (平台部署时设置)
         self.name, self.host, self.port = name, host, port
         self.routes: List[Tuple[str, re.Pattern, str, Callable, str]] = []
         self.fallback: Optional[Callable] = None
