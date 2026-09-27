@@ -144,6 +144,9 @@
 
 全部 3/3 到达；各项在同一波动范围内 (仍受 slam_toolbox 30 mm 级定位跳变限制)，没有看到 C/C++ 化引入的精度变化。
 
+复现: 树莓派上 `bash tools/ab_bench_i12.sh <标签>` (重启 i12 → 采样 + py-spy → 精度)，`python3 tools/perf_summary.py ~/bench/*/perf.json`，
+`python3 tools/spy_summary.py ~/bench/<标签>/spy_sim.txt`；微基准 `python3 tools/bench_simcore.py` 与 `SIM_NATIVE=0 python3 tools/bench_simcore.py`。
+
 ### 5.4 剩余热点 (第 2 步的 py-spy)
 
 - 仿真进程：HTTP 请求处理约 60% GIL 时间 (头解析 `parse_headers`、`json.dumps`)，来自执行进程 50 Hz 状态轮询 + 20 Hz IO/光电 + 网关快照。

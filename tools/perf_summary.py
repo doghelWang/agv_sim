@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""perf_sample.py 结果一行汇总: python3 tools/perf_summary.py a.json [b.json ...]"""
 import json, sys, collections
 def load(p):
     return json.load(open(p))["summary"]

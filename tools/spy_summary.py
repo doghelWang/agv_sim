@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""py-spy raw (--format raw) 采样 → 函数包含/自身时间占比: python3 tools/spy_summary.py spy.txt"""
 import sys, re, collections
 # py-spy raw (collapsed) → 顶层函数包含时间占比
 def load(p):
