@@ -1504,11 +1504,27 @@ class Navigator:
                     return
                 self.telemetry["path_index"] = max(1, end_i)
 
-            def fb(dist, speed, rest=rest):
+            # 本段路径累计长度 (从末端算起)，用于按实时位姿求剩余行程
+            tail = [0.0] * len(poses)
+            for i in range(len(poses) - 2, -1, -1):
+                tail[i] = tail[i + 1] + math.hypot(poses[i + 1][0] - poses[i][0], poses[i + 1][1] - poses[i][1])
+
+            def fb(dist, speed, rest=rest, poses=poses, tail=tail):
                 # 分段终点 = 停车点 (拐点原地转向 / 工位)：之外的障碍不影响本段 → 防护区缩短到剩余行程 (与自研导引
                 # approach_left 同一套逻辑)。否则紧贴墙体的拓扑节点 (如 grid_9_square 的 (±7.5, 0)，车头离外墙
-                # 仅 0.17 m) 会被低速档 0.35 m 防护区挡住，Nav2 "Failed to make progress" → 线路跟随中断反复重试
-                self.approach_left = max(0.0, float(dist))
+                # 仅 0.17 m) 会被低速档 0.35 m 防护区挡住，Nav2 "Failed to make progress" → 线路跟随中断反复重试。
+                # 注意: Humble 的 FollowPath 反馈 distance_to_goal 不随车辆移动更新 (实测整段恒为段长)，这里按实时位姿自己算
+                with self.lock:
+                    x, y = self.telemetry.get("x", 0.0), self.telemetry.get("y", 0.0)
+                i = min(range(len(poses)), key=lambda k: (poses[k][0] - x) ** 2 + (poses[k][1] - y) ** 2)
+                if i < len(poses) - 1:
+                    ex, ey = poses[i + 1][0] - poses[i][0], poses[i + 1][1] - poses[i][1]
+                else:
+                    ex, ey = poses[i][0] - poses[i - 1][0], poses[i][1] - poses[i - 1][1]
+                L = math.hypot(ex, ey) or 1.0
+                along = ((x - poses[i][0]) * ex + (y - poses[i][1]) * ey) / L     # 车在最近点前方 (+) / 后方 (-)
+                dist = max(0.0, tail[i] - along)
+                self.approach_left = dist
                 with self.lock:
                     if not cancelled():
                         self.telemetry["nav_dist_rem"] = round(dist + rest, 2)

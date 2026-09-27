@@ -46,6 +46,24 @@
 |PUT|`/api/v1/nav/feedback`|执行进程回馈导航状态|
 |GET|`/api/v1/events`|仿真事件|
 |GET|`/api/v1/snapshot`|Web 汇总快照|
+|GET|`/api/v1/stream`|推送流 (执行进程用)：状态二进制帧 + IO/光电 + 2D 激光/融合，见 1.x|
+|UDP|同 REST 端口|速度指令通道 (执行进程 → 仿真)，`/api/v1/sim` 的 `cmd_udp_port` 声明时使用|
+
+### 1.0 推送流 `GET /api/v1/stream?hz=50&io_hz=20&scans=1` 与 UDP 速度指令
+
+一条长连接 (`Content-Type: application/x-agv-stream`，无长度，连接关闭即结束)，连续的帧 `<u32 负载长度><u8 类型><负载>` (小端)：
+
+| 类型 | 频率 | 负载 |
+|---|---|---|
+| 1 状态 | `hz` (默认 50) | 二进制，`struct "<Idd6d6d3d5dIBddIH"`：seq, t, wall_time, truth x y yaw vx vy wz, odom 同, map_to_odom x y yaw, imu wz ax ay az yaw, 碰撞次数, 标志位 (1 前触边 2 后触边 4 暂停 8 有接触点), 接触点 x y, model_rev, 关节数 n；随后 3n 个 double (位置/速度/力矩) |
+| 2 元信息 | 连接建立与变化时 | JSON `{"chassis","scenario","joint_names"}` |
+| 3 IO/光电 | `io_hz` (默认 20) | JSON `{"io": GET /api/v1/io, "photos": GET /api/v1/sensors/photoelectric 的 sensors}` |
+| 4 激光 | 有新帧时 (`scans=1`) | `<u16 n><n 字节元信息 JSON (同激光帧的 X-Meta，另加 name；融合扫描 name=merged)><float32 ranges>` |
+
+状态帧由 `nav_runtime/sim_link.decode_state` 还原成与 `GET /api/v1/state` 相同的 JSON 结构。执行进程默认使用推送流 (`NAV_SIM_STREAM=0` 关闭)，旧版仿真进程没有该接口时自动回退轮询。
+
+UDP 速度指令：48 字节 `struct "<4sI3d16s"` = `b"AGVC"`, seq, vx, vy, wz, source。仿真进程在 REST 端口同号的 UDP 端口接收 (C 实时循环启用时由原生线程直接写入指令，否则 Python 线程)，
+`/api/v1/sim` 返回 `cmd_udp_port` 时执行进程改用 UDP (`NAV_CMD_UDP=0` / `SIM_CMD_UDP=0` 关闭，回到 `PUT /api/v1/control/cmd_vel`)。
 
 ### 1.1 状态 `GET /api/v1/state`
 
