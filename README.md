@@ -42,6 +42,7 @@ bash install.sh --repo https://github.com/doghelWang/agv_sim.git --name phone1 -
 |---|---|
 | [docs/DEPLOY.md](docs/DEPLOY.md) | **部署指南**：支持的设备、Linux 板卡一键部署、加节点、更新、端口、故障处理 |
 | [docs/DEPLOY_ANDROID.md](docs/DEPLOY_ANDROID.md) | **Android 手机部署**：Termux + proot、一键安装、幽灵进程限制、proot 派生服务、散热 |
+| [docs/NOTES.md](docs/NOTES.md) | **注意事项**：网络 (GitHub/Docker Hub)、系统、部署组合、手机、更新、安全、备份 |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | 手机 vs 树莓派 5 性能对比与推荐组合 |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | 平台与工作台功能、路径规划与精确跟踪、保护空间 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 进程架构与设计取舍 |
