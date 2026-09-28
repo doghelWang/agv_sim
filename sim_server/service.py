@@ -287,6 +287,19 @@ class SimService:
                           "angle_min": l.angle_min, "angle_increment": l.angle_inc, "range_min": l.range_min,
                           "range_max": l.range_max, "scan_hz": hz, "ranges": ranges}
                 got = True
+            for i, l3 in enumerate(core.lidars3d[:len(getattr(rt, "_l3d_bufs", []))]):
+                r = rt.read_lidar3d(i, last.get(("3d", i), 0))
+                if r is None:
+                    continue
+                cseq, t, (px, py, pth), cl, sl = r
+                last[("3d", i)] = cseq
+                b = self.lidar_bufs[l3.name]
+                b.seq += 1
+                b.data = {"type": "3d", "seq": b.seq, "t": round(t, 4), "frame_id": l3.frame_id,
+                          "pose": {"x": round(px, 4), "y": round(py, 4), "yaw": round(pth, 5)}, "scan_hz": l3.freq_hz,
+                          "points": cl["points"], "intensity": cl["intensity"], "line": cl["line"],
+                          "offset_time": cl["offset_time"], "slice": sl}
+                got = True
             r = rt.read_lidar(-1, last.get(-1, 0))
             if r is not None:
                 cseq, t, (px, py, pth), merged = r

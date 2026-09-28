@@ -3,8 +3,9 @@
 仿真实时循环的原生实现 (sim_core/native/simcore_rt.c) —— SIM_RT=1 (默认) 时替代 SimService 的 Python 物理线程
 
   C 线程 (不持有 GIL) 按固定步长推进: 运动学 → 打滑 → MuJoCo mj_step (C API) → 接触/触边/光电 (mj_multiRay) →
-  里程计 → IMU；2D 激光按频率扫描 (mj_multiRay) 并融合，双缓冲输出。
-  Python 侧只做: 配置下发 (configure)、状态快照读写 (pull/push)、行人移动、顶升/IO/事件、相机、3D 激光。
+  里程计 → IMU；2D 激光与 3D 激光 (Livox 类，高度带切片并入融合) 按频率扫描 (mj_multiRay) 并融合，双缓冲输出。
+  Python 侧只做: 配置下发 (configure)、状态快照读写 (pull/push)、行人移动、顶升/IO/事件、相机。
+  SIM_RT_L3D=0: 3D 激光退回 Python (此时 2D 激光也在 Python，融合要叠加 3D 切片)。
 
   所有改动 SimCore 的 Python 代码都在 hold() 里: 先 pull 最新状态 → 修改 → configure/push → 放开 C 线程。
 """
@@ -19,7 +20,7 @@ import numpy as np
 from . import native
 
 _D, _I, _U = ctypes.c_double, ctypes.c_int32, ctypes.c_uint32
-MAXB, MAXP, MAXL = 8, 16, 8
+MAXB, MAXP, MAXL, MAXL3 = 8, 16, 8, 4
 SIDES = {"front": 0, "rear": 1, "left": 2, "right": 3}
 
 
@@ -46,12 +47,18 @@ class RtLidar(ctypes.Structure):
         + [("n", _I), ("_pad", _I)]
 
 
+class RtLidar3D(ctypes.Structure):
+    _fields_ = [(n, _D) for n in ("mx", "my", "mz")] + [("R", _D * 9)] \
+        + [(n, _D) for n in ("vmin", "vmax", "rmin", "rmax", "std", "ang_noise", "period", "ceiling", "zmin", "zmax", "frame")] \
+        + [("n", _I), ("lines", _I)]
+
+
 def available() -> bool:
     if native.lib is None or os.environ.get("SIM_RT", "1").strip() in ("0", "false", "off", "no"):
         return False
     lib = native.lib
     return (lib.sc_rt_sizeof_state() == ctypes.sizeof(RtState) and lib.sc_rt_sizeof_config() == ctypes.sizeof(RtConfig)
-            and lib.sc_rt_sizeof_lidar() == ctypes.sizeof(RtLidar))
+            and lib.sc_rt_sizeof_lidar() == ctypes.sizeof(RtLidar) and lib.sc_rt_sizeof_l3d() == ctypes.sizeof(RtLidar3D))
 
 
 class NativeRT:
@@ -147,9 +154,10 @@ class NativeRT:
         holds = (_D * max(1, len(bs)))(*[b.hold_s for b in bs])
         refs += [polys, counts, sides, holds]
         lib.sc_rt_set_bumpers(h, native.ptr(polys), ctypes.addressof(counts), ctypes.addressof(sides), ctypes.addressof(holds), len(bs))
-        # 2D 激光 (有 3D 激光时仍走 Python: 融合要叠加 3D 切片)
+        # 2D / 3D 激光 (3D 需 MuJoCo 求交；SIM_RT_L3D=0 或 3D 超过 MAXL3 台时全部激光退回 Python)
         from .sensors import LIDAR_RAY
-        self.lidars_on = bool(c.lidars) and not c.lidars3d and LIDAR_RAY != "engine" and len(c.lidars) <= MAXL
+        l3d_ok = not c.lidars3d or (self.use_mj and len(c.lidars3d) <= MAXL3 and os.environ.get("SIM_RT_L3D", "1") != "0")
+        self.lidars_on = bool(c.lidars or c.lidars3d) and l3d_ok and LIDAR_RAY != "engine" and len(c.lidars) <= MAXL
         cfg.lidars_on = 1 if self.lidars_on else 0
         cfg.nbins, cfg.merged_rmax = c.merged_bins, c.merged_range
         cfg.merged_period = 1.0 / max(0.1, getattr(c, "merged_hz", 10.0))
@@ -161,13 +169,29 @@ class NativeRT:
             L[i].a0, L[i].inc, L[i].n = l.angle_min, l.angle_inc, l.n
             L[i].rmax, L[i].rmin, L[i].std, L[i].prop, L[i].dropout = l.range_max, l.range_min, l.noise_std, l.noise_prop, l.dropout
             L[i].period = 1.0 / max(1.0, hz)
+        l3s = c.lidars3d[:MAXL3] if self.lidars_on else []
         sig = (tuple((l.n, l.angle_min, l.angle_inc, l.range_max, l.freq_hz) for l in c.lidars), c.merged_bins, c.merged_range,
-               cfg.merged_period, mx)
+               cfg.merged_period, mx, tuple((l.name, l.n, l.freq_hz, l.range_max, l.mx, l.my, l.mz) for l in l3s),
+               c.slice_zmin, c.slice_zmax)
         if sig != getattr(self, "_lid_sig", None):          # 激光配置变化才重建缓冲 (会重置扫描时刻)
             self._lid_sig = sig
             lib.sc_rt_set_lidars(h, ctypes.addressof(L), len(c.lidars[:MAXL]), c.merged_bins)
             self._lid_bufs = [np.empty(l.n) for l in c.lidars[:MAXL]]
             self._merged_buf = np.empty(c.merged_bins)
+            from .world import CEILING_HEIGHT
+            L3 = (RtLidar3D * max(1, len(l3s)))()
+            for i, l in enumerate(l3s):
+                q = L3[i]
+                q.mx, q.my, q.mz = l.mx, l.my, l.mz
+                for k, v in enumerate(np.asarray(l.R, float).ravel()):
+                    q.R[k] = v
+                q.vmin, q.vmax, q.rmin, q.rmax = l.vmin, l.vmax, l.range_min, l.range_max
+                q.std, q.ang_noise, q.period = l.noise_std, l.ang_noise, 1.0 / max(1.0, l.freq_hz)
+                q.ceiling, q.zmin, q.zmax, q.frame = CEILING_HEIGHT, c.slice_zmin, c.slice_zmax, float(l.frame)
+                q.n, q.lines = l.n, l.lines
+            lib.sc_rt_set_lidars3d(h, ctypes.addressof(L3), len(l3s))
+            self._l3d_bufs = [(np.empty((l.n, 3), np.float32), np.empty(l.n, np.float32), np.empty(l.n, np.uint8), np.empty(l.n),
+                               np.empty(c.merged_bins)) for l in l3s]
         lib.sc_rt_set_config(h, ctypes.addressof(cfg))
         self._refs = refs
 
@@ -272,6 +296,21 @@ class NativeRT:
         out, src = (_D * 5)(), ctypes.create_string_buffer(17)
         self.lib.sc_rt_udp_meta(ctypes.addressof(out), ctypes.addressof(src))
         return int(out[0]), out[1], (out[2], out[3], out[4]), src.value.decode("utf-8", "replace")
+
+    def read_lidar3d(self, i: int, after: int):
+        """返回 (seq, t, pose, {points, intensity, line, offset_time}, slice) 或 None；须在 hold(sync=False) 内"""
+        xyz, inten, line, ot, sl = self._l3d_bufs[i]
+        cnt, frame = ctypes.c_int(), _D()
+        seq, t, pose = self._seq
+        ok = self.lib.sc_rt_read_lidar3d(self.h, i, after, xyz.ctypes.data, inten.ctypes.data, line.ctypes.data, ot.ctypes.data,
+                                         sl.ctypes.data, len(xyz), len(sl), ctypes.byref(cnt), ctypes.addressof(seq),
+                                         ctypes.addressof(t), ctypes.addressof(pose), ctypes.byref(frame))
+        self.core.lidars3d[i].frame = int(frame.value)          # 退回 Python 扫描时序列接着走
+        if not ok:
+            return None
+        m = cnt.value
+        cloud = {"points": xyz[:m].copy(), "intensity": inten[:m].copy(), "line": line[:m].copy(), "offset_time": ot[:m].copy()}
+        return seq.value, t.value, (pose[0], pose[1], pose[2]), cloud, sl.copy()
 
     def read_lidar(self, i: int, after: int):
         """i = -1: 融合扫描。返回 (seq, t, pose(x,y,th), ranges) 或 None；须在 hold(sync=False) 内"""

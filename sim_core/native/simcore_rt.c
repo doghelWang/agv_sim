@@ -7,7 +7,8 @@
  *     读位姿/接触 → 触边 (车体多边形 vs 场景线段，项目自有模型) / 光电 (mj_multiRay) → 编码器里程计 → IMU →
  *     2D 激光按频率扫描 (mj_multiRay + 噪声/丢点) 与 360° 融合，双缓冲输出
  *   未安装 MuJoCo (兜底 kinematic 后端) 时: SE2 积分 + 线段碰撞/射线 (与原 numpy 兜底实现一致)。
- *   Python (sim_core/rt.py) 负责配置、读写状态快照、行人移动、IO/事件、相机与 3D 激光。
+ *   3D 激光 (Livox 类非重复扫描) 同样在这里扫描 + 高度带切片并入融合扫描。
+ *   Python (sim_core/rt.py) 负责配置、读写状态快照、行人移动、IO/事件、相机。
  *
  *   SC_WITH_MUJOCO: 编译时有 MuJoCo 头文件 (wheel 自带 include/)；运行期 mj_version() 必须与头文件版本一致才启用。
  */
@@ -178,6 +179,25 @@ typedef struct {
     double t, pose[3];
 } rt_lidar;
 
+/* 3D 激光 (Livox 类非重复扫描，与 sim_core/sensors.py Lidar3DSensor 一致)；与 rt.py 的 RtLidar3D 一致 */
+typedef struct {
+    double mx, my, mz, R[9], vmin, vmax, rmin, rmax, std, ang_noise, period, ceiling, zmin, zmax, frame;
+    int32_t n, lines;
+} sc_rt_l3d_cfg;
+
+typedef struct {
+    sc_rt_l3d_cfg c;
+    double next, frame;
+    float *xyz[2], *inten[2];
+    unsigned char *line[2];
+    double *ot[2], *slice[2];
+    int cnt[2], front;
+    uint32_t seq;
+    double t, pose[3];
+} rt_l3d;
+
+#define RT_MAXL3 4
+
 typedef struct {
     pthread_mutex_t mu;
     pthread_t th;
@@ -214,6 +234,11 @@ typedef struct {
     double *scratch;
     int *iscratch;
     int scratch_n;
+    int nl3d, nbins;
+    rt_l3d l3d[RT_MAXL3];
+    double *s3;                /* 3D 射线暂存: 方向 3n (世界) + 3n (传感器) + 距离 n */
+    int *is3;
+    int s3_n;
     uint64_t rng[6];
 } sc_rt;
 
@@ -237,6 +262,7 @@ sc_rt *sc_rt_create(uint64_t seed) {
 int sc_rt_sizeof_state(void) { return (int)sizeof(sc_rt_state); }
 int sc_rt_sizeof_config(void) { return (int)sizeof(sc_rt_config); }
 int sc_rt_sizeof_lidar(void) { return (int)sizeof(sc_rt_lidar_cfg); }
+int sc_rt_sizeof_l3d(void) { return (int)sizeof(sc_rt_l3d_cfg); }
 
 void sc_rt_lock(sc_rt *rt) { pthread_mutex_lock(&rt->mu); }
 void sc_rt_unlock(sc_rt *rt) { pthread_mutex_unlock(&rt->mu); }
@@ -299,6 +325,64 @@ void sc_rt_set_lidars(sc_rt *rt, const sc_rt_lidar_cfg *L, int n, int nbins) {
     rt->iscratch = (int *)malloc(sizeof(int) * (size_t)maxn);
     rt->scratch_n = maxn;
     rt->mnext = 0.0;
+    rt->nbins = nbins;
+}
+
+static void l3d_free(sc_rt *rt) {
+    for (int i = 0; i < rt->nl3d; i++)
+        for (int b = 0; b < 2; b++) {
+            rt_l3d *l = &rt->l3d[i];
+            free(l->xyz[b]); free(l->inten[b]); free(l->line[b]); free(l->ot[b]); free(l->slice[b]);
+        }
+    free(rt->s3); free(rt->is3);
+    rt->s3 = NULL; rt->is3 = NULL;
+    rt->nl3d = 0;
+}
+
+/* 须在 sc_rt_set_lidars 之后调用 (融合分箱数) */
+void sc_rt_set_lidars3d(sc_rt *rt, const sc_rt_l3d_cfg *L, int n) {
+    uint32_t seqs[RT_MAXL3] = {0};
+    for (int i = 0; i < rt->nl3d; i++) seqs[i] = rt->l3d[i].seq;
+    l3d_free(rt);
+    rt->nl3d = n > RT_MAXL3 ? RT_MAXL3 : n;
+    int maxn = 16;
+    for (int i = 0; i < rt->nl3d; i++) {
+        rt_l3d *l = &rt->l3d[i];
+        memset(l, 0, sizeof(*l));
+        l->c = L[i];
+        l->seq = seqs[i];
+        l->frame = L[i].frame;
+        for (int b = 0; b < 2; b++) {
+            l->xyz[b] = (float *)calloc(3 * (size_t)L[i].n, sizeof(float));
+            l->inten[b] = (float *)calloc((size_t)L[i].n, sizeof(float));
+            l->line[b] = (unsigned char *)calloc((size_t)L[i].n, 1);
+            l->ot[b] = (double *)calloc((size_t)L[i].n, sizeof(double));
+            l->slice[b] = (double *)calloc((size_t)(rt->nbins > 0 ? rt->nbins : 1), sizeof(double));
+            for (int k = 0; k < rt->nbins; k++) l->slice[b][k] = INFINITY;
+        }
+        if (L[i].n > maxn) maxn = L[i].n;
+    }
+    rt->s3 = (double *)malloc(sizeof(double) * 7 * (size_t)maxn);
+    rt->is3 = (int *)malloc(sizeof(int) * (size_t)maxn);
+    rt->s3_n = maxn;
+}
+
+/* 读 3D 激光: 点数写 *cnt (缓冲按 cap 截断)；seq ≤ after 时返回 0。frame 返回已扫描帧数 (Python 重建模型时续上) */
+int sc_rt_read_lidar3d(sc_rt *rt, int i, uint32_t after, float *xyz, float *inten, unsigned char *line, double *ot, double *slice,
+                       int cap, int nbins, int *cnt, uint32_t *seq, double *t, double *pose, double *frame) {
+    if (i < 0 || i >= rt->nl3d) return 0;
+    rt_l3d *l = &rt->l3d[i];
+    *frame = l->frame;
+    if (l->seq <= after) return 0;
+    int f = l->front, m = l->cnt[f] < cap ? l->cnt[f] : cap;
+    memcpy(xyz, l->xyz[f], sizeof(float) * 3 * (size_t)m);
+    memcpy(inten, l->inten[f], sizeof(float) * (size_t)m);
+    memcpy(line, l->line[f], (size_t)m);
+    memcpy(ot, l->ot[f], sizeof(double) * (size_t)m);
+    memcpy(slice, l->slice[f], sizeof(double) * (size_t)(nbins < rt->nbins ? nbins : rt->nbins));
+    *cnt = m;
+    *seq = l->seq; *t = l->t; memcpy(pose, l->pose, sizeof(double) * 3);
+    return 1;
 }
 
 /* 读激光: i = -1 表示融合扫描。seq ≤ after 时返回 0 */
@@ -508,15 +592,100 @@ static void scan_one(sc_rt *rt, rt_lidar *l, double *out) {
     sc_lidar_post(out, c->n, c->rmin, rt->cfg.noise, c->std, c->prop, c->dropout, rt->rng);
 }
 
+/* 一帧 3D 激光 → 后缓冲 (点云 + 高度带切片)；与 Lidar3DSensor.scan + slice_to_scan 逐步对应，噪声用 C 随机数 */
+static void scan3d_one(sc_rt *rt, rt_l3d *l) {
+    sc_rt_state *s = &rt->s;
+    const sc_rt_l3d_cfg *c = &l->c;
+    extern double sc_rng_gauss(uint64_t *);
+    const int n = c->n, b = 1 - l->front, noise = rt->cfg.noise;
+    const double PHI1 = 0.6180339887498949, PHI2 = 0.7548776662466927;
+    double *dw = rt->s3, *ds = rt->s3 + 3 * (size_t)rt->s3_n, *dist = rt->s3 + 6 * (size_t)rt->s3_n;
+    const double th = s->th, cth = cos(th), sth = sin(th);
+    double Rw[9];                               /* Rz(th) · R */
+    for (int k = 0; k < 3; k++) {
+        Rw[k] = cth * c->R[k] - sth * c->R[3 + k];
+        Rw[3 + k] = sth * c->R[k] + cth * c->R[3 + k];
+        Rw[6 + k] = c->R[6 + k];
+    }
+    const double s0 = sin(c->vmin), s1 = sin(c->vmax);
+    for (int i = 0; i < n; i++) {
+        const double ii = (double)i + l->frame * n;
+        double az = 2 * M_PI * fmod(ii * PHI1, 1.0);
+        double el = asin(s0 + (s1 - s0) * fmod(ii * PHI2, 1.0));
+        if (noise && c->ang_noise > 0) {
+            az += sc_rng_gauss(rt->rng) * c->ang_noise;
+            el += sc_rng_gauss(rt->rng) * c->ang_noise;
+        }
+        const double ce = cos(el), x = ce * cos(az), y = ce * sin(az), z = sin(el);
+        ds[3 * i] = x; ds[3 * i + 1] = y; ds[3 * i + 2] = z;
+        dw[3 * i] = Rw[0] * x + Rw[1] * y + Rw[2] * z;
+        dw[3 * i + 1] = Rw[3] * x + Rw[4] * y + Rw[5] * z;
+        dw[3 * i + 2] = Rw[6] * x + Rw[7] * y + Rw[8] * z;
+    }
+    l->frame += 1;
+    const double o[3] = {s->x + cth * c->mx - sth * c->my, s->y + sth * c->mx + cth * c->my, c->mz};
+#ifdef SC_WITH_MUJOCO
+    if (rt->cfg.use_mj && p_mj_multiray) {
+        p_mj_multiray((const mjModel *)rt->m, (mjData *)rt->d, o, dw, rt->cfg.group, 1, rt->cfg.robot_body, rt->is3, dist, NULL, n,
+                      c->rmax);
+        for (int i = 0; i < n; i++)
+            if (rt->is3[i] < 0 || dist[i] < 0) dist[i] = INFINITY;
+    } else
+#endif
+    {
+        for (int i = 0; i < n; i++) dist[i] = INFINITY;
+    }
+    float *xyz = l->xyz[b], *inten = l->inten[b];
+    unsigned char *line = l->line[b];
+    double *ot = l->ot[b], *sl = l->slice[b];
+    const int nb = rt->nbins;
+    const double binw = 2 * M_PI / (nb > 0 ? nb : 1), dt_pt = 1.0 / fmax(1.0, 1.0 / c->period) / n;
+    for (int k = 0; k < nb; k++) sl[k] = INFINITY;
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        double r = dist[i];
+        const double dz = dw[3 * i + 2];
+        const double tf = dz < -1e-9 ? -o[2] / dz : INFINITY, tc = dz > 1e-9 ? (c->ceiling - o[2]) / dz : INFINITY;
+        if (tf < r) r = tf;
+        if (tc < r) r = tc;
+        if (r > c->rmax || r < c->rmin || !isfinite(r)) continue;
+        if (noise) r += sc_rng_gauss(rt->rng) * c->std;
+        const double px = ds[3 * i] * r, py = ds[3 * i + 1] * r, pz = ds[3 * i + 2] * r;
+        const float fx = (float)px, fy = (float)py, fz = (float)pz;
+        xyz[3 * m] = fx; xyz[3 * m + 1] = fy; xyz[3 * m + 2] = fz;
+        line[m] = (unsigned char)(i % (c->lines > 0 ? c->lines : 1));
+        double it = 180.0 - 3.0 * r + (noise ? sc_rng_gauss(rt->rng) * 8.0 : 0.0);
+        inten[m] = (float)(it < 5 ? 5 : (it > 255 ? 255 : it));
+        ot[m] = i * dt_pt;
+        m++;
+        /* 高度带切片 → 机体系 360° 分箱 (与 slice_to_scan 一致: 用 float32 点) */
+        const double bx = c->R[0] * fx + c->R[1] * fy + c->R[2] * fz + c->mx;
+        const double by = c->R[3] * fx + c->R[4] * fy + c->R[5] * fz + c->my;
+        const double bz = c->R[6] * fx + c->R[7] * fy + c->R[8] * fz + c->mz;
+        if (nb <= 0 || bz < c->zmin || bz > c->zmax) continue;
+        long k = (long)((atan2(by, bx) + M_PI) / binw);
+        if (k < 0) k = 0;
+        if (k > nb - 1) k = nb - 1;
+        const double d = hypot(bx, by);
+        if (d < sl[k]) sl[k] = d;
+    }
+    for (int k = 0; k < nb; k++)
+        if (sl[k] > rt->cfg.merged_rmax) sl[k] = INFINITY;
+    l->cnt[b] = m;
+}
+
 static void lidars_update(sc_rt *rt) {
     sc_rt_state *s = &rt->s;
-    if (!rt->cfg.lidars_on || rt->nlidar == 0) return;
+    if (!rt->cfg.lidars_on || (rt->nlidar == 0 && rt->nl3d == 0)) return;
     int any = 0, mdue = s->t >= rt->mnext;
     for (int i = 0; i < rt->nlidar; i++)
         if (s->t >= rt->lid[i].next) any = 1;
+    for (int i = 0; i < rt->nl3d; i++)
+        if (s->t >= rt->l3d[i].next) any = 1;
     if (!any && !mdue) return;
     double t0 = now_s();
-    /* 与 Python _sensor_loop 一致: 任一到期即全部扫描；到期的激光更新缓冲，融合按自己的周期更新 */
+    /* 与 Python _sensor_loop 一致: 任一到期即全部 2D 扫描；到期的激光更新缓冲，融合按自己的周期更新。
+       3D 激光只在自己到期时扫描 (点多)，融合使用各自最新一帧的高度带切片 */
     double *mb = rt->merged[1 - rt->mfront];
     for (int k = 0; k < rt->cfg.nbins; k++) mb[k] = INFINITY;
     for (int i = 0; i < rt->nlidar; i++) {
@@ -530,6 +699,22 @@ static void lidars_update(sc_rt *rt) {
             l->seq++;
             l->t = s->t;
             l->pose[0] = s->x; l->pose[1] = s->y; l->pose[2] = s->th;
+        }
+    }
+    for (int i = 0; i < rt->nl3d; i++) {
+        rt_l3d *l = &rt->l3d[i];
+        if (s->t >= l->next) {
+            scan3d_one(rt, l);
+            l->next = s->t + l->c.period;
+            l->front = 1 - l->front;
+            l->seq++;
+            l->t = s->t;
+            l->pose[0] = s->x; l->pose[1] = s->y; l->pose[2] = s->th;
+        }
+        if (l->seq) {
+            const double *sl = l->slice[l->front];
+            for (int k = 0; k < rt->cfg.nbins && k < rt->nbins; k++)
+                if (sl[k] < mb[k]) mb[k] = sl[k];
         }
     }
     if (mdue) {
@@ -620,6 +805,7 @@ void sc_rt_destroy(sc_rt *rt) {
     sc_rt_stop(rt);
     for (int i = 0; i < rt->nlidar; i++) { free(rt->lid[i].buf[0]); free(rt->lid[i].buf[1]); }
     free(rt->merged[0]); free(rt->merged[1]); free(rt->scratch); free(rt->iscratch);
+    l3d_free(rt);
     pthread_mutex_destroy(&rt->mu);
     free(rt);
 }
