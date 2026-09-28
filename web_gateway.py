@@ -92,9 +92,10 @@ class SystemPerformanceMonitor:
         for p in psutil.process_iter(["pid", "cmdline", "name"]):
             if p.pid == my_pid:
                 continue
-            cmd = " ".join(p.info.get("cmdline") or [])
-            if "-c" in cmd:
+            args = p.info.get("cmdline") or []
+            if "-c" in args:        # 跳过 bash -c 包装进程 (按参数匹配: 子串匹配会误伤 sim_server 的 --config，导致每 0.1 s 重扫全部进程)
                 continue
+            cmd = " ".join(args)
             for key, meta in targets.items():
                 if key not in found and meta["match"] in cmd:
                     try:
@@ -156,7 +157,8 @@ class SystemPerformanceMonitor:
                 freq_mhz = self._get_cpu_freq()
                 load_avg = [round(x, 2) for x in os.getloadavg()] if hasattr(os, "getloadavg") else [0.0, 0.0, 0.0]
 
-                if len(self.tracked_procs) < 3:
+                if len(self.tracked_procs) < 3 and time.time() - getattr(self, "_scan_t", 0) > 10:
+                    self._scan_t = time.time()     # 找不全时最多 10 s 重扫一次 (板卡上 300+ 进程，psutil 全扫约 20 ms)
                     self._find_processes()
 
                 procs_data = []

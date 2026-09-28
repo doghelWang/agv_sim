@@ -7,7 +7,7 @@
 
 每 --interval 秒采一次:
   * 本机进程 CPU% (按命令行关键字归类: sim_server / web_gateway / nav_runtime / slam_toolbox / ekf / Nav2 各服务器 / proot …)
-    与常驻内存；本机总 CPU 占用 (能读 /proc/stat 时)
+    与常驻内存 (RSS；能读 smaps_rollup 时另记 PSS: 共享库按使用进程数分摊，ROS 节点之间共享库多，RSS 相加会重复计算)；本机总 CPU 占用 (能读 /proc/stat 时)
   * CPU 频率 (各核 scaling_cur_freq) 与温度 (thermal_zone / 电池)
   * 仿真: /api/v1/health 的 rtf；执行: /api/v1/nav 的 link.state_hz、nav2 状态，/api/v1/slam 的 tf_age_s
 输出 JSON: 每项的平均 / 最小 / 最大，以及原始采样序列。
@@ -19,6 +19,7 @@ import time
 import urllib.request
 
 GROUPS = [
+    ("ros2_launch(py)", "/opt/ros/humble/bin/ros2 "),      # ros2 launch / ros2 run 的 Python 外壳 (须排在具体节点之前)
     ("agv_ros_bridge", "agv_ros_bridge --in"),
     ("sim_server", "sim_server.api"), ("web_gateway", "web_gateway"), ("nav_runtime", "nav_runtime.main"),
     ("slam_toolbox", "slam_toolbox"), ("ekf", "ekf_node"), ("controller_server", "controller_server"),
@@ -27,6 +28,7 @@ GROUPS = [
     ("waypoint_follower", "waypoint_follower"), ("lifecycle_manager", "lifecycle_manager"),
     ("robot_state_publisher", "robot_state_publisher"), ("proot_tracers", "/usr/bin/proot"),
     ("platform(hub+agent)", "hub.server"), ("platform(hub+agent)", "agent.server"),
+    ("vendor(/home/*)", "/home/"),                          # RK3588 车载控制器原有业务进程 (carServer 等)
 ]
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 NCPU = os.cpu_count() or 1
@@ -67,8 +69,16 @@ def procs():
             rss = int(f[21]) * 4096
         except Exception:
             continue
-        out[int(pid)] = (g, ticks, rss)
+        out[int(pid)] = (g, ticks, rss, pss(pid))
     return out
+
+
+def pss(pid):
+    t = rd(f"/proc/{pid}/smaps_rollup")
+    for ln in (t or "").splitlines():
+        if ln.startswith("Pss:"):
+            return int(ln.split()[1]) * 1024
+    return None
 
 
 def total_cpu():
@@ -77,6 +87,14 @@ def total_cpu():
         return None
     v = [int(x) for x in t.splitlines()[0].split()[1:]]
     return (sum(v) - v[3] - (v[4] if len(v) > 4 else 0), sum(v)) if sum(v) > 0 else None
+
+
+def mem_used():
+    m = {}
+    for ln in (rd("/proc/meminfo") or "").splitlines():
+        k, _, v = ln.partition(":")
+        m[k] = int(v.split()[0]) if v.split() else 0
+    return round((m["MemTotal"] - m["MemAvailable"]) / 1024, 1) if "MemAvailable" in m else None
 
 
 def freqs():
@@ -125,7 +143,7 @@ def main():
     ap.add_argument("--out", default="perf_sample.json")
     ap.add_argument("--stop-file", default="", help="该文件出现时提前结束采样")
     a = ap.parse_args()
-    series = {"t": [], "cpu": {}, "rss_mb": {}, "host_cpu": [], "freq_mhz": [], "temp_c": [], "rtf": [], "state_hz": [],
+    series = {"t": [], "cpu": {}, "rss_mb": {}, "pss_mb": {}, "mem_used_mb": [], "host_cpu": [], "freq_mhz": [], "temp_c": [], "rtf": [], "state_hz": [],
               "tf_age_s": [], "nav2_active": [], "step_ms": [], "lidar_ms": []}
     prev, prev_tot, t_prev = procs(), total_cpu(), time.time()
     t0 = time.time()
@@ -133,15 +151,20 @@ def main():
         time.sleep(a.interval)
         cur, tot, now = procs(), total_cpu(), time.time()
         dt = now - t_prev
-        cpu, rss = {}, {}
-        for pid, (g, ticks, r) in cur.items():
+        cpu, rss, ps = {}, {}, {}
+        for pid, (g, ticks, r, pp) in cur.items():
             if pid in prev:
                 cpu[g] = cpu.get(g, 0.0) + 100.0 * (ticks - prev[pid][1]) / HZ / dt
             rss[g] = rss.get(g, 0) + r
+            if pp is not None:
+                ps[g] = ps.get(g, 0) + pp
         for g in set(cpu) | set(series["cpu"]):
             series["cpu"].setdefault(g, []).append(round(cpu.get(g, 0.0), 1))
         for g, r in rss.items():
             series["rss_mb"].setdefault(g, []).append(round(r / 1e6, 1))
+        for g, r in ps.items():
+            series["pss_mb"].setdefault(g, []).append(round(r / 1e6, 1))
+        series["mem_used_mb"].append(mem_used())
         if tot and prev_tot and tot[1] > prev_tot[1]:
             series["host_cpu"].append(round(100.0 * (tot[0] - prev_tot[0]) / (tot[1] - prev_tot[1]), 1))
         f = freqs()
@@ -171,6 +194,8 @@ def main():
         "cpu_percent_total_procs": stats([sum(series["cpu"][g][i] for g in series["cpu"] if i < len(series["cpu"][g]))
                                           for i in range(len(series["t"]))]),
         "rss_mb_by_group": {g: stats(v) for g, v in sorted(series["rss_mb"].items())},
+        "pss_mb_by_group": {g: stats(v) for g, v in sorted(series["pss_mb"].items())},
+        "mem_used_mb": stats(series["mem_used_mb"]),
         "host_cpu_percent": stats(series["host_cpu"]),
         "freq_mhz_by_core": {c: stats(v) for c, v in fr.items()},
         "temp_c": stats(series["temp_c"]),
