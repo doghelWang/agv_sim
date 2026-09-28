@@ -62,6 +62,13 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <nav2_msgs/srv/load_map.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <slam_toolbox/srv/serialize_pose_graph.hpp>
+#include <std_srvs/srv/trigger.hpp>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -74,6 +81,7 @@ namespace {
 
 constexpr char MAGIC[4] = {'A', 'G', 'V', '1'};
 enum : uint8_t { T_STATE = 1, T_SCAN = 2, T_ROUTE = 3, T_CANCEL = 4, T_CONFIG = 5, T_MODE = 6, T_GUIDE = 7, T_GUIDE_CANCEL = 8,
+                 T_ROSCALL = 9,   // 核心模式: 执行进程的 ROS 操作请求 (JSON {"op": load_map|set_pose|save_map, ...})
                  T_TF = 10, T_STATS = 11, T_NAV = 12,
                  // 核心模式 C++ → Python: 仿真推送流帧原样转发 (类型号 = 20 + 推送流帧类型) 与安全层快照
                  T_RELAY = 20, T_SAFETY = 30 };
@@ -298,6 +306,7 @@ class AgvRosBridge : public rclcpp::Node {
         else if (buf[4] == T_MODE) on_mode(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
         else if (buf[4] == T_GUIDE) on_guide(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
         else if (buf[4] == T_GUIDE_CANCEL) { if (guide_) guide_->cancel(); }
+        else if (buf[4] == T_ROSCALL) on_roscall(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
       } catch (const std::exception &e) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "消息处理失败: %s", e.what());
       }
@@ -471,6 +480,14 @@ class AgvRosBridge : public rclcpp::Node {
         });
     stream_->start();
     safety_timer_ = create_wall_timer(std::chrono::milliseconds(200), [this] { send_safety(false); });
+    // ---- 执行进程的其余 ROS 接口 (Python 不再需要 rclpy): Nav2 生命周期、地图、定位栈、ROS 图
+    active_cli_ = create_client<std_srvs::srv::Trigger>("/lifecycle_manager_navigation/is_active");
+    loadmap_cli_ = create_client<nav2_msgs::srv::LoadMap>("/map_server/load_map");
+    savemap_cli_ = create_client<slam_toolbox::srv::SerializePoseGraph>("/slam_toolbox/serialize_map");
+    setpose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/set_pose", 10);
+    map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+        "/map", rclcpp::QoS(1).reliable().transient_local(), [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr m) { on_map(*m); });
+    ros_timer_ = create_wall_timer(std::chrono::seconds(2), [this] { poll_ros(); });
   }
 
   void refresh_cmd_channel() {
@@ -853,6 +870,97 @@ class AgvRosBridge : public rclcpp::Node {
     send(out);
   }
 
+  // ================================================================ 其余 ROS 接口 (核心模式)
+  // Nav2 生命周期 (lifecycle_manager is_active，2 s 一次) 与 ROS 图 → Python
+  void poll_ros() {
+    if (active_cli_->service_is_ready() && !active_pending_) {
+      active_pending_ = true;
+      active_cli_->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>(),
+                                      [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture f) {
+                                        active_pending_ = false;
+                                        nav2_active_ = f.get()->success;
+                                      });
+    } else if (!active_cli_->service_is_ready()) {
+      nav2_active_ = false;
+    }
+    std::string j = "{\"k\":\"ros\",\"nav2_active\":" + std::string(nav2_active_ ? "true" : "false") + ",\"nodes\":[";
+    try {
+      auto nn = get_node_names();                         // 完整名 (含命名空间)
+      std::sort(nn.begin(), nn.end());
+      nn.erase(std::unique(nn.begin(), nn.end()), nn.end());
+      for (size_t i = 0; i < nn.size(); ++i) j += (i ? ",\"" : "\"") + jesc(nn[i]) + "\"";
+      j += "],\"topics\":[";
+      auto tt = get_topic_names_and_types();
+      bool first = true;
+      for (const auto &kv : tt) {
+        if (kv.first.rfind("/rosout", 0) == 0) continue;
+        j += (first ? "\"" : ",\"") + jesc(kv.first) + "\"";
+        first = false;
+      }
+      j += "]";
+    } catch (const std::exception &) {
+      j += "],\"topics\":[]";
+    }
+    send_nav(j + "}");
+  }
+
+  // /map (slam_toolbox) → 共享内存文件，通知 Python (界面地图/保存 PGM)
+  void on_map(const nav_msgs::msg::OccupancyGrid &m) {
+    ++map_rev_;
+    const std::string path = "/dev/shm/agv_map_" + std::to_string(getpid()) + ".bin";
+    const std::string tmp = path + ".tmp";
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    const uint32_t w = m.info.width, h = m.info.height;
+    const double res = m.info.resolution, ox = m.info.origin.position.x, oy = m.info.origin.position.y;
+    std::vector<uint8_t> b;
+    b.reserve(32 + m.data.size());
+    put(b, w); put(b, h); put(b, res); put(b, ox); put(b, oy);
+    b.insert(b.end(), reinterpret_cast<const uint8_t *>(m.data.data()), reinterpret_cast<const uint8_t *>(m.data.data()) + m.data.size());
+    const bool ok = ::write(fd, b.data(), b.size()) == static_cast<ssize_t>(b.size());
+    ::close(fd);
+    if (!ok || ::rename(tmp.c_str(), path.c_str()) != 0) return;
+    send_nav("{\"k\":\"map\",\"path\":\"" + path + "\",\"rev\":" + std::to_string(map_rev_) + "}");
+  }
+
+  void on_roscall(const std::string &j) {
+    jl::Value v;
+    if (!jl::parse(j, v)) return;
+    const std::string op = v["op"].str();
+    const long id = static_cast<long>(v["id"].num());
+    auto reply = [this, id, op](bool ok, const std::string &err) {
+      send_nav("{\"k\":\"roscall\",\"id\":" + std::to_string(id) + ",\"op\":\"" + op + "\",\"ok\":" + (ok ? "true" : "false") +
+               ",\"err\":\"" + jesc(err) + "\"}");
+    };
+    if (op == "set_pose") {                 // EKF odom 系对齐到初始位姿 (ros_slam._align_odom)
+      geometry_msgs::msg::PoseWithCovarianceStamped m;
+      m.header.frame_id = "odom";
+      m.header.stamp = get_clock()->now();
+      m.pose.pose.position.x = v["x"].num();
+      m.pose.pose.position.y = v["y"].num();
+      set_quat(m.pose.pose.orientation, v["yaw"].num());
+      m.pose.covariance[0] = m.pose.covariance[7] = m.pose.covariance[35] = 1e-6;
+      setpose_pub_->publish(m);
+      reply(true, "");
+    } else if (op == "load_map") {
+      if (!loadmap_cli_->service_is_ready()) { reply(false, "/map_server/load_map 未就绪"); return; }
+      auto req = std::make_shared<nav2_msgs::srv::LoadMap::Request>();
+      req->map_url = v["url"].str();
+      loadmap_cli_->async_send_request(req, [reply](rclcpp::Client<nav2_msgs::srv::LoadMap>::SharedFuture f) {
+        reply(f.get()->result == nav2_msgs::srv::LoadMap::Response::RESULT_SUCCESS, "");
+      });
+    } else if (op == "save_map") {
+      if (!savemap_cli_->wait_for_service(std::chrono::seconds(3))) { reply(false, "slam_toolbox 服务 /slam_toolbox/serialize_map 未就绪"); return; }
+      auto req = std::make_shared<slam_toolbox::srv::SerializePoseGraph::Request>();
+      req->filename = v["file"].str();
+      savemap_cli_->async_send_request(req, [reply](rclcpp::Client<slam_toolbox::srv::SerializePoseGraph>::SharedFuture) {
+        reply(true, "");
+      });
+    } else {
+      reply(false, "未知操作 " + op);
+    }
+  }
+
   // ================================================================ 自研导引 (guidance.hpp)
   // 仿真里程计在仿真时刻 t 的位姿 (线性插值；比最新帧新时按速度外推 ≤ 0.1 s)
   bool odom_at(double t, double *o) const {
@@ -1217,6 +1325,15 @@ class AgvRosBridge : public rclcpp::Node {
   sockaddr_in udp_addr_{};
   uint32_t cmd_seq_ = 0;
   std::atomic<uint32_t> n_stream_state_{0}, n_cmd_{0}, n_cmd_err_{0};
+  // ---- 其余 ROS 接口
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr active_cli_;
+  rclcpp::Client<nav2_msgs::srv::LoadMap>::SharedPtr loadmap_cli_;
+  rclcpp::Client<slam_toolbox::srv::SerializePoseGraph>::SharedPtr savemap_cli_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr setpose_pub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+  rclcpp::TimerBase::SharedPtr ros_timer_;
+  std::atomic<bool> nav2_active_{false}, active_pending_{false};
+  uint32_t map_rev_ = 0;
   // ---- 自研导引
   std::unique_ptr<guide::Guidance> guide_;
   long guide_mid_ = 0;

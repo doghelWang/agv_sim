@@ -309,6 +309,25 @@ class Guidance {
     return !stop_;
   }
 
+  // 沿 heading 方向后退 dist (保持航向；经安全层，后向防护区生效)
+  bool back_along(double heading, double dist) {
+    wait_until_stopped();
+    if (!align_steer(false, -1.0)) return false;
+    const Pose s0 = io_.pose();
+    const double t_end = now() + 6.0 + dist / 0.1;
+    while (!stop_ && now() < t_end) {
+      if (io_.hold()) { cmd(0, 0, 0); sleep_s(0.04); continue; }
+      const Pose p = io_.pose();
+      const double done = -((p.x - s0.x) * std::cos(heading) + (p.y - s0.y) * std::sin(heading));
+      if (done >= dist - 0.01) break;
+      const double v = -std::max(0.05, std::min(0.2, (dist - done) * 1.0));
+      cmd(v, 0, 2.0 * wrap(heading - p.th));
+      sleep_s(0.03);
+    }
+    wait_until_stopped();
+    return !stop_ && align_steer(false, 1.0);
+  }
+
   // 末段精定位: 停车 → 主激光原始帧 ICP → 定位修正
   void refine_here(const char *why) {
     if (!m_.refine || m_.refine_segs.empty()) return;
@@ -361,6 +380,7 @@ class Guidance {
     io_.status("NAVIGATING", 1, 0);
     double wait_since = -1, next_rot_dir = 0.0;
     bool refined = false;
+    int redo = 0;
     for (size_t wi = 1; wi < n && !stop_; ++wi) {
       idx_ = static_cast<int>(wi);
       double rot_dir = next_rot_dir;
@@ -446,7 +466,24 @@ class Guidance {
         const double lateral = -(p.x - tx) * sh + (p.y - ty) * ch;
         const bool stop_here = is_final || corner_rot;
         if (corner.kind == 1) { if (along >= -corner.d - 0.003 && std::fabs(lateral) < 0.35) break; }
-        else if (stop_here) { if (along > -0.003 && std::fabs(lateral) < 0.35) break; }
+        else if (stop_here) {
+          if (along > -0.003 && std::fabs(lateral) < 0.35) {
+            if (is_final) {
+              char b[160];
+              std::snprintf(b, sizeof(b), "进站结束: 纵向 %+.1f mm，横向 %+.1f mm，航向差 %+.2f°", along * 1000, lateral * 1000,
+                            wrap(p.th - seg_h) * 180 / M_PI);
+              io_.event("APPROACH_END", "info", "末段进站结束", b);
+              // 横向没收敛 (精定位修正量大时，剩余行程不够): 沿路段后退 0.4 m 重新进站，最多 2 次
+              if (refined && !reverse && !dual() && std::fabs(lateral) > 0.008 && redo < 2) {
+                ++redo;
+                io_.event("APPROACH_RETRY", "info", "末段重新进站", "横向偏差 " + f2(lateral * 1000) + " mm > 8 mm，后退 0.4 m 再进站");
+                if (!back_along(seg_h, 0.4)) return "ABORT";
+                continue;
+              }
+            }
+            break;
+          }
+        }
         else if (along >= 0.0 && std::fabs(lateral) < 0.6) break;
         const double cross = -(p.x - prev.first) * sh + (p.y - prev.second) * ch;
         const double dec = m_.max_decel * 0.55, v_meas = std::fabs(io_.v_meas());
@@ -486,7 +523,22 @@ class Guidance {
         if (allowed < vx_nom) vx_nom = std::max(0.08, allowed);
         io_.status("NAVIGATING", idx_, rem_stop);
         const double move_h = p.th + (reverse ? M_PI : 0.0);
-        const double e_th = wrap(move_h - seg_h), L = m_.track_L, zeta = 0.9;
+        if (is_final && refined && !reverse && !dual()) {
+          // 精定位后的末段进站: 与 RouteController FINAL 同一控制律 —— 预瞄点在路段直线上、投影点前方 0.25 m，
+          // 纯跟踪收敛横向偏差 (二阶跟踪律在低速/单舵轮舵角滞后时收敛不完，实测停车时横向残差可达 30 mm)
+          const double look = 0.25;
+          const double px = tx + along * ch, py = ty + along * sh;          // 车辆在路段直线上的投影
+          const double cx = px + look * ch, cy = py + look * sh;
+          const double bx = std::cos(p.th) * (cx - p.x) + std::sin(p.th) * (cy - p.y);
+          const double by = -std::sin(p.th) * (cx - p.x) + std::cos(p.th) * (cy - p.y);
+          const double vx = std::min(vx_nom, 0.2);
+          const double wz = std::max(-0.4, std::min(0.4, vx * 2.0 * by / std::max(bx * bx + by * by, 1e-4)));
+          cmd(vx, 0, wz);
+          sleep_s(0.03);
+          continue;
+        }
+        const double L = m_.track_L;
+        const double e_th = wrap(move_h - seg_h), zeta = 0.9;
         double vx = vx_nom;
         if (std::fabs(e_th) > 0.35) vx = std::min(vx, 0.1);
         double wz = -std::max(vx, 0.02) * (2.0 * zeta / L * e_th + cross / (L * L));

@@ -21,22 +21,33 @@ import time
 
 from common import spawn
 
-try:
-    from rclpy.action import ActionClient
-    from nav2_msgs.action import NavigateToPose
+import importlib.util
+
+# nav2_msgs / rclpy 按需导入: 核心模式 (C++ 桥接承担全部 ROS 通信) 下执行进程不加载 rclpy；
+# 只有回退模式 (FollowPath 分段跟线 / NavigateToPose 默认行为树 / BackUp) 用到时才导入
+NAV2_MSGS = importlib.util.find_spec("nav2_msgs") is not None and importlib.util.find_spec("rclpy") is not None
+ActionClient = NavigateToPose = NavigateThroughPoses = FollowPath = LoadMap = GoalStatus = None
+
+
+def _lazy():
+    global ActionClient, NavigateToPose, NavigateThroughPoses, FollowPath, LoadMap, GoalStatus
+    if NavigateToPose is not None:
+        return
+    from rclpy.action import ActionClient as _AC
+    from nav2_msgs.action import NavigateToPose as _N
+    from nav2_msgs.srv import LoadMap as _L
+    from action_msgs.msg import GoalStatus as _G
+    ActionClient, NavigateToPose, LoadMap, GoalStatus = _AC, _N, _L, _G
     try:
-        from nav2_msgs.action import NavigateThroughPoses
+        from nav2_msgs.action import NavigateThroughPoses as _T
+        NavigateThroughPoses = _T
     except Exception:  # pragma: no cover
-        NavigateThroughPoses = None
+        pass
     try:
-        from nav2_msgs.action import FollowPath
+        from nav2_msgs.action import FollowPath as _F
+        FollowPath = _F
     except Exception:  # pragma: no cover
-        FollowPath = None
-    from nav2_msgs.srv import LoadMap
-    from action_msgs.msg import GoalStatus
-    NAV2_MSGS = True
-except Exception:  # pragma: no cover
-    NAV2_MSGS = False
+        pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -116,17 +127,18 @@ class Nav2Bridge:
         self.on_stop_distance = None          # RouteController 发布的到下一停车点剩余行程 (m)
         self.on_plugin_event = None           # agv_nav2_plugins 的导航事件 (dict)
         self.on_plan = None                   # planner_server 发布的规划路径 (/plan) → [{"x","y"}, ...] (约 0.2 m 一个点)
-        if self.available:
+        self.cppmode = getattr(node, "rclpy_free", False)     # CppRos: 执行进程不加载 rclpy
+        self._BackUp = None
+        self._fp_handle = None
+        self._active = False
+        self._active_cli = None
+        if self.available and self.cppmode:
+            threading.Thread(target=self._watchdog, daemon=True, name="nav2-watchdog").start()
+        elif self.available:
+            _lazy()
             # Action 客户端按需创建: 客户端一旦存在就会订阅该动作的反馈话题 —— 即使目标不是本进程下发的
             # (如 bt_navigator 每 10 ms 一条 NavigateToPose 反馈)，rclpy 也要逐条反序列化，执行进程 CPU 翻倍
             self.load_map_cli = node.create_client(LoadMap, "/map_server/load_map")
-            try:   # Nav2 behavior_server 的 BackUp 行为 (转向空间不足时后退一点再转)
-                from nav2_msgs.action import BackUp
-                self._BackUp = BackUp
-            except Exception:
-                self._BackUp = None
-            self._fp_handle = None
-            self._active = False
             try:
                 from std_srvs.srv import Trigger
                 self._active_cli = node.create_client(Trigger, "/lifecycle_manager_navigation/is_active")
@@ -137,30 +149,44 @@ class Nav2Bridge:
                 node.get_logger().warn(f"Nav2 看门狗不可用: {e}")
 
     # ------------------------------------------------------------------
+    @property
+    def rnode(self):
+        """回退模式用的 rclpy 节点 (核心模式下按需创建)"""
+        return self.node.rclpy_node() if self.cppmode else self.node
+
     def _action(self, key, typ, name):
         if typ is None:
             return None
         with self._clients_lock:
             c = self._clients.get(key)
             if c is None:
-                c = ActionClient(self.node, typ, name)
+                c = ActionClient(self.rnode, typ, name)
                 self._clients[key] = c
             return c
 
     @property
     def client(self):
+        _lazy()
         return self._action("navigate_to_pose", NavigateToPose, "navigate_to_pose")
 
     @property
     def through_client(self):
+        _lazy()
         return self._action("navigate_through_poses", NavigateThroughPoses, "navigate_through_poses")
 
     @property
     def follow_client(self):
+        _lazy()
         return self._action("follow_path", FollowPath, "follow_path")
 
     @property
     def backup_client(self):
+        if self._BackUp is None:
+            try:   # Nav2 behavior_server 的 BackUp 行为 (转向空间不足时后退一点再转)
+                from nav2_msgs.action import BackUp
+                self._BackUp = BackUp
+            except Exception:
+                return None
         return self._action("backup", self._BackUp, "backup")
 
     def _cpp(self):
@@ -169,6 +195,8 @@ class Nav2Bridge:
 
     # ------------------------------------------------------------------
     def _is_active(self) -> bool:
+        if self.cppmode:                      # C++ 桥接每 2 s 查询一次 lifecycle_manager
+            return bool(getattr(self.node, "nav2_active", False))
         if self._active_cli is None or not self._active_cli.service_is_ready():
             return False
         fut = self._active_cli.call_async(self._Trigger.Request())
@@ -216,7 +244,7 @@ class Nav2Bridge:
         # 以 lifecycle_manager 报告"全部激活"为准 (看门狗每 5 s 刷新)；不为查询就绪去创建 Action 客户端
         if not self.available:
             return False
-        if getattr(self, "_active_cli", None) is not None:
+        if self.cppmode or getattr(self, "_active_cli", None) is not None:
             return self._active
         return self.client.server_is_ready()
 
@@ -235,7 +263,7 @@ class Nav2Bridge:
         self.on_feedback = on_feedback
         g = NavigateToPose.Goal()
         g.pose.header.frame_id = "map"
-        g.pose.header.stamp = self.node.get_clock().now().to_msg()
+        g.pose.header.stamp = self.rnode.get_clock().now().to_msg()
         g.pose.pose.position.x = float(x)
         g.pose.pose.position.y = float(y)
         g.pose.pose.orientation.z = math.sin(yaw / 2.0)
@@ -248,7 +276,7 @@ class Nav2Bridge:
         from geometry_msgs.msg import PoseStamped
         p = PoseStamped()
         p.header.frame_id = "map"
-        p.header.stamp = self.node.get_clock().now().to_msg()
+        p.header.stamp = self.rnode.get_clock().now().to_msg()
         p.pose.position.x = float(x)
         p.pose.position.y = float(y)
         p.pose.orientation.z = math.sin(yaw / 2.0)
@@ -308,7 +336,7 @@ class Nav2Bridge:
         from nav_msgs.msg import Path
         path = Path()
         path.header.frame_id = "map"
-        path.header.stamp = self.node.get_clock().now().to_msg()
+        path.header.stamp = self.rnode.get_clock().now().to_msg()
         path.poses = [self._pose(px, py, 0.0) for px, py in route]
         io["route_pub"].publish(path)
         g = NavigateToPose.Goal()
@@ -327,7 +355,7 @@ class Nav2Bridge:
             from std_msgs.msg import Float32, Float32MultiArray, String
             from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
-            n = self.node
+            n = self.rnode
             self._route_io = {"route_pub": n.create_publisher(Path, "/agv/route", latched),
                               "segs_pub": n.create_publisher(Float32MultiArray, "/agv/world_segments", latched),
                               "Float32MultiArray": Float32MultiArray,
@@ -389,7 +417,7 @@ class Nav2Bridge:
 
     def follow_ready(self) -> bool:
         return (self.available and self.follow_client is not None and self.follow_client.server_is_ready()
-                and (self._active if getattr(self, "_active_cli", None) is not None else True))
+                and (self._active if (self.cppmode or getattr(self, "_active_cli", None) is not None) else True))
 
     def follow_path(self, poses, cancelled, on_feedback=None, goal_checker="precise_goal_checker", timeout=600.0) -> str:
         """线路跟随 (阻塞): 把一段稠密路径交给 Nav2 controller_server (FollowPath)。
@@ -402,7 +430,7 @@ class Nav2Bridge:
         g = FollowPath.Goal()
         path = Path()
         path.header.frame_id = "map"
-        path.header.stamp = self.node.get_clock().now().to_msg()
+        path.header.stamp = self.rnode.get_clock().now().to_msg()
         path.poses = [self._pose(x, y, yaw) for x, y, yaw in poses]
         g.path = path
         g.controller_id = "FollowPath"
@@ -526,6 +554,8 @@ class Nav2Bridge:
                 pass
 
     def load_map(self, scenario: str) -> bool:
+        if self.cppmode:
+            return self.node.roscall("load_map", url=os.path.join(HERE, "maps", scenario + ".yaml"), wait=False)
         if not self.available or not self.load_map_cli.service_is_ready():
             return False
         req = LoadMap.Request()

@@ -228,12 +228,16 @@ def main():
     use_ros = os.environ.get("NAV_USE_ROS", "1") == "1"
     if use_ros:
         try:
-            import rclpy
-            from rclpy.executors import MultiThreadedExecutor
-            from nav_runtime.ros_bridge import RosBridge
             from nav2_bridge import Nav2Bridge
-            rclpy.init()
-            ros = RosBridge(link, nav)
+            from nav_runtime import cpp_ros
+            rclpy_free = cpp_ros.usable(link)
+            if rclpy_free:        # 核心模式: ROS 通信全在 C++ 桥接，本进程不加载 rclpy
+                ros = cpp_ros.CppRos(link, nav, log=log)
+            else:
+                import rclpy
+                from nav_runtime.ros_bridge import RosBridge
+                rclpy.init()
+                ros = RosBridge(link, nav)
             nav.nav2 = Nav2Bridge(ros)
             if nav.slam.ext is not None:             # slam_toolbox 提供 /map，Nav2 不再加载场景地图
                 nav.nav2.supervisor.map_source = "topic"
@@ -261,13 +265,12 @@ def main():
             if link.model:
                 regen_nav2(link.model)
             # NAV_ROS_EXECUTOR=single: 单线程执行器 (wait set 只建一次/轮，回调串行)；默认 multi (4 线程)
-            if os.environ.get("NAV_ROS_EXECUTOR", "multi").strip().lower() == "single":
-                from rclpy.executors import SingleThreadedExecutor
-                ex = SingleThreadedExecutor()
-            else:
-                ex = MultiThreadedExecutor(num_threads=4)
-            ex.add_node(ros)
-            threading.Thread(target=ex.spin, daemon=True, name="ros-spin").start()
+            if not rclpy_free:
+                from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
+                ex = SingleThreadedExecutor() if os.environ.get("NAV_ROS_EXECUTOR", "multi").strip().lower() == "single" \
+                    else MultiThreadedExecutor(num_threads=4)
+                ex.add_node(ros)
+                threading.Thread(target=ex.spin, daemon=True, name="ros-spin").start()
 
             def auto_nav2():
                 while True:

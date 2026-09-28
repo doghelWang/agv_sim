@@ -90,6 +90,7 @@ class CppBridge:
         self.on_safety: Optional[Callable] = None        # cb(dict) 核心模式: 安全层快照
         self.on_sevent: Optional[Callable] = None        # cb(dict) 核心模式: 安全层事件
         self.on_guide: Optional[Callable] = None         # cb(dict) 核心模式: 自研导引状态 / 结束
+        self.on_ros: Optional[Callable] = None           # cb(dict) 核心模式: ROS 图/Nav2 生命周期/地图/ROS 操作回复 (cpp_ros)
         self.core = os.environ.get("NAV_CPP_CORE", "1") != "0"
         self._last_mode = None
         self.stats = {"state": 0, "scan": 0, "merged": 0, "tf": 0, "restarts": 0, "send_errors": 0}
@@ -251,7 +252,8 @@ class CppBridge:
                     continue
                 k = m.get("k")
                 cb = self.on_safety if b[4] == T_SAFETY else (self.on_sevent if k == "sevent" else
-                                                              (self.on_guide if k in ("guide", "guide_done") else self.on_nav))
+                                                              (self.on_guide if k in ("guide", "guide_done") else
+                                                               (self.on_ros if k in ("ros", "map", "roscall") else self.on_nav)))
                 if cb is not None:
                     try:
                         cb(m)

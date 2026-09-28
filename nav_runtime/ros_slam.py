@@ -23,15 +23,8 @@ from common import spawn
 
 import numpy as np
 
-from geometry_msgs.msg import PoseWithCovarianceStamped
-from nav_msgs.msg import OccupancyGrid
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rclpy.time import Time
-
-try:
-    import tf2_ros
-except Exception:  # pragma: no cover
-    tf2_ros = None
+# ROS 消息/rclpy 按需导入: 核心模式 (nav_runtime/cpp_ros.py) 下执行进程不加载 rclpy，
+# 地图 / 初始位姿 / 位姿图保存都经 C++ 桥接完成
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -75,16 +68,29 @@ class RosLocalization:
         # C++ 发布端 (ros_bridge.cpp) 在时: TF 监听与 50 Hz 查询都在 C++ 里做，结果经 on_tf 回调送来；
         # 否则本进程 rclpy 订阅 /tf (每条 TF 消息都要在 Python 里反序列化) + 50 Hz 定时器
         self.cpp = getattr(node, "cpp", None)
+        self.cppmode = getattr(node, "rclpy_free", False)
+        self.map_file = None                          # 核心模式: C++ 写的 /map 共享内存文件
         if self.cpp is not None:
             self.buf = self.tfl = None
             self.cpp.on_tf = self._on_cpp_tf
         else:
+            try:
+                import tf2_ros
+            except Exception:  # pragma: no cover
+                tf2_ros = None
             self.buf = tf2_ros.Buffer() if tf2_ros else None
             self.tfl = tf2_ros.TransformListener(self.buf, node) if tf2_ros else None
             node.create_timer(0.02, self.poll)
-        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        node.create_subscription(OccupancyGrid, "/map", self._on_map, qos)
-        self.set_pose_pub = node.create_publisher(PoseWithCovarianceStamped, "/set_pose", 10)
+        if self.cppmode:
+            node.on_map = self._on_cpp_map
+            self.set_pose_pub = None
+        else:
+            from nav_msgs.msg import OccupancyGrid
+            from geometry_msgs.msg import PoseWithCovarianceStamped
+            from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+            qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            node.create_subscription(OccupancyGrid, "/map", self._on_map, qos)
+            self.set_pose_pub = node.create_publisher(PoseWithCovarianceStamped, "/set_pose", 10)
 
     # ------------------------------------------------------------------ 进程
     def running(self) -> bool:
@@ -118,6 +124,14 @@ class RosLocalization:
         """EKF 启动后把 odom 系对齐到车辆初始世界位姿 (重复发送直到 TF 反映出来，最多 15 s)"""
         t_end = time.time() + 15.0
         while time.time() < t_end and self.started_at == token and self.running():
+            if self.cppmode:
+                self.node.roscall("set_pose", x=float(pose[0]), y=float(pose[1]), yaw=float(pose[2]), wait=False)
+                time.sleep(0.3)
+                ob = self.cpp.odom_base if self.cpp is not None else None
+                if ob is not None and math.hypot(ob[0] - pose[0], ob[1] - pose[1]) < 0.3:
+                    return
+                continue
+            from geometry_msgs.msg import PoseWithCovarianceStamped
             m = PoseWithCovarianceStamped()
             m.header.frame_id = "odom"
             m.header.stamp = self.node.get_clock().now().to_msg()
@@ -135,6 +149,7 @@ class RosLocalization:
                     if ob is not None and math.hypot(ob[0] - pose[0], ob[1] - pose[1]) < 0.3:
                         return
                     continue
+                from rclpy.time import Time
                 tr = self.buf.lookup_transform("odom", "base_footprint", Time())
                 p = tr.transform.translation
                 if math.hypot(p.x - pose[0], p.y - pose[1]) < 0.3:
@@ -169,6 +184,7 @@ class RosLocalization:
         if not self.running() or self.buf is None:
             return
         try:
+            from rclpy.time import Time
             tr = self.buf.lookup_transform("map", "base_footprint", Time())
         except Exception:
             return
@@ -192,7 +208,29 @@ class RosLocalization:
         self.last_tf_wall = time.time()
         self.slam.set_external(stamp - toff, pose)
 
+    def _on_cpp_map(self, path, rev):
+        self.map_file = path
+        self.map_msg = True                           # 仅作"已收到"标志
+        self.map_rev += 1
+
+    def _grid_file(self):
+        """C++ 写的 /map 文件: <u32 w><u32 h><f64 分辨率><f64 原点 x><f64 原点 y><int8 × w·h>"""
+        import struct
+        try:
+            with open(self.map_file, "rb") as f:
+                b = f.read()
+        except OSError:
+            return None
+        w, h, res, ox, oy = struct.unpack_from("<IIddd", b, 0)
+        d = np.frombuffer(b, dtype=np.int8, offset=32, count=w * h).astype(np.int16).reshape(h, w)
+        c = np.zeros((h, w), np.uint8)
+        c[(d >= 0) & (d < 25)] = 1
+        c[d >= 65] = 2
+        return c, float(res), float(ox), float(oy), self.map_rev
+
     def grid(self):
+        if self.cppmode:
+            return self._grid_file() if self.map_file else None
         m = self.map_msg
         if m is None:
             return None
@@ -209,18 +247,23 @@ class RosLocalization:
         base = self.map_base(sid)
         os.makedirs(os.path.dirname(base), exist_ok=True)
         out = {}
-        from slam_toolbox.srv import SerializePoseGraph
-        cli = self.node.create_client(SerializePoseGraph, "/slam_toolbox/serialize_map")
-        if not cli.wait_for_service(timeout_sec=3.0):
-            raise RuntimeError("slam_toolbox 服务 /slam_toolbox/serialize_map 未就绪")
-        req = SerializePoseGraph.Request()
-        req.filename = base
-        fut = cli.call_async(req)
-        t_end = time.time() + 20.0
-        while not fut.done() and time.time() < t_end:
-            time.sleep(0.05)
-        if not fut.done():
-            raise RuntimeError("位姿图序列化超时")
+        if self.cppmode:
+            r = self.node.roscall("save_map", file=base, wait=True, timeout=25.0)
+            if not r or not r.get("ok"):
+                raise RuntimeError((r or {}).get("err") or "位姿图序列化超时")
+        else:
+            from slam_toolbox.srv import SerializePoseGraph
+            cli = self.node.create_client(SerializePoseGraph, "/slam_toolbox/serialize_map")
+            if not cli.wait_for_service(timeout_sec=3.0):
+                raise RuntimeError("slam_toolbox 服务 /slam_toolbox/serialize_map 未就绪")
+            req = SerializePoseGraph.Request()
+            req.filename = base
+            fut = cli.call_async(req)
+            t_end = time.time() + 20.0
+            while not fut.done() and time.time() < t_end:
+                time.sleep(0.05)
+            if not fut.done():
+                raise RuntimeError("位姿图序列化超时")
         out["posegraph"] = base + ".posegraph"
         g = self.grid()
         if g is not None:
