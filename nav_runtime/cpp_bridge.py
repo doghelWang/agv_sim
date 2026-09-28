@@ -17,7 +17,6 @@ import shutil
 import signal
 import socket
 import struct
-import tempfile
 import threading
 import time
 from typing import Callable, Optional
@@ -64,11 +63,13 @@ class CppBridge:
     def __init__(self, log=print):
         self.log = log
         self.bin = find_binary()
-        self.dir = tempfile.mkdtemp(prefix="agv_bridge_")
-        self.in_path = os.path.join(self.dir, "cpp.sock")     # C++ 接收
-        self.out_path = os.path.join(self.dir, "py.sock")     # Python 接收
+        # Linux 抽象命名空间套接字 ("@name"，内核里只有名字没有文件): Android proot 下文件路径会被翻译成
+        # 宿主机长路径 (超过 108 字节上限)，且各 ROS 进程在不同 proot 会话里；抽象名字不受影响
+        tag = f"agv_bridge_{os.getpid()}_{int(time.time() * 1000) % 100000000}"
+        self.in_path = f"@{tag}_cpp"     # C++ 接收
+        self.out_path = f"@{tag}_py"     # Python 接收
         self.rx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        self.rx.bind(self.out_path)
+        self.rx.bind(self._addr(self.out_path))
         self.rx.settimeout(0.5)
         self.tx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.tx.setblocking(False)
@@ -82,6 +83,10 @@ class CppBridge:
         self._start_proc()
         threading.Thread(target=self._rx_loop, daemon=True, name="cpp-bridge-rx").start()
         threading.Thread(target=self._watchdog, daemon=True, name="cpp-bridge-wd").start()
+
+    @staticmethod
+    def _addr(name: str) -> str:
+        return "\0" + name[1:] if name.startswith("@") else name
 
     # ------------------------------------------------------------------ 进程
     def _start_proc(self):
@@ -107,16 +112,15 @@ class CppBridge:
                 self.proc.wait(timeout=5)
             except Exception:
                 pass
-        for p in (self.in_path, self.out_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+        try:
+            self.rx.close()
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ 发送
     def _send(self, b: bytes):
         try:
-            self.tx.sendto(b, self.in_path)
+            self.tx.sendto(b, self._addr(self.in_path))
         except OSError:            # C++ 端未就绪/缓冲满: 丢帧 (与 best-effort 话题语义一致)
             self.stats["send_errors"] += 1
 

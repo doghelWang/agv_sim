@@ -42,6 +42,15 @@ git log --oneline -1 > /opt/agv/.agv_version
 if command -v gcc >/dev/null || apt-get install -y -q gcc libc6-dev >/dev/null 2>&1; then
   bash /opt/agv/sim_core/native/build.sh gcc >/dev/null && echo 'libsimcore 已编译' || echo '[警告] libsimcore 编译失败，仿真使用纯 Python 实现'
 fi
+# 执行侧 C++ 发布端 (ros2/agv_ros_bridge)：源码有变化才重编 (colcon，手机上约几分钟)；编译失败执行进程自动用 Python 发布
+if command -v colcon >/dev/null && [ -f /opt/ros/humble/setup.bash ]; then
+  H=\$(cat /opt/agv/ros2/agv_ros_bridge/src/*.cpp /opt/agv/ros2/agv_ros_bridge/CMakeLists.txt /opt/agv/ros2/agv_ros_bridge/package.xml | md5sum | cut -c1-12)
+  if [ \"\$H\" != \"\$(cat /opt/agv/ros2/.built 2>/dev/null)\" ] || [ ! -x /opt/agv/ros2/install/agv_ros_bridge/lib/agv_ros_bridge/agv_ros_bridge ]; then
+    echo '编译 agv_ros_bridge (C++) ...'
+    (cd /opt/agv/ros2 && . /opt/ros/humble/setup.bash && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release > /tmp/agv_ros_bridge_build.log 2>&1 \
+      && echo \$H > .built && echo 'agv_ros_bridge 已编译') || echo '[警告] agv_ros_bridge 编译失败 (见 /tmp/agv_ros_bridge_build.log)，执行进程使用 Python 发布'
+  fi
+fi
 echo '已同步到 /opt/agv'
 " || exit 1
 # Termux 侧脚本 (启动/停止/状态/更新/派生服务/开机自启) 随仓库更新

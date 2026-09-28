@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -89,6 +90,19 @@ builtin_interfaces::msg::Time to_msg(double ts) {
 
 double to_sec(const builtin_interfaces::msg::Time &t) { return t.sec + t.nanosec * 1e-9; }
 
+// "@name" = Linux 抽象命名空间套接字 (无文件路径: proot 不做路径翻译，也不受 108 字节路径上限限制)
+socklen_t make_addr(const std::string &path, sockaddr_un &a) {
+  std::memset(&a, 0, sizeof(a));
+  a.sun_family = AF_UNIX;
+  if (!path.empty() && path[0] == '@') {
+    size_t n = std::min(path.size() - 1, sizeof(a.sun_path) - 1);
+    std::memcpy(a.sun_path + 1, path.data() + 1, n);
+    return static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + n);
+  }
+  std::strncpy(a.sun_path, path.c_str(), sizeof(a.sun_path) - 1);
+  return static_cast<socklen_t>(sizeof(a));
+}
+
 double env_d(const char *k, double dflt) {
   const char *v = std::getenv(k);
   return (v && *v) ? std::atof(v) : dflt;
@@ -117,11 +131,10 @@ class AgvRosBridge : public rclcpp::Node {
 
     in_fd_ = socket(AF_UNIX, SOCK_DGRAM, 0);
     out_fd_ = socket(AF_UNIX, SOCK_DGRAM, 0);
-    unlink(in_path_.c_str());
+    if (in_path_[0] != '@') unlink(in_path_.c_str());
     sockaddr_un a{};
-    a.sun_family = AF_UNIX;
-    std::strncpy(a.sun_path, in_path_.c_str(), sizeof(a.sun_path) - 1);
-    if (bind(in_fd_, reinterpret_cast<sockaddr *>(&a), sizeof(a)) != 0) {
+    socklen_t alen = make_addr(in_path_, a);
+    if (bind(in_fd_, reinterpret_cast<sockaddr *>(&a), alen) != 0) {
       RCLCPP_FATAL(get_logger(), "bind %s 失败: %s", in_path_.c_str(), std::strerror(errno));
       throw std::runtime_error("bind");
     }
@@ -129,9 +142,7 @@ class AgvRosBridge : public rclcpp::Node {
     setsockopt(in_fd_, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
     timeval tv{0, 200000};
     setsockopt(in_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    std::memset(&out_addr_, 0, sizeof(out_addr_));
-    out_addr_.sun_family = AF_UNIX;
-    std::strncpy(out_addr_.sun_path, out_path_.c_str(), sizeof(out_addr_.sun_path) - 1);
+    out_len_ = make_addr(out_path_, out_addr_);
 
     rx_ = std::thread([this] { rx_loop(); });
     tf_timer_ = create_wall_timer(std::chrono::milliseconds(20), [this] { poll_tf(); });
@@ -144,7 +155,7 @@ class AgvRosBridge : public rclcpp::Node {
     if (rx_.joinable()) rx_.join();
     close(in_fd_);
     close(out_fd_);
-    unlink(in_path_.c_str());
+    if (in_path_[0] != '@') unlink(in_path_.c_str());
   }
 
  private:
@@ -328,7 +339,7 @@ class AgvRosBridge : public rclcpp::Node {
 
   // ---------------------------------------------------------------- TF → Python
   void send(const std::vector<uint8_t> &b) {
-    sendto(out_fd_, b.data(), b.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr *>(&out_addr_), sizeof(out_addr_));
+    sendto(out_fd_, b.data(), b.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr *>(&out_addr_), out_len_);
   }
 
   void poll_tf() {
@@ -383,6 +394,7 @@ class AgvRosBridge : public rclcpp::Node {
   std::string in_path_, out_path_;
   int in_fd_ = -1, out_fd_ = -1;
   sockaddr_un out_addr_{};
+  socklen_t out_len_ = sizeof(sockaddr_un);
   std::atomic<bool> stop_{false};
   std::thread rx_;
   bool clamp_ = true;
