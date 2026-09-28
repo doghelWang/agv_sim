@@ -44,7 +44,8 @@ bash install.sh --repo https://github.com/doghelWang/agv_sim.git --name phone1 -
 | [docs/DEPLOY_ANDROID.md](docs/DEPLOY_ANDROID.md) | **Android 手机部署**：Termux + proot、一键安装、幽灵进程限制、proot 派生服务、散热 |
 | [docs/NOTES.md](docs/NOTES.md) | **注意事项**：网络 (GitHub/Docker Hub)、系统、部署组合、手机、更新、安全、备份 |
 | [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md) | 树莓派 / 手机底层运行优化方案 (问题根因、分批实施与验证) |
-| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | 手机 vs 树莓派 5 性能对比与推荐组合 |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | 手机 vs 树莓派 5 性能对比与推荐组合；C/C++ 化前后对比 |
+| [docs/NAVIGATION.md](docs/NAVIGATION.md) | **导航说明**：执行进程规划器与 Nav2 的区别、Nav2 线路跟随中断根因、中断恢复流程 (位姿调整/重新规划)、快速验证 |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | 平台与工作台功能、路径规划与精确跟踪、保护空间 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 进程架构与设计取舍 |
 | [docs/CODEBASE.md](docs/CODEBASE.md) | 代码框架：每个文件的职责、依赖库、调用链 |
