@@ -624,3 +624,47 @@ void sc_merge_finish(double *bins, int nb, double rmax) {
     for (int i = 0; i < nb; i++)
         if (bins[i] > rmax) bins[i] = INFINITY;
 }
+
+/* ---------------------------------------------------------------- 相机着色 (MuJoCoBackend.shade + CameraSensor._rgb)
+ * 射线命中 (dist/gid/nrm，来自 mj_multiRay + 解析地面/屋顶) → Lambert + 环境光 + 距离雾 (地面按纹理查表) → uint8 RGB。
+ * 舍入与 numpy 版一致: 颜色先存 float32 并截到 [0,1]，×255 (float32)，加噪声 (double) 后截到 [0,255] 再截断取整。
+ * nrm 可为 NULL (按 (0,0,1))；rng 为 NULL 或 sigma<=0 时不加噪声。 */
+void sc_cam_shade(const double *o, const double *dirs, const double *dist, const int *gid, const double *nrm, int n,
+                  const float *geom_rgb, int ngeom, int floor_geom, const float *tex, int th, int tw, double x0, double y0, double res,
+                  double sigma, uint64_t *rng, unsigned char *out) {
+    double L[3] = {0.35, 0.25, 0.9};
+    const double ln = sqrt(L[0] * L[0] + L[1] * L[1] + L[2] * L[2]);
+    L[0] /= ln; L[1] /= ln; L[2] /= ln;
+    for (int i = 0; i < n; i++) {
+        float col[3] = {0.55f, 0.55f, 0.55f};
+        const double d = dist[i];
+        if (isfinite(d)) {
+            const int g = gid[i];
+            float base[3] = {0.0f, 0.0f, 0.0f};
+            if (g >= 0 && g < ngeom) { base[0] = geom_rgb[3 * g]; base[1] = geom_rgb[3 * g + 1]; base[2] = geom_rgb[3 * g + 2]; }
+            if (g == floor_geom && tex && th > 0 && tw > 0) {
+                const double px = o[0] + dirs[3 * i] * d, py = o[1] + dirs[3 * i + 1] * d;
+                int ix = (int)((px - x0) / res), iy = (int)((py - y0) / res);
+                ix = ix < 0 ? 0 : (ix > tw - 1 ? tw - 1 : ix);
+                iy = iy < 0 ? 0 : (iy > th - 1 ? th - 1 : iy);
+                const float *t = tex + 3 * ((size_t)iy * tw + ix);
+                base[0] = t[0]; base[1] = t[1]; base[2] = t[2];
+            }
+            const double nx = nrm ? nrm[3 * i] : 0.0, ny = nrm ? nrm[3 * i + 1] : 0.0, nz = nrm ? nrm[3 * i + 2] : 1.0;
+            double lam = fabs(nx * L[0] + ny * L[1] + nz * L[2]);
+            lam = lam > 1 ? 1 : lam;
+            double view = fabs(nx * dirs[3 * i] + ny * dirs[3 * i + 1] + nz * dirs[3 * i + 2]);
+            view = view > 1 ? 1 : view;
+            const double k = 0.35 + 0.45 * lam + 0.2 * view, fog = exp(-d / 45.0);
+            for (int c = 0; c < 3; c++) col[c] = (float)((double)base[c] * (k * fog) + 0.55 * (1 - fog));
+        }
+        for (int c = 0; c < 3; c++) {
+            float v = col[c] < 0.0f ? 0.0f : (col[c] > 1.0f ? 1.0f : col[c]);
+            const float f = v * 255.0f;
+            double x = f;
+            if (rng && sigma > 0) x = (double)f + rng_gauss(rng) * sigma;
+            x = x < 0 ? 0 : (x > 255 ? 255 : x);
+            out[3 * i + c] = (unsigned char)x;
+        }
+    }
+}

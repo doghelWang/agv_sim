@@ -14,9 +14,14 @@
 """
 
 import math
+import os
+import random
 from typing import Dict, List, Optional
 
 import numpy as np
+
+# 着色 + 噪声 + 量化在 C 里做 (sim_core/native sc_cam_shade)；SIM_NATIVE_CAM=0 用 numpy
+NATIVE_CAM = os.environ.get("SIM_NATIVE_CAM", "1") != "0"
 
 CAMERA_TYPES = ("camera", "stereo", "tof")
 
@@ -114,7 +119,36 @@ class CameraSensor:
             img = np.clip(img + np.random.normal(0, float(self.cfg.get("pixel_noise", 2.0)), img.shape), 0, 255).astype(np.uint8)
         return img
 
+    def _rgb_native(self, engine, o, dw, dist, gid, nrm, noise: bool) -> Optional[np.ndarray]:
+        from . import native
+        lib = native.lib
+        tex = getattr(engine, "_floor_tex", None)
+        if not NATIVE_CAM or lib is None or not hasattr(lib, "sc_cam_shade") or tex is None:
+            return None
+        if getattr(self, "_rng", None) is None:
+            self._rng = np.zeros(6, np.uint64)
+            lib.sc_rng_seed(self._rng.ctypes.data, random.getrandbits(64))
+        n = len(dist)
+        o = np.ascontiguousarray(o, np.float64)
+        dw = np.ascontiguousarray(dw, np.float64)
+        dist = np.ascontiguousarray(dist, np.float64)
+        gid = np.ascontiguousarray(gid, np.int32)
+        nrm = None if nrm is None else np.ascontiguousarray(nrm, np.float64)
+        rgb = np.ascontiguousarray(engine.geom_rgb, np.float32)
+        tex = np.ascontiguousarray(tex, np.float32)
+        x0, y0, res = engine._floor_org
+        out = np.empty((self.H, self.W, 3), np.uint8)
+        sigma = float(self.cfg.get("pixel_noise", 2.0)) if noise else 0.0
+        lib.sc_cam_shade(o.ctypes.data, dw.ctypes.data, dist.ctypes.data, gid.ctypes.data, None if nrm is None else nrm.ctypes.data, n,
+                         rgb.ctypes.data, len(rgb), int(engine.floor_geom), tex.ctypes.data, tex.shape[0], tex.shape[1],
+                         float(x0), float(y0), float(res), sigma, self._rng.ctypes.data, out.ctypes.data)
+        return out
+
     def _rgb(self, engine, o, dw, dist, gid, nrm, noise: bool) -> np.ndarray:
+        if engine is not None and gid is not None:
+            img = self._rgb_native(engine, o, dw, dist, gid, nrm, noise)
+            if img is not None:
+                return img
         if engine is not None:
             col = engine.shade(o, dw, dist, gid, nrm)
         else:

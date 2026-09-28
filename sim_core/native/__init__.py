@@ -110,6 +110,10 @@ def _load():
                           ("sc_rt_read_lidar3d", [_P, _I, ctypes.c_uint32, _P, _P, _P, _P, _P, _I, _I, _P, _P, _P, _P, _P], _I)):
         f = getattr(lib, fn)
         f.argtypes, f.restype = args, res
+    lib.sc_cam_shade.argtypes = [_P, _P, _P, _P, _P, _I, _P, _I, _I, _P, _I, _I, _D, _D, _D, _D, _P, _P]
+    lib.sc_cam_shade.restype = None
+    lib.sc_rng_seed.argtypes = [_P, ctypes.c_uint64]
+    lib.sc_rng_seed.restype = None
     lib.sc_merge_add.argtypes = [_P, _I, _P, _I, _D, _D, _D, _D, _D, _D]
     lib.sc_merge_add.restype = None
     lib.sc_merge_finish.argtypes = [_P, _I, _D]
