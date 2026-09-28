@@ -7,8 +7,8 @@
 #   S10 (4.3,7.5)  从角点出发 (车头朝墙，段起点转向)，沿北排到装卸位后终点对位转向 (车角离墙约 5 cm)
 #   P0 (0,0)       从贴墙装卸位离开 (段起点车头朝墙转向) 回中心
 # 不重启实例 (除非 --restart): 省掉 Nav2/slam_toolbox 启动约 1 分钟；只统计本次检查期间的事件与控制器日志
-# 非树莓派部署用环境变量改地址/日志来源，如 RK3588 离线部署 (deploy/rk3588_offline，--restart 不适用):
-#   GW=http://127.0.0.1:8088 NAV=http://127.0.0.1:8091 NAV_LOG="ssh root@192.168.1.64 cat /mnt/agv_ros/logs/nav.log" bash tools/quick_nav_check.sh
+# 非树莓派部署用环境变量改地址/实例/日志来源，如 RK3588 离线单机 (chroot 里执行，见 DEPLOY.md 4.1):
+#   INST=i01 NAV_LOG="cat /root/.agv-agent/logs/agv-nav-i01.log" bash tools/quick_nav_check.sh
 # ============================================================================
 cd "$(dirname "$0")/.." || exit 1
 GW=${GW:-http://127.0.0.1:8101}; NAV=${NAV:-http://127.0.0.1:8102}; HUB=${HUB:-http://127.0.0.1:8082}; INST=${INST:-i12}
