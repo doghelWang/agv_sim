@@ -113,6 +113,10 @@ class Navigator:
         self.tail_offset = 0.6
         self.map_dir = None           # 设置后，场景变化时从仿真进程下载 Nav2 地图到该目录
         threading.Thread(target=self._safety_loop, daemon=True, name="nav-safety").start()
+        # C++ 核心 (agv_ros_bridge --core): 保护空间配置/运行模式下发，安全层快照与事件回收
+        self._core_cfg_ver = 0          # 配置变化计数 (外形/保护空间/车型)
+        self._core_sent = (None, -1)    # (已下发的 C++ 桥实例, 配置版本)
+        threading.Thread(target=self._core_loop, daemon=True, name="nav-core-sync").start()
 
     # ------------------------------------------------------------------ 数据输入 (REST → 本地视图)
     def _on_state(self, st):
@@ -198,6 +202,12 @@ class Navigator:
         self._scan_body = (rs, a0, inc, rmax)
         if self._slam_uses_merged():           # 只有 3D 激光时用合并扫描做 SLAM
             self.slam.on_scan(float(d.get("t", 0.0)), rs, a0, inc, rmax)
+        if self._core() is not None:          # C++ 核心已算好各档走廊最近障碍 (安全层快照)，这里只保留点集
+            r = np.asarray(rs, float)
+            ok = (r > 0.02) & (r < rmax - 1e-3)
+            a = a0 + inc * np.nonzero(ok)[0]
+            self._pts = (r[ok] * np.cos(a), r[ok] * np.sin(a))
+            return
         # 各档防护区走廊内最近障碍 (机体系；走廊 = 当前外形两侧外扩 side；距离从车头/车尾算起)
         r = np.asarray(rs, float)
         ok = (r > 0.02) & (r < rmax - 1e-3)
@@ -253,6 +263,7 @@ class Navigator:
         return protection.outline(self.body, self.prot, self.loaded)
 
     def _apply_outline(self):
+        self._core_cfg_ver = getattr(self, "_core_cfg_ver", 0) + 1
         h, t, l, r = self.outline()
         self.slam.set_body(h, t, max(l, r))
         with self.lock:
@@ -265,6 +276,66 @@ class Navigator:
                                                 self.prot.get("corner_mode", "auto"))
             self.dijkstra_planner.robot_circum_radius = max(math.hypot(h, hw), math.hypot(t, hw))
             self.astar_planner = AStarPlanner(resolution=0.1, inflation_radius=hw + self.prot["fields"][0]["side"] + self.prot["body_margin"])
+
+    # ------------------------------------------------------------------ C++ 核心同步
+    def _core(self):
+        node = getattr(self.nav2, "node", None)
+        cpp = getattr(node, "cpp", None)
+        return cpp if cpp is not None and getattr(node, "core", False) and cpp.running() else None
+
+    def _core_config(self) -> dict:
+        h, t, l, r = self.outline()
+        photos = [{"name": p["name"], "di": p["di"], "x": float(p["mount"]["x"]), "y": float(p["mount"]["y"]),
+                   "yaw": float(p["mount"]["yaw"])} for p in (self.link.sensors or {}).get("photoelectric", [])]
+        return {"prot": self.prot, "outline": [h, t, l, r], "photos": photos,
+                "max_decel": float(self.cfg.get("chassis", {}).get("max_decel_mps2", 0.5) or 0.5),
+                "loc_stale_s": float(os.environ.get("LOC_STALE_S", "1.0"))}
+
+    def _core_mode(self) -> dict:
+        m = dict(getattr(self.nav2.node, "mode_flags", None) or {})
+        with self.lock:
+            st = self.telemetry.get("nav_status")
+        m["nav2_forward"] = self.active_planner == "nav2" and st in ("NAVIGATING", "PLANNING", "OBSTACLE_WAIT")
+        m["speed_cap"] = float(self.speed_cap or 0.0)
+        return m
+
+    def push_core(self, force_mode: bool = False):
+        cpp = self._core()
+        if cpp is None:
+            return
+        if self._core_sent != (cpp, self._core_cfg_ver) or cpp.on_safety is None:
+            cpp.on_safety = self._on_core_safety
+            cpp.on_sevent = lambda e: self.event_hub.emit(e.get("cat", "sensors"), e.get("type", "SAFETY"), e.get("level", "info"),
+                                                          e.get("title", ""), e.get("msg", ""), {"source": "cpp"})
+            try:
+                cpp.send_config(self._core_config())
+                self._core_sent = (cpp, self._core_cfg_ver)
+            except Exception as e:  # noqa
+                self.log(f"[navigator] 下发安全层配置失败: {e}")
+        cpp.send_mode(self._core_mode(), force=force_mode)
+
+    def _core_loop(self):
+        n = 0
+        while self.running:
+            time.sleep(0.2)
+            n += 1
+            try:
+                self.push_core(force_mode=n % 10 == 0)      # 每 2 s 强制重发一次 MODE (C++ 重启后恢复)
+            except Exception:
+                pass
+
+    def _on_core_safety(self, m: dict):
+        """C++ 安全层快照 (10~20 Hz): 各档走廊最近障碍；Nav2 执行中防护区状态以 C++ 为准"""
+        bands = [tuple(b) for b in m.get("bands", [])]
+        self.obs["bands"] = bands
+        i = int(m.get("band", 0))
+        self.obs["band"] = i
+        self.obs["front"], self.obs["rear"] = bands[i] if i < len(bands) else (None, None)
+        if m.get("nav2"):
+            self.obs["zone"] = m.get("zone") or "clear"
+            self.obs["layer"] = m.get("layer") or None
+            self.obs["photo_ignored"] = m.get("photo_ignored") or []
+        self.link.stats["cpp_core"] = {k: m.get(k) for k in ("stream", "state_frames", "cmd_sent", "cmd_errors", "udp")}
 
     def set_protection(self, patch: dict, persist_note: str = "") -> dict:
         """运行时调整保护空间 (不写回模型；写回由平台模型补全保存)"""
@@ -1470,6 +1541,7 @@ class Navigator:
                 return
             with self.lock:
                 self.telemetry["nav_status"] = "NAVIGATING"
+            self.push_core(force_mode=True)
             self.event_hub.emit("navigation", "MISSION_DISPATCH", "info", f"Nav2 导航任务 #{mission_id}",
                                 f"拓扑路线 {len(pts) - 1} 个路段 → ({x:.2f}, {y:.2f}, {math.degrees(yaw):.0f}°)，Nav2 插件: "
                                 "AgvRoute 规划 (圆弧过弯/拐点转向) + RouteFollow 跟随 (停车精度) + adjust_pose 恢复", {"route_points": len(pts)})
@@ -1747,6 +1819,9 @@ class Navigator:
         self.nav2.cancel()
         self._agv_mission = None
         self.approach_left = None
+        with self.lock:
+            self.telemetry["nav_status"] = "CANCELED"
+        self.push_core(force_mode=True)                 # 立即停止转发 Nav2 指令
         with self.lock:
             self.current_mission_id += 1
             canceled_id = self.current_mission_id - 1

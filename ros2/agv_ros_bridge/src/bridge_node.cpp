@@ -14,19 +14,27 @@
 //
 // 与 nav_runtime/ros_bridge.py 的 Python 发布逻辑逐项一致: 时间戳 = 仿真时间 + 最小延迟偏移、协方差、
 // 关节每 2 帧发布一次、AGV_COSTMAP_SCAN_CLAMP / AGV_COSTMAP_SCAN_MARGIN 钳位规则。
-// 用法: agv_ros_bridge --in <本节点接收的 socket 路径> --out <Python 接收的 socket 路径> [--ros-args ...]
+//
+// 核心模式 (--core，NAV_CPP_CORE=1 默认)：本节点直接连仿真推送流 (SIM_API /api/v1/stream)，不再经 Python 转发 ——
+//   状态/激光直接发布 ROS；状态帧/元信息/IO/融合扫描原样转给 Python (定位融合、任务、界面)；
+//   融合扫描 → 各档防护区走廊最近障碍；Nav2 /cmd_vel → 安全层 (safety.hpp) → UDP 指令 (无 UDP 时 REST)；
+//   防护区状态变化/定位停更 → 事件。Python 下发 CONFIG (保护空间/外形/光电) 与 MODE (是否转发 Nav2 指令、TF 发布标志等)
+// 用法: agv_ros_bridge --in <本节点接收的 socket 路径> --out <Python 接收的 socket 路径> [--core] [--ros-args ...]
 // ============================================================================
+#include <netdb.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -50,11 +58,21 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
+#include <geometry_msgs/msg/twist.hpp>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include "json_lite.hpp"
+#include "safety.hpp"
+#include "sim_stream.hpp"
 
 namespace {
 
 constexpr char MAGIC[4] = {'A', 'G', 'V', '1'};
-enum : uint8_t { T_STATE = 1, T_SCAN = 2, T_ROUTE = 3, T_CANCEL = 4, T_TF = 10, T_STATS = 11, T_NAV = 12 };
+enum : uint8_t { T_STATE = 1, T_SCAN = 2, T_ROUTE = 3, T_CANCEL = 4, T_CONFIG = 5, T_MODE = 6,
+                 T_TF = 10, T_STATS = 11, T_NAV = 12,
+                 // 核心模式 C++ → Python: 仿真推送流帧原样转发 (类型号 = 20 + 推送流帧类型) 与安全层快照
+                 T_RELAY = 20, T_SAFETY = 30 };
 enum : uint8_t { F_OWN_ODOM = 1, F_MAP_ODOM = 2, F_IMU = 4, F_HAS_T = 8 };
 
 struct Reader {
@@ -154,8 +172,8 @@ std::string jesc(const std::string &in) {
 
 class AgvRosBridge : public rclcpp::Node {
  public:
-  AgvRosBridge(const std::string &in_path, const std::string &out_path)
-      : Node("nav_runtime_bridge_cpp"), in_path_(in_path), out_path_(out_path) {
+  AgvRosBridge(const std::string &in_path, const std::string &out_path, bool core)
+      : Node("nav_runtime_bridge_cpp"), in_path_(in_path), out_path_(out_path), core_(core) {
     const char *cl = std::getenv("AGV_COSTMAP_SCAN_CLAMP");
     clamp_ = !(cl && std::string(cl) != "1");
     const char *mg = std::getenv("AGV_COSTMAP_SCAN_MARGIN");
@@ -194,6 +212,11 @@ class AgvRosBridge : public rclcpp::Node {
     segs_pub_ = create_publisher<std_msgs::msg::Float32MultiArray>("/agv/world_segments", latched);
     nav_client_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(this, "navigate_to_pose");
     stop_sub_ = create_subscription<std_msgs::msg::Float32>("/agv/stop_distance", 10, [this](std_msgs::msg::Float32::ConstSharedPtr m) {
+      {
+        std::lock_guard<std::mutex> lk(smu_);
+        stop_dist_ = m->data;
+        stop_wall_ = wall_now();
+      }
       double t = now_s();
       if (t - last_stop_tx_ < 0.05) return;                   // 限 20 Hz
       last_stop_tx_ = t;
@@ -217,11 +240,14 @@ class AgvRosBridge : public rclcpp::Node {
       send_nav(c + "]}");
     });
     stats_timer_ = create_wall_timer(std::chrono::seconds(1), [this] { send_stats(); });
-    RCLCPP_INFO(get_logger(), "agv_ros_bridge (C++) 就绪: in=%s out=%s clamp=%d", in_path_.c_str(), out_path_.c_str(), clamp_);
+    if (core_) start_core();
+    RCLCPP_INFO(get_logger(), "agv_ros_bridge (C++) 就绪: in=%s out=%s clamp=%d core=%d", in_path_.c_str(), out_path_.c_str(), clamp_, core_);
   }
 
   ~AgvRosBridge() override {
     stop_ = true;
+    if (stream_) stream_->stop();
+    if (udp_fd_ >= 0) close(udp_fd_);
     if (rx_.joinable()) rx_.join();
     close(in_fd_);
     close(out_fd_);
@@ -263,6 +289,8 @@ class AgvRosBridge : public rclcpp::Node {
         else if (buf[4] == T_SCAN) on_scan(r);
         else if (buf[4] == T_ROUTE) on_route(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
         else if (buf[4] == T_CANCEL) cancel_route();
+        else if (buf[4] == T_CONFIG) on_config(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
+        else if (buf[4] == T_MODE) on_mode(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
       } catch (const std::exception &e) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "消息处理失败: %s", e.what());
       }
@@ -284,6 +312,11 @@ class AgvRosBridge : public rclcpp::Node {
     for (auto *vec : {&jp, &jv, &je})
       for (auto &v : *vec) v = r.get<double>();
     if (!r.ok) return;
+    publish_state(t, o, tr, m2o, im, flags, std::move(names), std::move(jp), std::move(jv), std::move(je));
+  }
+
+  void publish_state(double t, const double *o, const double *tr, const double *m2o, const double *im, uint8_t flags,
+                     std::vector<std::string> names, std::vector<double> jp, std::vector<double> jv, std::vector<double> je) {
     if (flags & F_HAS_T) track_offset(t);
     auto stamp = sim_stamp((flags & F_HAS_T) ? t : NAN);
 
@@ -385,6 +418,11 @@ class AgvRosBridge : public rclcpp::Node {
     double rmin = r.get<double>(), rmax = r.get<double>(), hz = r.get<double>();
     uint32_t n = r.get<uint32_t>();
     if (!r.ok || r.p + 4ull * n > r.end) return;
+    publish_scan(kind, name, frame, t, a0, inc, rmin, rmax, hz, reinterpret_cast<const float *>(r.p), n);
+  }
+
+  void publish_scan(uint8_t kind, const std::string &name, const std::string &frame, double t, double a0, double inc,
+                    double rmin, double rmax, double hz, const float *ranges, uint32_t n) {
     sensor_msgs::msg::LaserScan s;
     auto stamp = sim_stamp(t);
     s.header.stamp = kind == 0 ? costmap_stamp(stamp) : stamp;
@@ -396,7 +434,7 @@ class AgvRosBridge : public rclcpp::Node {
     s.range_max = static_cast<float>(rmax);
     s.scan_time = static_cast<float>(1.0 / std::max(1.0, hz));
     s.ranges.resize(n);
-    std::memcpy(s.ranges.data(), r.p, 4ull * n);
+    std::memcpy(s.ranges.data(), ranges, 4ull * n);
     if (kind == 1) {
       scan_pub_->publish(s);
       ++n_merged_;
@@ -407,6 +445,373 @@ class AgvRosBridge : public rclcpp::Node {
       it = lidar_pubs_.emplace(name, create_publisher<sensor_msgs::msg::LaserScan>("/scan/" + name, sensor_qos_)).first;
     it->second->publish(s);
     ++n_scan_;
+  }
+
+  // ================================================================ 核心模式
+  void start_core() {
+    const char *u = std::getenv("SIM_API");
+    sim_url_ = (u && *u) ? u : "http://127.0.0.1:8090";
+    cmd_sub_ = create_subscription<geometry_msgs::msg::Twist>("/cmd_vel", 10, [this](geometry_msgs::msg::Twist::ConstSharedPtr m) {
+      on_cmd_vel(m->linear.x, m->linear.y, m->angular.z);
+    });
+    udp_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+    stream_ = std::make_unique<simstream::Stream>(
+        sim_url_, [this](uint8_t ty, const uint8_t *b, size_t n) { on_stream_frame(ty, b, n); },
+        [this](bool up) {
+          stream_up_ = up;
+          if (up) refresh_cmd_channel();
+          RCLCPP_INFO(get_logger(), "仿真推送流%s: %s", up ? "已连接" : "断开", sim_url_.c_str());
+        });
+    stream_->start();
+    safety_timer_ = create_wall_timer(std::chrono::milliseconds(200), [this] { send_safety(false); });
+  }
+
+  void refresh_cmd_channel() {
+    int st = -1;
+    std::string body = simstream::http_get(stream_->url(), "/api/v1/sim", &st);
+    jl::Value v;
+    int port = 0;
+    if (st == 200 && jl::parse(body, v)) port = static_cast<int>(v["cmd_udp_port"].num(0));
+    const char *nu = std::getenv("NAV_CMD_UDP");
+    if (nu && std::string(nu) == "0") port = 0;
+    std::lock_guard<std::mutex> lk(cmu_);
+    udp_port_ = port;
+    if (port > 0) {
+      addrinfo hints{}, *res = nullptr;
+      hints.ai_family = AF_INET;
+      hints.ai_socktype = SOCK_DGRAM;
+      if (getaddrinfo(stream_->url().host.c_str(), std::to_string(port).c_str(), &hints, &res) == 0 && res) {
+        std::memcpy(&udp_addr_, res->ai_addr, sizeof(sockaddr_in));
+        freeaddrinfo(res);
+      } else {
+        udp_port_ = 0;
+      }
+    }
+  }
+
+  // 仿真推送流帧: 解析需要的部分，并原样转给 Python
+  void on_stream_frame(uint8_t ty, const uint8_t *b, size_t n) {
+    if (ty == 1) on_sim_state(b, n);
+    else if (ty == 2) on_sim_meta(b, n);
+    else if (ty == 3) on_sim_io(b, n);
+    else if (ty == 4) { on_sim_scan(b, n); return; }   // 激光按需转发 (on_sim_scan 内)
+    relay(ty, b, n);
+  }
+
+  void relay(uint8_t ty, const uint8_t *b, size_t n) {
+    std::vector<uint8_t> out(MAGIC, MAGIC + 4);
+    out.push_back(static_cast<uint8_t>(T_RELAY + ty));
+    out.insert(out.end(), b, b + n);
+    send(out);
+  }
+
+  void on_sim_meta(const uint8_t *b, size_t n) {
+    jl::Value v;
+    if (!jl::parse(std::string(reinterpret_cast<const char *>(b), n), v)) return;
+    std::vector<std::string> names;
+    for (const auto &x : v["joint_names"].a) names.push_back(x.str());
+    std::lock_guard<std::mutex> lk(smu_);
+    joint_names_ = std::move(names);
+  }
+
+  // 状态帧 (sim_server STATE_FMT "<Idd6d6d3d5dIBddIH" + 3·nj 个 double)
+  void on_sim_state(const uint8_t *b, size_t n) {
+    constexpr size_t HEAD = 4 + 8 * 2 + 8 * 6 + 8 * 6 + 8 * 3 + 8 * 5 + 4 + 1 + 8 * 2 + 4 + 2;
+    if (n < HEAD) return;
+    Reader r{b, b + n};
+    r.get<uint32_t>();
+    const double t = r.get<double>();
+    r.get<double>();
+    double tr6[6], od6[6], mo[3], im5[5];
+    for (double &v : tr6) v = r.get<double>();
+    for (double &v : od6) v = r.get<double>();
+    for (double &v : mo) v = r.get<double>();
+    for (double &v : im5) v = r.get<double>();
+    r.get<uint32_t>();
+    r.get<uint8_t>();
+    r.get<double>();
+    r.get<double>();
+    r.get<uint32_t>();
+    const uint16_t nj = r.get<uint16_t>();
+    std::vector<double> jp(nj), jv(nj), je(nj);
+    for (auto *vec : {&jp, &jv, &je})
+      for (auto &v : *vec) v = r.get<double>();
+    if (!r.ok) return;
+    std::vector<std::string> names;
+    uint8_t flags = F_HAS_T | F_IMU;
+    double m2o[3] = {0, 0, 0};
+    {
+      std::lock_guard<std::mutex> lk(smu_);
+      names = joint_names_;
+      if (mode_own_odom_) flags |= F_OWN_ODOM;
+      if (mode_map_odom_) { flags |= F_MAP_ODOM; std::copy(mode_m2o_, mode_m2o_ + 3, m2o); }
+      v_meas_ = od6[3];
+    }
+    if (names.size() != nj) {
+      names.resize(nj);
+      for (size_t i = 0; i < nj; ++i) if (names[i].empty()) names[i] = "j" + std::to_string(i);
+    }
+    const double o[6] = {od6[0], od6[1], od6[2], od6[3], od6[4], od6[5]};
+    const double trv[3] = {tr6[0], tr6[1], tr6[2]};
+    const double im[4] = {im5[0], im5[1], im5[2], im5[3]};
+    publish_state(t, o, trv, m2o, im, flags, std::move(names), std::move(jp), std::move(jv), std::move(je));
+    ++n_stream_state_;
+  }
+
+  void on_sim_io(const uint8_t *b, size_t n) {
+    jl::Value v;
+    if (!jl::parse(std::string(reinterpret_cast<const char *>(b), n), v)) return;
+    const auto &di = v["io"]["inputs"];
+    std::lock_guard<std::mutex> lk(smu_);
+    estop_ = di["di_estop"].truthy();
+    photo_on_.clear();
+    photo_dist_.clear();
+    for (const auto &kv : di.o) if (kv.second.truthy()) photo_on_.push_back(kv.first);
+    for (const auto &p : v["photos"].a) {
+      const auto &d = p["distance_m"];
+      photo_dist_[p["name"].str()] = d.is_null() ? -1.0 : d.num(-1.0);
+    }
+  }
+
+  // 激光帧: <u16 元信息长度><元信息 JSON><float32 ranges>
+  void on_sim_scan(const uint8_t *b, size_t n) {
+    if (n < 2) return;
+    uint16_t ml;
+    std::memcpy(&ml, b, 2);
+    if (2u + ml > n) return;
+    jl::Value m;
+    if (!jl::parse(std::string(reinterpret_cast<const char *>(b + 2), ml), m)) return;
+    const size_t cnt = (n - 2 - ml) / 4;
+    std::vector<float> rs(cnt);
+    std::memcpy(rs.data(), b + 2 + ml, cnt * 4);
+    const std::string name = m["name"].str();
+    const bool merged = name == "merged";
+    const double t = m["t"].num(NAN), a0 = m["angle_min"].num(), inc = m["angle_increment"].num();
+    const double rmin = m["range_min"].num(0.05), rmax = m["range_max"].num(30.0), hz = m["scan_hz"].num(10.0);
+    std::string frame = m["frame_id"].str();
+    if (frame.empty()) frame = merged ? "base_link" : name + "_link";
+    for (auto &x : rs) if (!std::isfinite(x)) x = std::numeric_limits<float>::infinity();
+    publish_scan(merged ? 1 : 0, name, frame, t, a0, inc, rmin, rmax, hz, rs.data(), static_cast<uint32_t>(cnt));
+    if (merged) {
+      // 融合扫描 (机体系) → 各档防护区走廊最近障碍；点集供原地转向防护
+      std::vector<agvsafe::Pt> pts;
+      pts.reserve(cnt);
+      for (size_t i = 0; i < cnt; ++i) {
+        const double r = rs[i];
+        if (!(r > 0.02) || !(r < rmax - 1e-3)) continue;
+        const double a = a0 + inc * static_cast<double>(i);
+        pts.push_back({r * std::cos(a), r * std::sin(a)});
+      }
+      {
+        std::lock_guard<std::mutex> lk(smu_);
+        bands_ = agvsafe::compute_bands(cfg_, pts);
+        pts_.swap(pts);
+      }
+      relay(4, b, n);                      // 界面/执行进程用 (10 Hz)
+      send_safety(false);
+    } else if (want_raw_lidar_) {
+      relay(4, b, n);                      // 内置 SLAM 需要原始激光帧时才转发
+    }
+  }
+
+  void on_config(const std::string &j) {
+    jl::Value v;
+    if (!jl::parse(j, v)) return;
+    agvsafe::Config c;
+    const auto &P = v["prot"];
+    c.enabled = P["enabled"].truthy(true);
+    for (const auto &f : P["fields"].a) {
+      agvsafe::Field F;
+      F.name = f["name"].str();
+      F.v_max = f["v_max"].num(9.0);
+      F.front = f["front"].num(0.3);
+      F.rear = f["rear"].num(0.2);
+      F.side = f["side"].num(0.08);
+      c.fields.push_back(F);
+    }
+    c.slow_ratio = P["slow_ratio"].num(2.0);
+    c.rotate_margin = P["rotate_margin"].num(0.02);
+    c.rotate_lookahead = P["rotate_lookahead_rad"].num(0.25);
+    c.docking_front = P["docking"]["front"].num(0.02);
+    const auto &ph = P["photo"];
+    if (!ph.is_null()) {
+      c.photo_mode = ph["mode"].str().empty() ? "field" : ph["mode"].str();
+      c.photo_front = ph["front"].num(0.3);
+      c.photo_rear = ph["rear"].num(0.3);
+      c.photo_side = ph["side"].num(0.1);
+      c.mute_near_stop = ph["mute_near_stop"].num(0.1);
+    }
+    const auto &o = v["outline"];
+    c.h = o[0].num(0.6); c.t = o[1].num(0.6); c.l = o[2].num(0.4); c.r = o[3].num(0.4);
+    c.max_decel = v["max_decel"].num(0.5);
+    c.loc_stale_s = v["loc_stale_s"].num(1.0);
+    for (const auto &p : v["photos"].a) {
+      agvsafe::Photo ph2;
+      ph2.name = p["name"].str();
+      ph2.di = p["di"].str();
+      ph2.x = p["x"].num(); ph2.y = p["y"].num(); ph2.yaw = p["yaw"].num();
+      c.photos.push_back(ph2);
+    }
+    std::lock_guard<std::mutex> lk(smu_);
+    cfg_ = std::move(c);
+    have_cfg_ = true;
+  }
+
+  void on_mode(const std::string &j) {
+    jl::Value v;
+    if (!jl::parse(j, v)) return;
+    std::lock_guard<std::mutex> lk(smu_);
+    const bool fwd = v["nav2_forward"].truthy();
+    if (!fwd && nav2_fwd_) zone_ = "clear";           // Nav2 任务结束: 防护区状态交还执行进程
+    nav2_fwd_ = fwd;
+    mode_own_odom_ = v["own_odom"].truthy();
+    mode_map_odom_ = v["map_odom"].truthy();
+    for (int i = 0; i < 3; ++i) mode_m2o_[i] = v["m2o"][i].num();
+    want_raw_lidar_ = v["want_raw_lidar"].truthy();
+    loc_ext_ = v["loc_ext"].truthy();
+    speed_cap_ = v["speed_cap"].num(0.0);
+  }
+
+  // Nav2 /cmd_vel (velocity_smoother 输出) → 安全层 → 仿真
+  void on_cmd_vel(double vx, double vy, double wz) {
+    agvsafe::Result r;
+    std::string ev_type, ev_level, ev_title, ev_msg, ev_cat = "sensors";
+    {
+      std::lock_guard<std::mutex> lk(smu_);
+      if (!nav2_fwd_ || !have_cfg_) return;
+      agvsafe::Env e;
+      e.estop = estop_;
+      const double now_w = wall_now();
+      e.loc_check = loc_ext_ && last_tf_wall_ > 0.0;
+      e.loc_age = now_w - last_tf_wall_;
+      e.speed_cap = speed_cap_;
+      const double sd_age = now_w - stop_wall_;
+      e.has_left = sd_age < 0.5;                        // RouteController 的停车点剩余行程 (20 Hz 以上刷新)
+      e.approach_left = stop_dist_;
+      e.v_meas = v_meas_;
+      e.bands = bands_;
+      e.pts = &pts_;
+      for (const auto &p : cfg_.photos) {
+        if (std::find(photo_on_.begin(), photo_on_.end(), p.di) == photo_on_.end()) continue;
+        auto it = photo_dist_.find(p.name);
+        e.photo_hits.emplace_back(&p, it == photo_dist_.end() ? -1.0 : it->second);
+      }
+      r = agvsafe::filter(cfg_, e, vx, vy, wz);
+      // 定位停更事件
+      if (r.loc_stale && !loc_stale_) {
+        loc_stale_ = true;
+        ev_cat = "localization"; ev_type = "LOC_STALE"; ev_level = "warning"; ev_title = "定位停更，停车等待";
+        char b[160];
+        std::snprintf(b, sizeof(b), "slam_toolbox 定位已 %.1f s 未更新，Nav2 路径换算不可信", e.loc_age);
+        ev_msg = b;
+      } else if (!r.loc_stale && loc_stale_ && e.loc_check) {
+        loc_stale_ = false;
+        ev_cat = "localization"; ev_type = "LOC_RESUME"; ev_level = "info"; ev_title = "定位恢复";
+      }
+      if (!r.zone.empty()) zone_event(r, ev_type, ev_level, ev_title, ev_msg);
+      photo_ignored_ = r.photo_ignored;
+      layer_now_ = r.layer;
+    }
+    if (!ev_type.empty()) send_event(ev_cat, ev_type, ev_level, ev_title, ev_msg);
+    send_cmd(r.vx, r.vy, r.wz, "nav2");
+  }
+
+  // 防护区状态机 (navigator._zone): 预警 3 s 内只报一次；进入 slow/stop 报事件；恢复到 clear 报解除
+  void zone_event(const agvsafe::Result &r, std::string &ty, std::string &lv, std::string &ti, std::string &msg) {
+    const std::string prev = zone_, zone = r.zone;
+    const double now = wall_now();
+    if (zone == "warn") {
+      if (prev == "clear" && now - t_warn_ > 3.0) {
+        t_warn_ = now;
+        ty = "OBS_WARN"; lv = "info"; ti = "近距避障: 预警区有障碍"; msg = "当前档预警区内探测到障碍，保持速度并准备降档";
+      }
+      zone_ = "warn";
+      return;
+    }
+    if (zone == prev || (prev == "warn" && zone == "clear")) { zone_ = zone; return; }
+    zone_ = zone;
+    if (zone == "clear" && now - t_zone_ < 0.5) return;
+    t_zone_ = now;
+    char b[200];
+    const char *where = r.layer == "field_front" ? "前向防护区" : (r.layer == "field_rear" ? "后向防护区" : (r.layer == "rotate" ? "转向防护区" : "防护区"));
+    if (zone == "slow") {
+      ty = "OBS_SLOW"; lv = "warning"; ti = "近距避障: 减速避让";
+      std::snprintf(b, sizeof(b), "%s: 障碍 %.2f m < %.2f m，按防护区分档降速", where, r.d_hit, r.need);
+      msg = b;
+    } else if (zone == "stop") {
+      ty = "OBS_STOP"; lv = "danger"; ti = "近距避障: 停车等待";
+      if (r.layer == "rotate") std::snprintf(b, sizeof(b), "%s: 原地转向扫掠区 (外扩 %.2f m) 内有障碍，停止转向", where, cfg_.rotate_margin);
+      else std::snprintf(b, sizeof(b), "%s: 障碍 %.2f m < 最低档停车距离 %.2f m，停车等待", where, r.d_hit, r.need);
+      msg = b;
+    } else if (prev == "slow" || prev == "stop") {
+      ty = "OBS_CLEAR"; lv = "success"; ti = "障碍解除，恢复巡航";
+    }
+  }
+
+  void send_event(const std::string &cat, const std::string &type, const std::string &level, const std::string &title,
+                  const std::string &msg) {
+    send_nav("{\"k\":\"sevent\",\"cat\":\"" + jesc(cat) + "\",\"type\":\"" + jesc(type) + "\",\"level\":\"" + jesc(level) +
+             "\",\"title\":\"" + jesc(title) + "\",\"msg\":\"" + jesc(msg) + "\"}");
+  }
+
+  void send_cmd(double vx, double vy, double wz, const char *source) {
+    std::lock_guard<std::mutex> lk(cmu_);
+    if (udp_port_ > 0 && udp_fd_ >= 0) {
+      uint8_t pkt[48] = {'A', 'G', 'V', 'C'};
+      const uint32_t seq = ++cmd_seq_;
+      std::memcpy(pkt + 4, &seq, 4);
+      std::memcpy(pkt + 8, &vx, 8);
+      std::memcpy(pkt + 16, &vy, 8);
+      std::memcpy(pkt + 24, &wz, 8);
+      std::memcpy(pkt + 32, source, std::min<size_t>(std::strlen(source), 16));
+      if (sendto(udp_fd_, pkt, sizeof(pkt), MSG_DONTWAIT, reinterpret_cast<const sockaddr *>(&udp_addr_), sizeof(udp_addr_)) == 48) {
+        ++n_cmd_;
+        return;
+      }
+      ++n_cmd_err_;
+    }
+    // 无 UDP 通道: REST PUT (短连接)
+    int fd = simstream::connect_tcp(stream_->url(), 300);
+    if (fd < 0) { ++n_cmd_err_; return; }
+    char body[160];
+    int bl = std::snprintf(body, sizeof(body), "{\"vx\":%.6f,\"vy\":%.6f,\"wz\":%.6f,\"source\":\"%s\"}", vx, vy, wz, source);
+    std::string req = "PUT " + stream_->url().base + "/api/v1/control/cmd_vel HTTP/1.1\r\nHost: " + stream_->url().host +
+                      "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(bl) + "\r\nConnection: close\r\n\r\n" +
+                      std::string(body, bl);
+    if (simstream::send_all(fd, req)) { char tmp[256]; recv(fd, tmp, sizeof(tmp), 0); ++n_cmd_; } else ++n_cmd_err_;
+    close(fd);
+  }
+
+  // 安全层快照 → Python (界面/执行进程导引): 各档走廊最近障碍、当前档、Nav2 执行中的防护区状态、链路统计
+  void send_safety(bool) {
+    std::string j;
+    {
+      std::lock_guard<std::mutex> lk(smu_);
+      if (!have_cfg_) return;
+      const int band = cfg_.fields.empty() ? 0 : agvsafe::field_for_speed(cfg_, v_meas_);
+      char b[96];
+      j = "{\"bands\":[";
+      for (size_t i = 0; i < bands_.size(); ++i) {
+        std::snprintf(b, sizeof(b), "%s[%s,%s]", i ? "," : "", bands_[i].first < 0 ? "null" : std::to_string(bands_[i].first).c_str(),
+                      bands_[i].second < 0 ? "null" : std::to_string(bands_[i].second).c_str());
+        j += b;
+      }
+      std::snprintf(b, sizeof(b), "],\"band\":%d,\"nav2\":%s,\"zone\":\"", band, nav2_fwd_ ? "true" : "false");
+      j += b;
+      j += zone_ + "\",\"layer\":\"" + (zone_ == "slow" || zone_ == "stop" ? layer_now_ : std::string()) + "\",\"photo_ignored\":[";
+      for (size_t i = 0; i < photo_ignored_.size(); ++i) j += (i ? ",\"" : "\"") + jesc(photo_ignored_[i]) + "\"";
+      std::snprintf(b, sizeof(b), "],\"stream\":%s,\"state_frames\":%u,\"cmd_sent\":%u,\"cmd_errors\":%u,\"udp\":%d}",
+                    stream_up_ ? "true" : "false", n_stream_state_.load(), n_cmd_.load(), n_cmd_err_.load(), udp_port_);
+      j += b;
+    }
+    std::vector<uint8_t> out(MAGIC, MAGIC + 4);
+    out.push_back(T_SAFETY);
+    out.insert(out.end(), j.begin(), j.end());
+    send(out);
+  }
+
+  static double wall_now() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
   }
 
   // ---------------------------------------------------------------- 路线导航
@@ -517,7 +922,11 @@ class AgvRosBridge : public rclcpp::Node {
       off = off_;
     }
     if (!(flags & 1) && ++idle_ % 25 != 0) return;   // 没有新定位时 2 Hz 回传 odom 位姿 (EKF 对齐用)
-    if (flags & 1) last_tf_ = stamp;
+    if (flags & 1) {
+      last_tf_ = stamp;
+      std::lock_guard<std::mutex> lk(smu_);
+      last_tf_wall_ = wall_now();
+    }
     std::vector<uint8_t> b(MAGIC, MAGIC + 4);
     b.push_back(T_TF);
     put(b, stamp);
@@ -566,6 +975,31 @@ class AgvRosBridge : public rclcpp::Node {
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_sub_;
   std::mutex nmu_;
   double last_fb_tx_ = 0.0, last_stop_tx_ = 0.0;
+  // ---- 核心模式
+  bool core_ = false;
+  std::string sim_url_;
+  std::unique_ptr<simstream::Stream> stream_;
+  std::atomic<bool> stream_up_{false};
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
+  rclcpp::TimerBase::SharedPtr safety_timer_;
+  std::mutex smu_, cmu_;
+  std::vector<std::string> joint_names_;
+  agvsafe::Config cfg_;
+  bool have_cfg_ = false, nav2_fwd_ = false, mode_own_odom_ = false, mode_map_odom_ = false, loc_ext_ = false;
+  std::atomic<bool> want_raw_lidar_{false};
+  double mode_m2o_[3] = {0, 0, 0};
+  double speed_cap_ = 0.0, v_meas_ = 0.0, stop_dist_ = 0.0, stop_wall_ = -1e9, last_tf_wall_ = 0.0;
+  bool estop_ = false, loc_stale_ = false;
+  std::vector<std::string> photo_on_, photo_ignored_;
+  std::map<std::string, double> photo_dist_;
+  std::vector<std::pair<double, double>> bands_;
+  std::vector<agvsafe::Pt> pts_;
+  std::string zone_ = "clear", layer_now_;
+  double t_warn_ = 0.0, t_zone_ = 0.0;
+  int udp_fd_ = -1, udp_port_ = 0;
+  sockaddr_in udp_addr_{};
+  uint32_t cmd_seq_ = 0;
+  std::atomic<uint32_t> n_stream_state_{0}, n_cmd_{0}, n_cmd_err_{0};
   std::mutex tmu_;
   bool has_off_ = false, own_odom_ = false, has_odom_stamp_ = false;
   double off_ = 0.0, odom_stamp_ = 0.0, last_tf_ = 0.0;
@@ -577,15 +1011,17 @@ int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   auto args = rclcpp::remove_ros_arguments(argc, argv);
   std::string in_path, out_path;
-  for (size_t i = 1; i + 1 < args.size(); i++) {
-    if (args[i] == "--in") in_path = args[++i];
-    else if (args[i] == "--out") out_path = args[++i];
+  bool core = false;
+  for (size_t i = 1; i < args.size(); i++) {
+    if (args[i] == "--core") core = true;
+    else if (i + 1 < args.size() && args[i] == "--in") in_path = args[++i];
+    else if (i + 1 < args.size() && args[i] == "--out") out_path = args[++i];
   }
   if (in_path.empty() || out_path.empty()) {
     std::fprintf(stderr, "usage: agv_ros_bridge --in <sock> --out <sock>\n");
     return 2;
   }
-  auto node = std::make_shared<AgvRosBridge>(in_path, out_path);
+  auto node = std::make_shared<AgvRosBridge>(in_path, out_path, core);
   rclcpp::executors::SingleThreadedExecutor ex;
   ex.add_node(node);
   ex.spin();

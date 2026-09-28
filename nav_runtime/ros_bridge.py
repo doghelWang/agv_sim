@@ -18,6 +18,9 @@ ROS 2 桥 (执行进程内部) —— 把 REST 拉取的仿真数据转换成 Na
   model/urdf                      →  robot_state_publisher (子进程，车型变化时重启)
 
   /cmd_vel (Nav2 velocity_smoother 输出) → PUT /api/v1/control/cmd_vel (仅 Nav2 任务执行期间)
+
+  C++ 核心模式 (NAV_CPP_CORE=1 默认，agv_ros_bridge --core)：状态/2D 激光/融合扫描由 C++ 直接从仿真推送流发布，
+  /cmd_vel 由 C++ 安全层下发；本桥只剩 3D 点云、相机、robot_state_publisher，并把 TF 发布标志 (MODE) 交给 C++
   Nav2 NavigateToPose 反馈/结果         → Navigator → PUT /api/v1/nav/feedback
 """
 
@@ -109,7 +112,11 @@ class RosBridge(Node):
             self.tf = TransformBroadcaster(self)
         self.sensor_qos = sensor_qos
         self.lidar_pubs, self.cloud_pubs = {}, {}
-        self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
+        self.core = self.cpp is not None and self.cpp.core
+        if self.core:
+            self.cpp.on_relay = link.feed                    # 推送流由 C++ 接收，帧转给 SimLink
+        else:
+            self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
         self.rsp = RspSupervisor(self.get_logger().info)
         self._n = 0
         link.on_state.append(self._on_state)
@@ -234,7 +241,8 @@ class RosBridge(Node):
             self.js_pub.publish(js)
 
     def _on_state_cpp(self, st):
-        """C++ 发布端: 发布标志与 map→odom 仍由这里决定 (与 Python 发布逻辑同一套判断)"""
+        """C++ 发布端: 发布标志与 map→odom 仍由这里决定 (与 Python 发布逻辑同一套判断)；
+        核心模式下 C++ 自己发布状态，这里只把标志 (MODE) 交给它"""
         from nav_runtime.cpp_bridge import F_MAP_ODOM, F_OWN_ODOM
         slam = getattr(self.nav, "slam", None)
         ext_tf = slam is not None and slam.ros_active()
@@ -247,6 +255,10 @@ class RosBridge(Node):
             m2o = slam.M if slam is not None else (m["x"], m["y"], m["yaw"])
             flags |= F_MAP_ODOM
         self._own_odom_tf = own_odom
+        if self.core:
+            self.mode_flags = {"own_odom": own_odom, "map_odom": bool(flags & F_MAP_ODOM),
+                               "m2o": [round(float(v), 5) for v in m2o], "loc_ext": bool(ext_tf), "want_raw_lidar": not ext_tf}
+            return
         self.cpp.send_state(st, m2o, flags)
 
     def _lidar_cfg(self, name):
@@ -277,7 +289,8 @@ class RosBridge(Node):
             self.cloud_pubs[name].publish(m)
             return
         if self.cpp is not None:
-            self.cpp.send_scan(False, name, meta, payload["ranges"])
+            if not self.core:                               # 核心模式: C++ 已从推送流发布
+                self.cpp.send_scan(False, name, meta, payload["ranges"])
             return
         if name not in self.lidar_pubs:
             self.lidar_pubs[name] = self.create_publisher(LaserScan, f"/scan/{name}", self.sensor_qos)
@@ -362,10 +375,13 @@ class RosBridge(Node):
             self._pub((name, st, "info"), CameraInfo, f"{base}/camera_info").publish(ci)
 
     def _on_merged(self, d):
+        if self.core:
+            return
         r0 = d["ranges"]
         rs = r0.astype(np.float32) if isinstance(r0, np.ndarray) else np.array([np.inf if r is None else r for r in r0], dtype=np.float32)
         if self.cpp is not None:
-            self.cpp.send_scan(True, "merged", d, rs)
+            if not self.core:
+                self.cpp.send_scan(True, "merged", d, rs)
             return
         self.scan_pub.publish(self._scan(self.sim_stamp(d.get("t")), d, rs))
 

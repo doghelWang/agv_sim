@@ -10,6 +10,9 @@ SimLink —— 执行进程侧的仿真数据接入层 (纯 REST，替代 ROS �
   模型/场景      GET /api/v1/model, /api/v1/world (车型/场景变化时刷新)
   指令回馈       UDP (仿真 /api/v1/sim 声明 cmd_udp_port 时) 或 PUT /api/v1/control/cmd_vel
   状态回馈       PUT /api/v1/nav/feedback     5 Hz
+
+  外部馈送 (C++ 核心模式，nav_runtime/cpp_bridge.py)：推送流由 agv_ros_bridge 连接，帧原样转发过来 (feed)，
+  本进程不再自己连推送流；馈送中断 1.5 s 自动恢复自己连接
 """
 
 import json
@@ -90,6 +93,10 @@ class SimLink:
         self.stream_io = False
         self.stream_scans = False
         self.cmd_udp = None           # (host, port)：仿真声明了 UDP 指令通道时 send_cmd 走 UDP
+        self.external = False         # 推送流帧由 C++ 核心转发 (feed)
+        self._feed_t = 0.0
+        self._feed_meta: Dict = {}
+        self._feed_n, self._feed_t0 = 0, time.time()
 
     # ------------------------------------------------------------------
     def start(self):
@@ -124,8 +131,8 @@ class SimLink:
             if r.status != 200:
                 return False
             self.stats["transport"] = "stream"
-            meta, n, t0 = {}, 0, time.time()
-            while not self.stop_evt.is_set():
+            self._feed_meta = {}
+            while not self.stop_evt.is_set() and not self.external:
                 hdr = r.read(STREAM_HDR.size)
                 if len(hdr) < STREAM_HDR.size:
                     break
@@ -133,50 +140,73 @@ class SimLink:
                 body = r.read(ln)
                 if len(body) < ln:
                     break
-                if typ == 1:
-                    self._handle_state(decode_state(body, meta))
-                    n += 1
-                    if time.time() - t0 >= 1.0:
-                        self.stats["state_hz"] = round(n / (time.time() - t0), 1)
-                        n, t0 = 0, time.time()
-                elif typ == 2:
-                    meta = json.loads(body)
-                elif typ == 3:
-                    d = json.loads(body)
-                    self.stream_io = True
-                    with self.lock:
-                        self.io = d.get("io") or {}
-                        self.photos = {p["name"]: p for p in d.get("photos") or []}
-                elif typ == 4:
-                    self.stream_scans = True
-                    ml = struct.unpack_from("<H", body, 0)[0]
-                    m = json.loads(body[2:2 + ml])
-                    ranges = np.frombuffer(body, dtype="<f4", offset=2 + ml)
-                    name = m.pop("name")
-                    if name == "merged":
-                        m["ranges"] = ranges
-                        with self.lock:
-                            self.merged = m
-                        for cb in self.on_merged:
-                            cb(m)
-                    else:
-                        self.stats["lidar_frames"][name] = m.get("seq")
-                        for cb in self.on_lidar:
-                            cb(name, m, {"ranges": ranges})
+                self._on_frame(typ, body)
             return True
         except Exception:
             self.stats["errors"] += 1
             return True
         finally:
-            self.stream_io = self.stream_scans = False
-            self.stats["transport"] = "poll"
+            if not self.external:
+                self.stream_io = self.stream_scans = False
+                self.stats["transport"] = "poll"
             try:
                 c.close()
             except Exception:
                 pass
 
+    def _on_frame(self, typ: int, body: bytes):
+        """推送流帧 (自己连接的推送流，或 C++ 核心转发的)"""
+        if typ == 1:
+            self._handle_state(decode_state(body, self._feed_meta))
+            self._feed_n += 1
+            if time.time() - self._feed_t0 >= 1.0:
+                self.stats["state_hz"] = round(self._feed_n / (time.time() - self._feed_t0), 1)
+                self._feed_n, self._feed_t0 = 0, time.time()
+        elif typ == 2:
+            self._feed_meta = json.loads(body)
+        elif typ == 3:
+            d = json.loads(body)
+            self.stream_io = True
+            with self.lock:
+                self.io = d.get("io") or {}
+                self.photos = {p["name"]: p for p in d.get("photos") or []}
+        elif typ == 4:
+            self.stream_scans = True
+            ml = struct.unpack_from("<H", body, 0)[0]
+            m = json.loads(body[2:2 + ml])
+            ranges = np.frombuffer(body, dtype="<f4", offset=2 + ml)
+            name = m.pop("name")
+            if name == "merged":
+                m["ranges"] = ranges
+                with self.lock:
+                    self.merged = m
+                for cb in self.on_merged:
+                    cb(m)
+            else:
+                self.stats["lidar_frames"][name] = m.get("seq")
+                for cb in self.on_lidar:
+                    cb(name, m, {"ranges": ranges})
+
+    def feed(self, typ: int, body: bytes):
+        """C++ 核心转发的推送流帧 (cpp_bridge on_relay)"""
+        if not self.external:
+            self.external = True
+            self.log("[simlink] 推送流改由 C++ 核心接收并转发")
+        self._feed_t = time.time()
+        if typ == 1:
+            self.stats["transport"] = "cpp"
+            self.stream_io = self.stream_scans = True
+        self._on_frame(typ, body)
+
     def _state_loop(self):
         while self.use_stream and not self.stop_evt.is_set():
+            if self.external:                      # C++ 核心转发中: 馈送中断 1.5 s 后自己重新连接
+                if time.time() - self._feed_t < 1.5:
+                    time.sleep(0.3)
+                    continue
+                self.external = False
+                self.online = False
+                self.log("[simlink] C++ 核心转发中断，恢复自己连接推送流")
             if not self._stream_loop():
                 self.log("[simlink] 仿真进程不支持推送流，改用轮询")
                 break
