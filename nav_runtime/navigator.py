@@ -25,7 +25,7 @@ from planning import maneuver, protection
 from nav_runtime.slam import SlamLocalizer
 
 
-# 段起点转向受阻时依次后退的距离 (m)，NAV2_BACKUP_STEPS="0.2,0.35" 可调
+# 线路跟随中断且无进展时逐级后退的距离 (m)，NAV2_BACKUP_STEPS="0.2,0.35" 可调；用完仍无进展即放弃
 BACKUP_STEPS = tuple(float(v) for v in os.environ.get("NAV2_BACKUP_STEPS", "0.2,0.35").split(",") if v.strip())
 
 
@@ -1493,7 +1493,10 @@ class Navigator:
         return [sg for sg in segs if len(sg[0]) >= 2]
 
     def _nav2_follow_loop(self, mission_id, segs, on_result):
-        """逐段 FollowPath；中断 (障碍/进度超时) 后等待重试"""
+        """逐段 FollowPath。中断后的恢复 (逐级)：
+          · 段起点原地转向受阻 → 执行进程精确原地转向；终点只差停靠朝向 → 执行进程对位转向
+          · 其余中断看本次有无进展: 有进展 (动态障碍等) 保持位姿等 2 s；无进展第 1 次 Nav2 BackUp 后退 0.2 m，
+            第 2 次后退 0.35 m 并原地对准路径方向；每次都从当前位置重新规划剩余路径；第 3 次仍无进展即放弃 (NAV2_GIVEUP)"""
         cancelled = lambda: self.current_mission_id != mission_id  # noqa: E731
         seg_len = [sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(p, p[1:])) for p, _ in segs]
         retries = int(os.environ.get("NAV2_RETRIES", "8"))
@@ -1514,27 +1517,20 @@ class Navigator:
                 # approach_left 同一套逻辑)。否则紧贴墙体的拓扑节点 (如 grid_9_square 的 (±7.5, 0)，车头离外墙
                 # 仅 0.17 m) 会被低速档 0.35 m 防护区挡住，Nav2 "Failed to make progress" → 线路跟随中断反复重试。
                 # 注意: Humble 的 FollowPath 反馈 distance_to_goal 不随车辆移动更新 (实测整段恒为段长)，这里按实时位姿自己算
-                with self.lock:
-                    x, y = self.telemetry.get("x", 0.0), self.telemetry.get("y", 0.0)
-                i = min(range(len(poses)), key=lambda k: (poses[k][0] - x) ** 2 + (poses[k][1] - y) ** 2)
-                if i < len(poses) - 1:
-                    ex, ey = poses[i + 1][0] - poses[i][0], poses[i + 1][1] - poses[i][1]
-                else:
-                    ex, ey = poses[i][0] - poses[i - 1][0], poses[i][1] - poses[i - 1][1]
-                L = math.hypot(ex, ey) or 1.0
-                along = ((x - poses[i][0]) * ex + (y - poses[i][1]) * ey) / L     # 车在最近点前方 (+) / 后方 (-)
-                dist = max(0.0, tail[i] - along)
+                dist = self._path_remaining(poses, tail)
                 self.approach_left = dist
                 with self.lock:
                     if not cancelled():
                         self.telemetry["nav_dist_rem"] = round(dist + rest, 2)
                         self.telemetry["nav2_feedback"] = {"distance_remaining": round(dist + rest, 2), "speed": round(speed, 3),
                                                            "segment": k + 1, "segments": len(segs)}
-            tries = backups = 0
+            tries = no_prog = 0
+            cur = poses                         # 本次下发的路径 (重新规划后从当前位置接续)
             while True:
+                rem0 = self._path_remaining(poses, tail)
                 self.approach_left = None
                 try:
-                    res = self.nav2.follow_path(poses, cancelled, on_feedback=fb)
+                    res = self.nav2.follow_path(cur, cancelled, on_feedback=fb)
                 finally:
                     self.approach_left = None
                 # 动作结束后 Nav2 不再发 cmd_vel，而仿真看门狗会把最后一条指令保持 0.5 s
@@ -1556,48 +1552,84 @@ class Navigator:
                         self.event_hub.emit("navigation", "NAV2_ALIGN", "info", "终点对位转向由执行进程完成",
                                             "Nav2 控制器拒绝贴墙原地转向 (碰撞预测)，改用执行进程原地转向", {"mission_id": mission_id})
                         break
-                # 段起点原地转向受阻 (如贴墙拓扑节点): 先由执行进程精确原地转向；也转不了 (空间确实不够) 再用
-                # Nav2 BackUp 后退一点 (0.2 / 0.35 m) 再试
-                if res == "ABORTED" and self._turn_blocked_at(poses):
-                    p0, j = poses[0], min(len(poses) - 1, 6)
-                    r = self._rotate_to(mission_id, math.atan2(poses[j][1] - p0[1], poses[j][0] - p0[0]), 0.0, 0.5)
+                # 段起点原地转向受阻 (如贴墙拓扑节点): 由执行进程精确原地转向 (实测激光点判定) 后接着跟线
+                if res == "ABORTED" and self._turn_blocked_at(cur):
+                    p0, j = cur[0], min(len(cur) - 1, 6)
+                    r = self._rotate_to(mission_id, math.atan2(cur[j][1] - p0[1], cur[j][0] - p0[0]), 0.0, 0.5)
                     if r == "abort":
                         return
                     if r == "done":
                         self.event_hub.emit("navigation", "NAV2_ALIGN", "info", "段起点转向由执行进程完成",
                                             f"第 {k + 1}/{len(segs)} 段: Nav2 控制器拒绝原地转向，改用执行进程原地转向", {"mission_id": mission_id})
                         continue
-                if res == "ABORTED" and backups < len(BACKUP_STEPS) and self._turn_blocked_at(poses):
-                    d = BACKUP_STEPS[backups]
-                    backups += 1
-                    self.event_hub.emit("navigation", "NAV2_BACKUP", "warning", f"转向空间不足，后退 {d:.2f} m 再转",
-                                        f"第 {k + 1}/{len(segs)} 段起点原地转向受阻 (第 {backups} 次)", {"mission_id": mission_id})
-                    with self.lock:
-                        self.telemetry["nav_status"] = "OBSTACLE_WAIT"
+                # ---- 中断恢复: 看这次有没有进展 → 逐级调整位姿 → 从当前位置重新规划剩余路径
+                rem1 = self._path_remaining(poses, tail)
+                progressed = rem0 - rem1 > 0.05
+                no_prog = 0 if progressed else no_prog + 1
+                tries += 1
+                if tries > retries or no_prog > len(BACKUP_STEPS):
+                    why = (f"连续 {no_prog} 次无进展 (已尝试后退 {'/'.join(f'{d:.2f}' for d in BACKUP_STEPS)} m)" if no_prog > len(BACKUP_STEPS)
+                           else f"已重试 {retries} 次")
+                    self.event_hub.emit("navigation", "NAV2_GIVEUP", "danger", f"Nav2 线路跟随放弃: {why}",
+                                        f"第 {k + 1}/{len(segs)} 段，剩余 {rem1:.2f} m，最后一次结果 {res}", {"mission_id": mission_id})
+                    on_result(mission_id, "ABORTED")
+                    return
+                with self.lock:
+                    self.telemetry["nav_status"] = "OBSTACLE_WAIT"
+                adjust = "保持位姿 (本次有进展，按动态障碍处理，等待 2 s)"
+                if no_prog:
+                    d = BACKUP_STEPS[no_prog - 1]
                     r = self.nav2.backup(d, 0.1, cancelled)
                     for _ in range(3):
                         self.link.send_cmd(0.0, 0.0, 0.0, source="nav2")
                         time.sleep(0.02)
                     if cancelled():
                         return
-                    with self.lock:
-                        self.telemetry["nav_status"] = "NAVIGATING"
-                    if r == "SUCCEEDED":
-                        continue
-                tries += 1
-                if tries > retries:
-                    on_result(mission_id, "ABORTED")
-                    return
-                with self.lock:
-                    self.telemetry["nav_status"] = "OBSTACLE_WAIT"
+                    adjust = f"Nav2 BackUp 后退 {d:.2f} m ({r})"
+                    if no_prog >= 2:            # 第二级: 后退后再原地对准路径方向 (执行进程精确转向)
+                        i = self._nearest_index(poses)
+                        j = min(len(poses) - 1, i + 6)
+                        if j > i:
+                            h = math.atan2(poses[j][1] - poses[i][1], poses[j][0] - poses[i][0])
+                            if self._rotate_to(mission_id, h, 0.0, 0.5) == "abort":
+                                return
+                            adjust += "，原地对准路径方向"
+                cur = self._replan_from_here(poses)
                 self.event_hub.emit("navigation", "NAV2_RETRY", "warning", f"Nav2 线路跟随中断 ({res})",
-                                    f"第 {k + 1}/{len(segs)} 段，2 s 后重试 ({tries}/{retries})", {"mission_id": mission_id})
-                time.sleep(2.0)
+                                    f"第 {k + 1}/{len(segs)} 段 ({tries}/{retries})：位姿调整: {adjust}；"
+                                    f"从当前位置重新规划，剩余 {self._path_remaining(poses, tail):.2f} m",
+                                    {"mission_id": mission_id, "no_progress": no_prog})
+                if not no_prog:
+                    time.sleep(2.0)
                 with self.lock:
                     if cancelled():
                         return
                     self.telemetry["nav_status"] = "NAVIGATING"
         on_result(mission_id, "SUCCEEDED")
+
+    def _nearest_index(self, poses) -> int:
+        with self.lock:
+            x, y = self.telemetry.get("x", 0.0), self.telemetry.get("y", 0.0)
+        return min(range(len(poses)), key=lambda k: (poses[k][0] - x) ** 2 + (poses[k][1] - y) ** 2)
+
+    def _path_remaining(self, poses, tail) -> float:
+        """按实时位姿求本段剩余行程 (最近点 + 沿路径投影)"""
+        with self.lock:
+            x, y = self.telemetry.get("x", 0.0), self.telemetry.get("y", 0.0)
+        i = self._nearest_index(poses)
+        a, b = (poses[i], poses[i + 1]) if i < len(poses) - 1 else (poses[i - 1], poses[i])
+        ex, ey = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(ex, ey) or 1.0
+        return max(0.0, tail[i] - ((x - poses[i][0]) * ex + (y - poses[i][1]) * ey) / L)
+
+    def _replan_from_here(self, poses):
+        """重新规划: 从车辆当前位置接到本段路径上最近点之后的部分 (不再退回段起点重走)"""
+        with self.lock:
+            x, y = self.telemetry.get("x", 0.0), self.telemetry.get("y", 0.0)
+        i = self._nearest_index(poses)
+        rest = list(poses[i + 1:]) or [poses[-1]]
+        h = math.atan2(rest[0][1] - y, rest[0][0] - x) if math.hypot(rest[0][0] - x, rest[0][1] - y) > 1e-3 else poses[i][2]
+        return [(x, y, h)] + rest
 
     def _near_goal_heading_only(self, goal) -> bool:
         """已到终点位置 (≤ 3 cm)，只差朝向 (> 1°)"""
