@@ -18,6 +18,8 @@ phone_probe_*.txt
 # C 内核编译产物
 sim_core/native/libsimcore.so
 sim_core/native/libsimcore.dylib
+planning/native/libagvnav.so
+planning/native/libagvnav.dylib
 ros2/build/
 ros2/install/
 ros2/log/

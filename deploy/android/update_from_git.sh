@@ -41,6 +41,7 @@ git log --oneline -1 > /opt/agv/.agv_version
 # 仿真 C 内核 (sim_core/native)：有 gcc 就编译，没有则仿真自动回退纯 Python
 if command -v gcc >/dev/null || apt-get install -y -q gcc libc6-dev >/dev/null 2>&1; then
   bash /opt/agv/sim_core/native/build.sh gcc >/dev/null && echo 'libsimcore 已编译' || echo '[警告] libsimcore 编译失败，仿真使用纯 Python 实现'
+  bash /opt/agv/planning/native/build.sh gcc >/dev/null && echo 'libagvnav 已编译' || echo '[警告] libagvnav 编译失败，规划使用纯 Python 实现'
 fi
 # 执行侧 C++ 发布端 (ros2/agv_ros_bridge)：源码有变化才重编 (colcon，手机上约几分钟)；编译失败执行进程自动用 Python 发布
 if command -v colcon >/dev/null && [ -f /opt/ros/humble/setup.bash ]; then

@@ -350,6 +350,7 @@ class DijkstraPlanner:
 
         self.nodes = dict(sc["nodes"])
         self.edges = {u: [] for u in self.nodes}
+        self._router = None                 # C 实现 (planning/native)，首次规划时按当前场景建立
 
         for u, v in sc["connections"]:
             if u in self.nodes and v in self.nodes:
@@ -554,6 +555,8 @@ class DijkstraPlanner:
         if fp != self.footprint:
             self.footprint = fp
             self._corner_cache = {}
+            if getattr(self, "_router", None) is not None:
+                self._router.set_footprint(fp)
 
     def _corner_penalty(self, a, b, c) -> float:
         """拐点 b 处 (a→b→c) 车体能否转过去 (静态墙体/货架)；不能则返回惩罚代价"""
@@ -577,7 +580,19 @@ class DijkstraPlanner:
         return abs(math.atan2(math.sin(h2 - h1), math.cos(h2 - h1)))
 
     def plan_route(self, start_pt, goal_pt, obstacles=None) -> Dict[str, Any]:
-        """→ {"points": [(x,y)...], "labels": [节点名|None...], "length": m}；无路径时 points=[]"""
+        """→ {"points": [(x,y)...], "labels": [节点名|None...], "length": m}；无路径时 points=[]
+        有 libagvnav 时用 C 实现 (planning/native/agvnav.c，与下面的 Python 版逐项一致)；AGV_NATIVE_PLAN=0 用 Python"""
+        from planning import native
+        if native.lib is not None:
+            if getattr(self, "_router", None) is None:
+                sc = SCENARIO_DEFINITIONS[self.active_scenario_id]
+                self._router = native.Router()
+                self._router.set_graph(self.nodes, sc["connections"], self._static_segments())
+                self._router.set_footprint(self.footprint)
+            return self._router.plan(start_pt, goal_pt, obstacles, self.robot_half_width, self.robot_circum_radius)
+        return self._plan_route_py(start_pt, goal_pt, obstacles)
+
+    def _plan_route_py(self, start_pt, goal_pt, obstacles=None) -> Dict[str, Any]:
         obstacles = obstacles or []
         blocked = set()
         if obstacles:

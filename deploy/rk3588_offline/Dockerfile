@@ -15,6 +15,6 @@ WORKDIR /opt/agv
 # 完整代码 (.dockerignore 排除 .git/tests 等)；ros2/install 是 agv-nav 里编译好的 C++ 桥接，COPY 不会覆盖
 COPY . .
 ARG AGV_VERSION=local
-RUN bash sim_core/native/build.sh gcc python3 && echo "$AGV_VERSION" > .agv_version && mkdir -p maps
+RUN bash sim_core/native/build.sh gcc python3 && bash planning/native/build.sh gcc && echo "$AGV_VERSION" > .agv_version && mkdir -p maps
 ENTRYPOINT []
 CMD ["bash"]

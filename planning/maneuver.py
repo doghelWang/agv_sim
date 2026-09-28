@@ -35,7 +35,14 @@ def _perimeter(head: float, tail: float, hw: float, step: float = 0.08) -> np.nd
 
 
 def clearance(segs: Sequence[tuple], poses: Sequence[Tuple[float, float, float]], head: float, tail: float, hw: float) -> float:
-    """车体在一组位姿上到线段集合的最小距离 (m)；线段端点落入车体内返回 -1"""
+    """车体在一组位姿上到线段集合的最小距离 (m)；线段端点落入车体内返回 -1 (有 libagvnav 时用 C 实现)"""
+    from planning import native
+    if native.lib is not None:
+        return native.clearance(segs, poses, head, tail, hw) if segs and poses else 9.0
+    return _clearance_py(segs, poses, head, tail, hw)
+
+
+def _clearance_py(segs, poses, head, tail, hw) -> float:
     if not segs or not poses:
         return 9.0
     S = np.asarray([w[:4] for w in segs], float)
@@ -71,8 +78,15 @@ def plan_corner(segs, node, h1: float, h2: float, len_in: float, len_out: float,
                 allow_arcs: bool = False, mode: Optional[str] = None) -> Tuple[dict, float]:
     """拐点过弯方式 (默认只允许拐点原地转向 —— 车辆严格沿拓扑线路行驶；allow_arcs=True 时先尝试圆弧): 圆弧 (1.25/1/0.7/0.45 倍 r_pref，受路段长度限制) 中净空 ≥ CLEAR_MIN 且最大的；
     圆弧都不行再试拐点原地转向 (最短方向、反方向)；都不满足返回净空最大的。
-    返回 ({"heading","turn","R","d","v"} 圆弧 | {"rotate": ±1} 原地转向, 净空)"""
+    返回 ({"heading","turn","R","d","v"} 圆弧 | {"rotate": ±1} 原地转向, 净空)。有 libagvnav 时用 C 实现"""
     mode = mode or ("arc" if allow_arcs else "rotate")
+    from planning import native
+    if native.lib is not None:
+        return native.plan_corner(segs, node, h1, h2, len_in, len_out, head, tail, hw, r_pref, clear_min, mode)
+    return _plan_corner_py(segs, node, h1, h2, len_in, len_out, head, tail, hw, r_pref, clear_min, mode)
+
+
+def _plan_corner_py(segs, node, h1, h2, len_in, len_out, head, tail, hw, r_pref, clear_min, mode):
     turn = math.atan2(math.sin(h2 - h1), math.cos(h2 - h1))
     sgn = 1.0 if turn > 0 else -1.0
     cands = []
