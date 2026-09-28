@@ -1,0 +1,16 @@
+<class_libraries>
+  <library path="agv_nav2_plugins">
+    <class type="agv_nav2_plugins::RoutePlanner" base_class_type="nav2_core::GlobalPlanner">
+      <description>拓扑路线 → 稠密路径 (圆弧过弯 / 拐点停车转向)</description>
+    </class>
+    <class type="agv_nav2_plugins::RouteController" base_class_type="nav2_core::Controller">
+      <description>路线跟随 (RPP) + 拐点/起步原地转向 + 末段 odom 冻结进站 + 终点对位</description>
+    </class>
+    <class type="agv_nav2_plugins::AgvGoalChecker" base_class_type="nav2_core::GoalChecker">
+      <description>到位由 RouteController 判定</description>
+    </class>
+    <class name="agv_nav2_plugins/AdjustPose" type="agv_nav2_plugins::AdjustPose" base_class_type="nav2_core::Behavior">
+      <description>原地转向受阻恢复: 摆头 + 后退 + 转向</description>
+    </class>
+  </library>
+</class_libraries>

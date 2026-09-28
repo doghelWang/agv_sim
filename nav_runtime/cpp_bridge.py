@@ -5,9 +5,12 @@ C++ ROS 2 发布端 (ros2/agv_ros_bridge) 的 Python 客户端  —— NAV_ROS_B
   Python → C++ (Unix 数据报，容器内私有路径，多实例 host 网络下不占端口)
     STATE  每个状态帧: 里程计/真值/IMU/关节 + 由 Python 决定的 map→odom 与发布标志
     SCAN   2D 激光 (/scan/<name>，代价地图钳位) 与融合扫描 (/scan)
+    ROUTE  拓扑路线导航 (JSON)：C++ 发布 /agv/route、/agv/world_segments 并下发 NavigateToPose (agv_nav2_plugins 行为树)
+    CANCEL 取消路线导航
   C++ → Python
     TF     map→base_footprint (slam_toolbox/EKF 定位结果) + odom→base_footprint + 墙钟-仿真时间偏移
     STATS  每秒一次: 已发布的状态/激光/融合/TF 计数
+    NAV    路线导航回馈 (JSON)：结果 / 反馈 (5 Hz) / 停车点剩余行程 / 插件事件 / 规划曲线
 
   C++ 节点负责 /odom /ground_truth/odom /imu /joint_states /scan /scan/<name> 与 TF 广播/监听；
   Python 节点只剩 cmd_vel、/map、Nav2 Action 客户端、相机与 3D 点云 → rclpy 执行器不再处理 /tf 与 50 Hz 定时器。
@@ -27,7 +30,7 @@ from common import spawn
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAGIC = b"AGV1"
-T_STATE, T_SCAN, T_TF, T_STATS = 1, 2, 10, 11
+T_STATE, T_SCAN, T_ROUTE, T_CANCEL, T_TF, T_STATS, T_NAV = 1, 2, 3, 4, 10, 11, 12
 F_OWN_ODOM, F_MAP_ODOM, F_IMU, F_HAS_T = 1, 2, 4, 8
 _STATE = struct.Struct("<4sBd6d3d3d4dBH")
 _SCAN_HEAD = struct.Struct("<4sBB")
@@ -75,6 +78,7 @@ class CppBridge:
         self.tx.setblocking(False)
         self.proc = None
         self.on_tf: Optional[Callable] = None            # cb(stamp, toff, map_base|None, odom_base|None)
+        self.on_nav: Optional[Callable] = None           # cb(dict) 路线导航回馈
         self.stats = {"state": 0, "scan": 0, "merged": 0, "tf": 0, "restarts": 0, "send_errors": 0}
         self.odom_base = None
         self.toff = None
@@ -161,6 +165,16 @@ class CppBridge:
              + r.tobytes())
         self._send(b)
 
+    def send_route(self, mission_id: int, route, goal, bt: str, segs) -> None:
+        import json
+        body = json.dumps({"mid": int(mission_id), "route": [[round(float(x), 4), round(float(y), 4)] for x, y in route],
+                           "goal": [float(goal[0]), float(goal[1]), float(goal[2])], "bt": bt,
+                           "segs": [[round(float(v), 4) for v in sg[:4]] for sg in (segs or [])]}, separators=(",", ":"))
+        self._send(MAGIC + bytes([T_ROUTE]) + body.encode("utf-8"))
+
+    def send_cancel(self) -> None:
+        self._send(MAGIC + bytes([T_CANCEL]))
+
     # ------------------------------------------------------------------ 接收
     def _rx_loop(self):
         while not self._stop.is_set():
@@ -186,6 +200,14 @@ class CppBridge:
                             cb(stamp, toff, (mx, my, myaw))
                         except Exception as e:  # pragma: no cover
                             self.log(f"[cpp_bridge] TF 回调异常: {e}")
+            elif b[4] == T_NAV:
+                cb = self.on_nav
+                if cb is not None:
+                    import json
+                    try:
+                        cb(json.loads(b[5:].decode("utf-8")))
+                    except Exception as e:  # pragma: no cover
+                        self.log(f"[cpp_bridge] NAV 回馈处理异常: {e}")
             elif b[4] == T_STATS and len(b) >= 5 + _STATS.size:
                 s, sc, mg, tf = _STATS.unpack_from(b, 5)
                 self.stats.update({"cpp_state": s, "cpp_scan": sc, "cpp_merged": mg, "cpp_tf": tf})

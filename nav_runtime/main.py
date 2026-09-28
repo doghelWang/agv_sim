@@ -21,6 +21,7 @@ REST API v1 (详见 docs/API.md)
 """
 
 import os
+import signal
 import sys
 
 # ROS 2 只在本机通信：同一局域网里多台设备 (树莓派/手机) 用相同 ROS_DOMAIN_ID 时 DDS 会互相发现，
@@ -283,6 +284,12 @@ def main():
 
     api = build_api(nav, link, ros, port)
     log(f"[nav_runtime] REST API http://0.0.0.0:{port}/api/v1")
+
+    def _on_term(*_):
+        # 节点代理停止实例时发 SIGTERM: 走下面的 finally 停掉 Nav2 / slam_toolbox / robot_state_publisher
+        # (它们各自在独立会话里，默认的 SIGTERM 直接退出会把整套 ROS 进程留成孤儿，下次启动出现同名节点)
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_term)
     try:
         api.serve_forever()
     except KeyboardInterrupt:

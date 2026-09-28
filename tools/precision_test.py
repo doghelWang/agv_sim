@@ -47,6 +47,8 @@ def run(gw, scenario, goals, planner, tmax):
         except Exception as e:  # noqa
             print(f"切换规划器失败 ({e})，使用当前规划器")
     runs = []
+    # 仿真的碰撞计数是累计值: 每个目标记本次增量
+    c_prev = int((_req(gw, "/api/telemetry").get("bumpers") or {}).get("count") or 0)
     for g in goals:
         gx, gy = g[0], g[1]
         gyaw = g[2] if len(g) > 2 else 0.0
@@ -72,10 +74,13 @@ def run(gw, scenario, goals, planner, tmax):
         r = {"goal": [gx, gy], "status": st, "t": round(time.time() - t0, 1), "planner": (end or {}).get("planner"),
              "xte_max_mm": round(max(xte) * 1000, 1) if xte else None,
              "end_err_mm": round(math.hypot(end["x"] - gx, end["y"] - gy) * 1000, 1) if end else None,
+             "end_yaw_err_deg": (round(math.degrees(math.atan2(math.sin(end["yaw"] - gyaw), math.cos(end["yaw"] - gyaw))), 2)
+                                 if end else None),
              "loc_err_max_mm": round(max(le), 1) if le else None,
-             "collisions": (t.get("bumpers") or {}).get("count"), "curve": curve, "traj": traj}
+             "collisions": int((t.get("bumpers") or {}).get("count") or 0) - c_prev, "curve": curve, "traj": traj}
+        c_prev += r["collisions"]
         runs.append(r)
-        print(f"目标 ({gx:6.2f},{gy:6.2f}) {st:10s} {r['t']:6.1f}s  横向偏差max {r['xte_max_mm']} mm  终点误差 {r['end_err_mm']} mm  "
+        print(f"目标 ({gx:6.2f},{gy:6.2f}) {st:10s} {r['t']:6.1f}s  横向偏差max {r['xte_max_mm']} mm  终点误差 {r['end_err_mm']} mm / {r['end_yaw_err_deg']}°  "
               f"定位误差max {r['loc_err_max_mm']} mm  碰撞 {r['collisions']}", flush=True)
     return runs
 
@@ -87,7 +92,9 @@ def main():
     ap.add_argument("--goals", default="", help="目标列表 JSON [[x,y(,yaw)],...]；空=当前场景所有工位")
     ap.add_argument("--planner", default="", help="nav2 | dijkstra (空=当前)")
     ap.add_argument("--tmax", type=float, default=180.0, help="单个目标超时 (s)")
-    ap.add_argument("--tol", type=float, default=20.0, help="合格阈值 (mm)")
+    ap.add_argument("--tol", type=float, default=20.0, help="停车精度合格阈值 (mm)")
+    ap.add_argument("--xte-tol", type=float, default=0.0,
+                    help="横向偏差合格阈值 (mm)，0 = 不考核 (过弯/圆弧处不要求精度，只考核停车精度与碰撞)")
     ap.add_argument("--out", default="precision_result.json")
     a = ap.parse_args()
     gw = a.gw.rstrip("/")
@@ -103,8 +110,12 @@ def main():
     ok = [r for r in runs if r["status"] == "ARRIVED"]
     worst = lambda k: max((r[k] for r in ok if r[k] is not None), default=None)  # noqa: E731
     summ = {"arrived": f"{len(ok)}/{len(runs)}", "xte_max_mm": worst("xte_max_mm"), "end_err_max_mm": worst("end_err_mm"),
-            "loc_err_max_mm": worst("loc_err_max_mm"), "tol_mm": a.tol}
-    summ["pass"] = len(ok) == len(runs) and all(v is not None and v <= a.tol for v in (summ["xte_max_mm"], summ["end_err_max_mm"]))
+            "end_yaw_err_max_deg": max((abs(r["end_yaw_err_deg"]) for r in ok if r.get("end_yaw_err_deg") is not None), default=None),
+            "loc_err_max_mm": worst("loc_err_max_mm"), "tol_mm": a.tol,
+            "collisions": sum(int(r.get("collisions") or 0) for r in runs)}
+    summ["pass"] = (len(ok) == len(runs) and summ["end_err_max_mm"] is not None and summ["end_err_max_mm"] <= a.tol
+                    and summ["collisions"] == 0
+                    and (a.xte_tol <= 0 or (summ["xte_max_mm"] is not None and summ["xte_max_mm"] <= a.xte_tol)))
     print("汇总:", json.dumps(summ, ensure_ascii=False))
     with open(a.out, "w") as f:
         json.dump({"summary": summ, "runs": runs}, f, ensure_ascii=False)

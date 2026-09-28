@@ -5,8 +5,12 @@
 //     STATE  真值/里程计/IMU/关节/map→odom      →  /odom  /ground_truth/odom  /imu  /joint_states
 //                                                   TF odom→base_footprint (own_odom)、map→odom (内置定位)
 //     SCAN   各 2D 激光 / 融合扫描               →  /scan/<name> (代价地图时间戳钳位)  /scan
+//     ROUTE  拓扑路线导航 (JSON: 任务号/路线点/终点/行为树/场景线段) → /agv/route、/agv/world_segments 并
+//            下发 NavigateToPose (agv_nav2_plugins 行为树)；CANCEL 取消
 //   本节点  ──Unix 数据报──▶  Python
 //     TF     50 Hz 查询 map→base_footprint、odom→base_footprint (slam_toolbox / EKF 输出) + 墙钟-仿真时间偏移
+//     NAV    路线导航回馈 (JSON): 结果、反馈 (限 5 Hz)、/agv/stop_distance (限 20 Hz)、/agv/nav_event、/plan 曲线
+//            —— bt_navigator 每个行为树周期 (10 ms) 发一次反馈，由 Python rclpy 接收时执行进程 CPU 翻倍
 //
 // 与 nav_runtime/ros_bridge.py 的 Python 发布逻辑逐项一致: 时间戳 = 仿真时间 + 最小延迟偏移、协方差、
 // 关节每 2 帧发布一次、AGV_COSTMAP_SCAN_CLAMP / AGV_COSTMAP_SCAN_MARGIN 钳位规则。
@@ -31,6 +35,12 @@
 #include <vector>
 
 #include <builtin_interfaces/msg/time.hpp>
+#include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -44,7 +54,7 @@
 namespace {
 
 constexpr char MAGIC[4] = {'A', 'G', 'V', '1'};
-enum : uint8_t { T_STATE = 1, T_SCAN = 2, T_TF = 10, T_STATS = 11 };
+enum : uint8_t { T_STATE = 1, T_SCAN = 2, T_ROUTE = 3, T_CANCEL = 4, T_TF = 10, T_STATS = 11, T_NAV = 12 };
 enum : uint8_t { F_OWN_ODOM = 1, F_MAP_ODOM = 2, F_IMU = 4, F_HAS_T = 8 };
 
 struct Reader {
@@ -103,9 +113,41 @@ socklen_t make_addr(const std::string &path, sockaddr_un &a) {
   return static_cast<socklen_t>(sizeof(a));
 }
 
-double env_d(const char *k, double dflt) {
-  const char *v = std::getenv(k);
-  return (v && *v) ? std::atof(v) : dflt;
+// 路线消息的极简 JSON 读取 (格式由 nav_runtime/cpp_bridge.py 生成: 只有数字、数字数组、字符串)
+std::string json_str(const std::string &j, const std::string &key) {
+  auto k = j.find("\"" + key + "\"");
+  if (k == std::string::npos) return {};
+  auto a = j.find('"', j.find(':', k) + 1);
+  std::string out;
+  for (size_t i = a + 1; i < j.size() && j[i] != '"'; ++i) {
+    if (j[i] == '\\' && i + 1 < j.size()) ++i;
+    out += j[i];
+  }
+  return out;
+}
+std::vector<double> json_nums(const std::string &j, const std::string &key) {
+  std::vector<double> v;
+  auto k = j.find("\"" + key + "\"");
+  if (k == std::string::npos) return v;
+  size_t i = j.find(':', k) + 1;
+  int depth = 0;
+  for (; i < j.size(); ++i) {
+    char c = j[i];
+    if (c == '[') { ++depth; continue; }
+    if (c == ']') { if (--depth <= 0) break; continue; }
+    if (depth == 0 && (c == ',' || c == '}')) break;
+    if (c == '-' || c == '.' || (c >= '0' && c <= '9')) {
+      char *e = nullptr;
+      v.push_back(std::strtod(j.c_str() + i, &e));
+      i = static_cast<size_t>(e - j.c_str()) - 1;
+    }
+  }
+  return v;
+}
+std::string jesc(const std::string &in) {
+  std::string o;
+  for (char c : in) { if (c == '"' || c == '\\') o += '\\'; o += c; }
+  return o;
 }
 
 }  // namespace
@@ -146,6 +188,34 @@ class AgvRosBridge : public rclcpp::Node {
 
     rx_ = std::thread([this] { rx_loop(); });
     tf_timer_ = create_wall_timer(std::chrono::milliseconds(20), [this] { poll_tf(); });
+    // 路线导航 (agv_nav2_plugins)
+    auto latched = rclcpp::QoS(1).transient_local().reliable();
+    route_pub_ = create_publisher<nav_msgs::msg::Path>("/agv/route", latched);
+    segs_pub_ = create_publisher<std_msgs::msg::Float32MultiArray>("/agv/world_segments", latched);
+    nav_client_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(this, "navigate_to_pose");
+    stop_sub_ = create_subscription<std_msgs::msg::Float32>("/agv/stop_distance", 10, [this](std_msgs::msg::Float32::ConstSharedPtr m) {
+      double t = now_s();
+      if (t - last_stop_tx_ < 0.05) return;                   // 限 20 Hz
+      last_stop_tx_ = t;
+      send_nav("{\"k\":\"stop\",\"d\":" + std::to_string(m->data) + "}");
+    });
+    event_sub_ = create_subscription<std_msgs::msg::String>("/agv/nav_event", 20, [this](std_msgs::msg::String::ConstSharedPtr m) {
+      send_nav("{\"k\":\"event\",\"e\":" + m->data + "}");
+    });
+    plan_sub_ = create_subscription<nav_msgs::msg::Path>("/plan", 2, [this](nav_msgs::msg::Path::ConstSharedPtr m) {
+      if (m->poses.empty()) return;
+      std::string c = "{\"k\":\"plan\",\"curve\":[";
+      double lx = 1e9, ly = 1e9;
+      char b[64];
+      for (size_t i = 0; i < m->poses.size(); ++i) {
+        const auto &p = m->poses[i].pose.position;
+        if (i + 1 < m->poses.size() && std::hypot(p.x - lx, p.y - ly) < 0.2) continue;   // 约 0.2 m 一个点
+        std::snprintf(b, sizeof(b), "%s[%.3f,%.3f]", (lx < 1e8 ? "," : ""), p.x, p.y);
+        c += b;
+        lx = p.x; ly = p.y;
+      }
+      send_nav(c + "]}");
+    });
     stats_timer_ = create_wall_timer(std::chrono::seconds(1), [this] { send_stats(); });
     RCLCPP_INFO(get_logger(), "agv_ros_bridge (C++) 就绪: in=%s out=%s clamp=%d", in_path_.c_str(), out_path_.c_str(), clamp_);
   }
@@ -191,6 +261,8 @@ class AgvRosBridge : public rclcpp::Node {
       try {
         if (buf[4] == T_STATE) on_state(r);
         else if (buf[4] == T_SCAN) on_scan(r);
+        else if (buf[4] == T_ROUTE) on_route(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
+        else if (buf[4] == T_CANCEL) cancel_route();
       } catch (const std::exception &e) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "消息处理失败: %s", e.what());
       }
@@ -337,6 +409,82 @@ class AgvRosBridge : public rclcpp::Node {
     ++n_scan_;
   }
 
+  // ---------------------------------------------------------------- 路线导航
+  void send_nav(const std::string &json) {
+    std::vector<uint8_t> b(MAGIC, MAGIC + 4);
+    b.push_back(T_NAV);
+    b.insert(b.end(), json.begin(), json.end());
+    send(b);
+  }
+
+  void on_route(const std::string &j) {
+    using NTP = nav2_msgs::action::NavigateToPose;
+    const long mid = static_cast<long>(json_nums(j, "mid").empty() ? 0 : json_nums(j, "mid")[0]);
+    auto route = json_nums(j, "route"), goal = json_nums(j, "goal"), segs = json_nums(j, "segs");
+    const std::string bt = json_str(j, "bt");
+    auto fail = [&](const std::string &why) {
+      send_nav("{\"k\":\"result\",\"mid\":" + std::to_string(mid) + ",\"result\":\"REJECTED\",\"why\":\"" + jesc(why) + "\"}");
+    };
+    if (goal.size() < 3 || route.size() < 4) { fail("路线或终点为空"); return; }
+    if (!segs.empty()) {
+      std_msgs::msg::Float32MultiArray m;
+      m.data.assign(segs.begin(), segs.end());
+      segs_pub_->publish(m);
+    }
+    nav_msgs::msg::Path path;
+    path.header.frame_id = "map";
+    path.header.stamp = get_clock()->now();
+    for (size_t i = 0; i + 1 < route.size(); i += 2) {
+      geometry_msgs::msg::PoseStamped ps;
+      ps.header = path.header;
+      ps.pose.position.x = route[i];
+      ps.pose.position.y = route[i + 1];
+      ps.pose.orientation.w = 1.0;
+      path.poses.push_back(ps);
+    }
+    route_pub_->publish(path);
+    if (!nav_client_->wait_for_action_server(std::chrono::seconds(2))) { fail("Nav2 navigate_to_pose 服务未就绪"); return; }
+    NTP::Goal g;
+    g.pose.header = path.header;
+    g.pose.pose.position.x = goal[0];
+    g.pose.pose.position.y = goal[1];
+    set_quat(g.pose.pose.orientation, goal[2]);
+    g.behavior_tree = bt;
+    rclcpp_action::Client<NTP>::SendGoalOptions opt;
+    opt.goal_response_callback = [this, mid](const rclcpp_action::ClientGoalHandle<NTP>::SharedPtr &gh) {
+      if (!gh) {
+        send_nav("{\"k\":\"result\",\"mid\":" + std::to_string(mid) + ",\"result\":\"REJECTED\"}");
+        return;
+      }
+      std::lock_guard<std::mutex> lk(nmu_);
+      goal_ = gh;
+    };
+    opt.feedback_callback = [this, mid](rclcpp_action::ClientGoalHandle<NTP>::SharedPtr,
+                                        const std::shared_ptr<const NTP::Feedback> fb) {
+      double t = now_s();
+      if (t - last_fb_tx_ < 0.2) return;                      // 限 5 Hz
+      last_fb_tx_ = t;
+      char b[200];
+      std::snprintf(b, sizeof(b), "{\"k\":\"fb\",\"mid\":%ld,\"dist\":%.3f,\"t\":%d,\"rec\":%d}", mid,
+                    fb->distance_remaining, fb->navigation_time.sec, fb->number_of_recoveries);
+      send_nav(b);
+    };
+    opt.result_callback = [this, mid](const rclcpp_action::ClientGoalHandle<NTP>::WrappedResult &r) {
+      const char *txt = r.code == rclcpp_action::ResultCode::SUCCEEDED ? "SUCCEEDED"
+                        : r.code == rclcpp_action::ResultCode::CANCELED ? "CANCELED" : "ABORTED";
+      send_nav("{\"k\":\"result\",\"mid\":" + std::to_string(mid) + ",\"result\":\"" + txt + "\"}");
+    };
+    nav_client_->async_send_goal(g, opt);
+  }
+
+  void cancel_route() {
+    std::lock_guard<std::mutex> lk(nmu_);
+    if (goal_) {
+      nav_client_->async_cancel_goal(goal_);
+      goal_.reset();
+    }
+  }
+
   // ---------------------------------------------------------------- TF → Python
   void send(const std::vector<uint8_t> &b) {
     sendto(out_fd_, b.data(), b.size(), MSG_DONTWAIT, reinterpret_cast<const sockaddr *>(&out_addr_), out_len_);
@@ -409,6 +557,15 @@ class AgvRosBridge : public rclcpp::Node {
   std::unique_ptr<tf2_ros::Buffer> buf_;
   std::unique_ptr<tf2_ros::TransformListener> tfl_;
   rclcpp::TimerBase::SharedPtr tf_timer_, stats_timer_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr route_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr segs_pub_;
+  rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr nav_client_;
+  rclcpp_action::ClientGoalHandle<nav2_msgs::action::NavigateToPose>::SharedPtr goal_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr stop_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr event_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_sub_;
+  std::mutex nmu_;
+  double last_fb_tx_ = 0.0, last_stop_tx_ = 0.0;
   std::mutex tmu_;
   bool has_off_ = false, own_odom_ = false, has_odom_stamp_ = false;
   double off_ = 0.0, odom_stamp_ = 0.0, last_tf_ = 0.0;

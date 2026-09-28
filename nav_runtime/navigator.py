@@ -1411,13 +1411,71 @@ class Navigator:
                     self.telemetry["nav_dist_rem"] = 0.0
                 fx, fy, fyaw = self.telemetry["x"], self.telemetry["y"], self.telemetry["yaw"]
             self.recorder.end_session(status)
+            if getattr(self, "_agv_mission", None) == mid:
+                self._agv_mission = None
+                self.approach_left = None
             lvl = "success" if status == "ARRIVED" else ("warning" if status == "CANCELED" else "danger")
             dev = abs(math.degrees(math.atan2(math.sin(yaw - fyaw), math.cos(yaw - fyaw))))
             self.event_hub.emit("navigation", f"NAV2_{result}", lvl, f"Nav2 任务 #{mid}: {result}",
                                 f"终点 ({fx:.2f}, {fy:.2f}) 目标误差 {math.hypot(fx - x, fy - y) * 100:.1f} cm / {dev:.1f}°",
                                 {"mission_id": mid, "result": result})
 
-        # 默认: 线路跟随 —— 拓扑路线按拐点切成直线段 (可原地转向的拐点停车转向，转不开的拐点用过渡圆弧)，
+        # 默认: 拓扑路线交给 Nav2 插件 (agv_nav2_plugins，C++) —— 规划 (圆弧过弯/拐点转向)、跟随 (停车精度)、
+        # 受阻恢复 (摆头 + 后退 + 转向) 都在 Nav2 行为树里完成；NAV2_ROUTE_MODE=follow_path 或插件不可用时走下面的 Python 分段跟线
+        route_mode = os.environ.get("NAV2_ROUTE_MODE", "agv")
+        agv_ok = route_mode == "agv" and hasattr(self.nav2, "agv_ready") and self.nav2.agv_ready()
+        if route_mode == "agv" and hasattr(self.nav2, "agv_ready") and not agv_ok and not _waited and \
+                getattr(self.nav2, "available", False) and not self.nav2.ready():
+            def later_agv():
+                t_wait = time.time() + float(os.environ.get("NAV2_FOLLOW_WAIT", "20"))
+                while time.time() < t_wait and not self.nav2.agv_ready() and self.current_mission_id == mission_id:
+                    time.sleep(0.5)
+                if self.current_mission_id == mission_id:
+                    self._send_nav2_goal(mission_id, cur_x, cur_y, x, y, yaw, matched_station, stations, _waited=True)
+            with self.lock:
+                self.telemetry["nav_status"] = "PLANNING"
+            self.event_hub.emit("navigation", "NAV2_WAIT", "info", f"Nav2 任务 #{mission_id}: 等待 Nav2 激活", "", {})
+            threading.Thread(target=later_agv, daemon=True, name=f"nav2-wait-{mission_id}").start()
+            return
+        if agv_ok:
+            pts = [(float(p[0]), float(p[1])) for p in route] if n_pts >= 2 else [(cur_x, cur_y), (x, y)]
+            if math.hypot(pts[0][0] - cur_x, pts[0][1] - cur_y) > 0.03:
+                pts.insert(0, (cur_x, cur_y))
+            if math.hypot(pts[-1][0] - x, pts[-1][1] - y) > 0.01:
+                pts.append((x, y))
+            self._agv_mission = mission_id
+            self.approach_left = None
+            self.nav2.on_stop_distance = lambda d, mid=mission_id: (
+                setattr(self, "approach_left", d) if getattr(self, "_agv_mission", None) == mid else None)
+            self.nav2.on_plugin_event = lambda e, mid=mission_id: self.event_hub.emit(
+                "navigation", e.get("type", "NAV2_EVENT"), e.get("level", "info"), e.get("title", ""), e.get("message", ""),
+                {"mission_id": mid, "source": "agv_nav2_plugins"})
+            try:   # 场景静态几何 (墙/货架线段) → RouteController 末段精定位
+                segs = list(self.dijkstra_planner._static_segments())
+            except Exception as e:  # noqa
+                segs = []
+                self.log(f"场景几何不可用 (末段精定位退回 slam 定位): {e}")
+            def on_plan(curve, mid=mission_id):   # 界面参考曲线 = Nav2 AgvRoute 实际规划的路径 (/plan)
+                with self.lock:
+                    if getattr(self, "_agv_mission", None) == mid:
+                        self.telemetry["plan_curve"] = curve
+            self.nav2.on_plan = on_plan
+            err = self.nav2.send_route(pts, x, y, yaw, mission_id, on_result, on_fb, segs=segs)
+            if err:
+                self._agv_mission = None
+                with self.lock:
+                    self.telemetry["nav_status"] = "FAILED"
+                self.recorder.end_session("FAILED")
+                self.event_hub.emit("navigation", "NAV2_UNAVAILABLE", "danger", "Nav2 目标下发失败", err, {})
+                return
+            with self.lock:
+                self.telemetry["nav_status"] = "NAVIGATING"
+            self.event_hub.emit("navigation", "MISSION_DISPATCH", "info", f"Nav2 导航任务 #{mission_id}",
+                                f"拓扑路线 {len(pts) - 1} 个路段 → ({x:.2f}, {y:.2f}, {math.degrees(yaw):.0f}°)，Nav2 插件: "
+                                "AgvRoute 规划 (圆弧过弯/拐点转向) + RouteFollow 跟随 (停车精度) + adjust_pose 恢复", {"route_points": len(pts)})
+            return
+
+        # 线路跟随 (Python 分段) —— 拓扑路线按拐点切成直线段 (可原地转向的拐点停车转向，转不开的拐点用过渡圆弧)，
         # 逐段 FollowPath 交给 Nav2 controller_server (RotationShim + Regulated Pure Pursuit，±20 mm 到位)
         follow_mode = os.environ.get("NAV2_ROUTE_MODE", "follow_path") == "follow_path" and hasattr(self.nav2, "follow_ready")
         if follow_mode and n_pts >= 2 and not _waited and not self.nav2.follow_ready():
@@ -1687,6 +1745,8 @@ class Navigator:
 
     def cancel_nav(self):
         self.nav2.cancel()
+        self._agv_mission = None
+        self.approach_left = None
         with self.lock:
             self.current_mission_id += 1
             canceled_id = self.current_mission_id - 1

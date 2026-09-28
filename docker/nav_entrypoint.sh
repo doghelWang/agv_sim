@@ -4,6 +4,8 @@
 set -e
 [ -f /opt/ros/humble/setup.bash ] && source /opt/ros/humble/setup.bash
 cd "${AGV_HOME:-/opt/agv}"
+# 本仓库 C++ 包 (agv_ros_bridge、agv_nav2_plugins): 加入 ament 索引，Nav2 才能按名字加载插件
+[ -f ros2/install/local_setup.bash ] && source ros2/install/local_setup.bash
 PY="${PYTHON:-python3}"
 # 数学库线程: 仿真/执行进程自己已有多线程，OpenBLAS/OpenMP 默认按核数开线程会互相抢核 (OPTIMIZATION R2)
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}" OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"

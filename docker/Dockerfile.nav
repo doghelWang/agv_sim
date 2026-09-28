@@ -48,7 +48,7 @@ COPY common/ common/
 COPY nav_runtime/ nav_runtime/
 COPY planning/ planning/
 COPY nav2_bridge.py ./
-COPY nav2/nav2_launch.py nav2/loc_launch.py nav2/ekf.yaml nav2/slam_toolbox.yaml nav2/
+COPY nav2/nav2_launch.py nav2/loc_launch.py nav2/ekf.yaml nav2/slam_toolbox.yaml nav2/agv_route_bt.xml nav2/
 COPY tools/__init__.py tools/gen_nav2_params.py tools/
 COPY docker/nav_entrypoint.sh /usr/local/bin/agv-nav-entrypoint
 # C++ ROS 2 发布端 (NAV_ROS_BRIDGE=cpp|auto)；编译失败时执行进程自动回退 Python 发布

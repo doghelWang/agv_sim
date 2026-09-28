@@ -6,6 +6,8 @@ robot_config.json (cmodel 解析结果) → Nav2 (ROS 2 Humble) 参数文件，�
   nav2/nav2_params_single_steer.yaml  RPP 控制器 (绕后桥原地转向；角速度按舵轮能力折算)
   nav2/nav2_params_dual_steer.yaml    DWB 全向控制器 (vx/vy/wz 采样)
   其它车型                            RotationShim + Regulated Pure Pursuit (线路跟随，precise_goal_checker ±20 mm)
+  另: 装有 ros2/agv_nav2_plugins (C++) 且非全向车型时，追加 RouteFollow 控制器 / AgvRoute 规划器 / agv_goal_checker /
+      adjust_pose 恢复行为，供 nav2/agv_route_bt.xml 行为树使用 (NAV2_AGV_PLUGINS=0 不生成，执行进程回退 Python 分段跟线)
 
 所有尺寸/限速都取自 cmodel:
   footprint       ← motionCenterAttr (head/tail/left/right offset)，运动中心为原点
@@ -23,6 +25,16 @@ _ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _ROOT)
 
 CHASSIS_TYPES = ("diff_drive", "single_steer", "dual_steer")
+
+
+def agv_plugins_available() -> bool:
+    """ros2/agv_nav2_plugins 已编译安装 (ament 索引可见，或在本仓库 ros2/install 下) 且未被 NAV2_AGV_PLUGINS=0 关闭"""
+    if os.environ.get("NAV2_AGV_PLUGINS", "1") == "0":
+        return False
+    idx = os.path.join("share", "ament_index", "resource_index", "packages", "agv_nav2_plugins")
+    roots = [r for r in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep) if r]
+    roots.append(os.path.join(_ROOT, "ros2", "install", "agv_nav2_plugins"))
+    return any(os.path.exists(os.path.join(r, idx)) for r in roots)
 
 
 def _fmt_fp(fp, pad=0.0):
@@ -60,6 +72,11 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
     fp = ch["footprint"]
     pad = 0.03
     pad_local = 0.02
+    rot_margin = 0.02
+    _h = ch.get("head_offset_m", 0.5)
+    _t = ch.get("tail_offset_m", 0.5)
+    _l = ch.get("left_offset_m", 0.4)
+    _r = ch.get("right_offset_m", 0.4)
     try:   # 保护空间: 静态代价地图外形取 车体 ∪ 带载外形，footprint_padding = 车体净空
         from planning import protection as _pr
         _P = _pr.effective(spec)
@@ -70,6 +87,7 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
         # 车体净空 0.05 时，贴墙拓扑节点 (如 grid_9_square 离外墙 1.5 m 的 (0, ±7.5)) 原地转 90° 的车角扫掠会压到
         # 墙面致命栅格 → "detected collision ahead" → 线路跟随中断反复重试；自研导引按 0.02 余量可以转过去
         pad_local = round(min(pad, float(_P.get("rotate_margin", 0.02))), 3)
+        rot_margin = float(_P.get("rotate_margin", 0.02))
     except Exception:
         pass
     if os.environ.get("NAV2_LOCAL_PADDING"):
@@ -200,6 +218,88 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
       rotate_to_heading_min_angle: 0.3
       max_robot_pose_search_dist: 10.0"""
 
+    agv = chassis_type != "dual_steer" and agv_plugins_available()
+    # 精定位用束数最多的 2D 激光原始帧 (如 360° 主激光)；没有 2D 激光时用融合 /scan
+    _l2d = [l for l in lidars if l.get("type", "2d") != "3d"]
+    refine_topic = ("/scan/" + max(_l2d, key=lambda l: (float(l.get("fov_deg", 0)), -float(l.get("resolution_deg", 1.0))))["name"]) if _l2d else ""
+    body = (f"      body_head: {_h:.3f}\n      body_tail: {_t:.3f}\n      body_left: {_l:.3f}\n      body_right: {_r:.3f}")
+    settle = 0.6 if chassis_type == "single_steer" else 0.0      # 单舵轮: 原地转向/起步前舵轮就位时间
+    ctrl_plugins, goal_checkers, planners, behaviors = '["FollowPath"]', '["general_goal_checker", "precise_goal_checker"]', '["GridBased"]', '["spin", "backup", "drive_on_heading", "wait"]'
+    route_ctrl = route_goal = route_planner = adjust = ""
+    if agv:
+        vr = min(v, 0.6)
+        ctrl_plugins, goal_checkers = '["FollowPath", "RouteFollow"]', '["general_goal_checker", "precise_goal_checker", "agv_goal_checker"]'
+        planners, behaviors = '["GridBased", "AgvRoute"]', '["spin", "backup", "drive_on_heading", "wait", "adjust_pose"]'
+        # 路线控制器: 段内 RPP 跟线 (圆弧过弯时按曲率降速)；原地转向/末段进站/终点对位由插件自己控制
+        route_ctrl = f"""
+    RouteFollow:
+      plugin: "agv_nav2_plugins::RouteController"
+      primary_controller: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+{body}
+      rotate_margin: {rot_margin:.3f}
+      rotate_max_w: {min(w, 0.6):.3f}
+      rotate_accel: {0.6 * dw:.3f}
+      rotate_tol: 0.03
+      yaw_tol: 0.003
+      heading_fix_tol: 0.0026            # 到位精定位复核: 朝向差 > 0.15° 时按实测差值再对位
+      cusp_tol: 0.04
+      final_dist: 0.80                   # 进站前停车精定位的位置 (距终点)，其后纯跟踪进站直线收敛横向偏差
+      final_stop_tol: 0.002
+      final_lookahead: 0.25
+      final_max_v: {min(0.2, vr):.3f}
+      final_min_v: 0.008
+      final_decel: {min(0.2, 0.5 * d):.3f}
+      tf_avg_s: 1.0
+      steer_settle_s: {settle}
+      block_wait_s: 2.0
+      refine_localization: {"false" if os.environ.get("NAV2_REFINE_LOC", "1") == "0" else "true"}   # 末段进站前对场景几何做 ICP 精定位
+      refine_scan_topic: "{refine_topic}"
+      wall_half_thickness: 0.025
+      refine_max_correction: 0.15
+      desired_linear_vel: {vr:.3f}
+      lookahead_dist: 0.5
+      min_lookahead_dist: 0.35
+      max_lookahead_dist: 0.8
+      lookahead_time: 1.0
+      transform_tolerance: {rpp_tf_tol}
+      use_velocity_scaled_lookahead_dist: false
+      min_approach_linear_velocity: 0.03
+      approach_velocity_scaling_dist: {vr * vr / max(d * 0.8, 0.05) + 0.1:.2f}
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: false
+      regulated_linear_scaling_min_radius: {max(0.9, inscribed * 2):.2f}
+      regulated_linear_scaling_min_speed: 0.15
+      use_rotate_to_heading: false
+      allow_reversing: false
+      max_robot_pose_search_dist: 10.0"""
+        route_goal = """
+    agv_goal_checker:                     # 到位由 RouteController 判定 (末段终点冻结在 odom 系)
+      plugin: "agv_nav2_plugins::AgvGoalChecker"
+      xy_goal_tolerance: 0.005
+      yaw_goal_tolerance: 0.005"""
+        route_planner = f"""
+    AgvRoute:
+      plugin: "agv_nav2_plugins::RoutePlanner"
+{body}
+      corner_radius: 0.0
+      arc_min_turn: 0.35
+      arc_max_turn: 2.6
+      use_arcs: true
+      step: 0.05
+      route_wait_s: 1.5"""
+        adjust = f"""
+    adjust_pose:
+      plugin: "agv_nav2_plugins/AdjustPose"
+{body}
+      rotate_margin: {rot_margin:.3f}
+      backup_margin: 0.03
+      plan_extra_margin: 0.03            # 规划摆头/后退组合时比执行检查多留的余量
+      rotate_max_w: {min(w, 0.5):.3f}
+      rotate_accel: {0.6 * dw:.3f}
+      steer_settle_s: {settle}"""
+
     motion_model = "nav2_amcl::OmniMotionModel" if holo else "nav2_amcl::DifferentialMotionModel"
     o = {"x": 0.0, "y": 0.0}
     return f"""# ============================================================================
@@ -255,8 +355,8 @@ controller_server:
     failure_tolerance: 0.5
     odom_topic: /odom
     progress_checker_plugin: "progress_checker"
-    goal_checker_plugins: ["general_goal_checker", "precise_goal_checker"]
-    controller_plugins: ["FollowPath"]
+    goal_checker_plugins: {goal_checkers}
+    controller_plugins: {ctrl_plugins}
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.3
@@ -270,8 +370,8 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
       xy_goal_tolerance: 0.02
-      yaw_goal_tolerance: 0.017
-{follow}
+      yaw_goal_tolerance: 0.017{route_goal}
+{follow}{route_ctrl}
 
 local_costmap:
   local_costmap:
@@ -339,12 +439,12 @@ planner_server:
   ros__parameters:
     use_sim_time: {ust}
     expected_planner_frequency: 10.0
-    planner_plugins: ["GridBased"]
+    planner_plugins: {planners}
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
       tolerance: 0.3
       use_astar: true
-      allow_unknown: false
+      allow_unknown: false{route_planner}
 
 smoother_server:
   ros__parameters:
@@ -362,7 +462,7 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    behavior_plugins: {behaviors}
     spin:
       plugin: "nav2_behaviors/Spin"
     backup:
@@ -370,7 +470,7 @@ behavior_server:
     drive_on_heading:
       plugin: "nav2_behaviors/DriveOnHeading"
     wait:
-      plugin: "nav2_behaviors/Wait"
+      plugin: "nav2_behaviors/Wait"{adjust}
     global_frame: odom
     robot_base_frame: base_footprint
     transform_tolerance: 0.2

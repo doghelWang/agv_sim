@@ -3,7 +3,9 @@
 Web 调度台 ↔ Nav2 桥接
 
 * NavigateToPose action 客户端: 下发目标 / 反馈剩余距离 / 结果回写导航状态 / 取消
-* FollowPath (默认): 拓扑路线按拐点切成直线段，逐段交给 controller_server (RotationShim + RPP) 精确跟随
+* 拓扑路线 (默认，需 ros2/agv_nav2_plugins): 路线发到 /agv/route，NavigateToPose 用 nav2/agv_route_bt.xml 行为树 ——
+  AgvRoute 规划 (圆弧过弯/拐点转向) → RouteFollow 跟随 (停车精度) → 受阻时 adjust_pose 恢复，全部在 Nav2 内完成
+* FollowPath (NAV2_ROUTE_MODE=follow_path，或插件不可用时): 拓扑路线按拐点切成直线段，逐段交给 controller_server (RotationShim + RPP) 精确跟随
 * NavigateThroughPoses: 沿拓扑路线逐点通过 (NAV2_ROUTE_MODE=through_poses 时使用)，剩余位姿数 → 当前路段
 * /map_server/load_map: 场景切换时热切换 Nav2 全局地图
 * Nav2Supervisor: 按当前车型自动启动/重启 nav2_launch.py (车型切换 → 换一套 cmodel 生成的参数)
@@ -107,18 +109,22 @@ class Nav2Bridge:
         self.on_result = None
         self.on_feedback = None
         self.supervisor = Nav2Supervisor(node.get_logger())
+        self._clients = {}
+        self._clients_lock = threading.Lock()
+        self._route_io = None                 # Python 路线接口 (无 C++ 桥接时才创建)
+        self._route_via_cpp = False
+        self.on_stop_distance = None          # RouteController 发布的到下一停车点剩余行程 (m)
+        self.on_plugin_event = None           # agv_nav2_plugins 的导航事件 (dict)
+        self.on_plan = None                   # planner_server 发布的规划路径 (/plan) → [{"x","y"}, ...] (约 0.2 m 一个点)
         if self.available:
-            self.client = ActionClient(node, NavigateToPose, "navigate_to_pose")
-            self.through_client = (ActionClient(node, NavigateThroughPoses, "navigate_through_poses")
-                                   if NavigateThroughPoses is not None else None)
+            # Action 客户端按需创建: 客户端一旦存在就会订阅该动作的反馈话题 —— 即使目标不是本进程下发的
+            # (如 bt_navigator 每 10 ms 一条 NavigateToPose 反馈)，rclpy 也要逐条反序列化，执行进程 CPU 翻倍
             self.load_map_cli = node.create_client(LoadMap, "/map_server/load_map")
-            self.follow_client = ActionClient(node, FollowPath, "follow_path") if FollowPath is not None else None
             try:   # Nav2 behavior_server 的 BackUp 行为 (转向空间不足时后退一点再转)
                 from nav2_msgs.action import BackUp
                 self._BackUp = BackUp
-                self.backup_client = ActionClient(node, BackUp, "backup")
             except Exception:
-                self._BackUp = self.backup_client = None
+                self._BackUp = None
             self._fp_handle = None
             self._active = False
             try:
@@ -129,6 +135,37 @@ class Nav2Bridge:
             except Exception as e:  # noqa
                 self._active_cli = None
                 node.get_logger().warn(f"Nav2 看门狗不可用: {e}")
+
+    # ------------------------------------------------------------------
+    def _action(self, key, typ, name):
+        if typ is None:
+            return None
+        with self._clients_lock:
+            c = self._clients.get(key)
+            if c is None:
+                c = ActionClient(self.node, typ, name)
+                self._clients[key] = c
+            return c
+
+    @property
+    def client(self):
+        return self._action("navigate_to_pose", NavigateToPose, "navigate_to_pose")
+
+    @property
+    def through_client(self):
+        return self._action("navigate_through_poses", NavigateThroughPoses, "navigate_through_poses")
+
+    @property
+    def follow_client(self):
+        return self._action("follow_path", FollowPath, "follow_path")
+
+    @property
+    def backup_client(self):
+        return self._action("backup", self._BackUp, "backup")
+
+    def _cpp(self):
+        c = getattr(self.node, "cpp", None)
+        return c if c is not None and c.running() else None
 
     # ------------------------------------------------------------------
     def _is_active(self) -> bool:
@@ -176,10 +213,12 @@ class Nav2Bridge:
 
     # ------------------------------------------------------------------
     def ready(self) -> bool:
-        # 动作服务器在 configure 时就可见；以 lifecycle_manager 报告"全部激活"为准 (看门狗每 5 s 刷新)
-        if not (self.available and self.client.server_is_ready()):
+        # 以 lifecycle_manager 报告"全部激活"为准 (看门狗每 5 s 刷新)；不为查询就绪去创建 Action 客户端
+        if not self.available:
             return False
-        return self._active if getattr(self, "_active_cli", None) is not None else True
+        if getattr(self, "_active_cli", None) is not None:
+            return self._active
+        return self.client.server_is_ready()
 
     def status(self) -> dict:
         return {"msgs": self.available, "server_ready": self.ready(), "process": self.supervisor.running(),
@@ -230,6 +269,123 @@ class Nav2Bridge:
         fut = self.through_client.send_goal_async(g, feedback_callback=self._feedback)
         fut.add_done_callback(lambda f, mid=mission_id: self._accepted(f, mid))
         return ""
+
+    def agv_ready(self) -> bool:
+        """拓扑路线模式可用: 插件已安装且本次 Nav2 参数里生成了 RouteFollow (非全向车型)，Nav2 已激活"""
+        if not self.available or self.supervisor.chassis == "dual_steer":
+            return False
+        try:
+            from tools.gen_nav2_params import agv_plugins_available
+            if not agv_plugins_available():
+                return False
+        except Exception:
+            return False
+        return self.ready()
+
+    def send_route(self, route, x, y, yaw, mission_id, on_result, on_feedback=None, segs=None) -> str:
+        """拓扑路线导航: route = [(x, y), ...] (含起点与终点)，segs = 场景静态线段 (末段精定位)。
+        有 C++ 桥接时整个交给 agv_ros_bridge (发布路线/线段、NavigateToPose、限频回馈)；否则由本进程 rclpy 完成"""
+        self.mission_id = mission_id
+        self.on_result = on_result
+        self.on_feedback = on_feedback
+        bt = os.path.join(HERE, "nav2", "agv_route_bt.xml")
+        cpp = self._cpp()
+        if cpp is not None:
+            cpp.on_nav = self._on_cpp_nav
+            self._route_via_cpp = True
+            cpp.send_route(mission_id, route, (x, y, yaw), bt, segs)
+            return ""
+        self._route_via_cpp = False
+        io = self._py_route_io()
+        if io is None:
+            return "/agv/route 接口不可用"
+        if segs:
+            m = io["Float32MultiArray"]()
+            m.data = [float(v) for sg in segs for v in sg[:4]]
+            io["segs_pub"].publish(m)
+        if not self.client.wait_for_server(timeout_sec=2.0):
+            return "Nav2 navigate_to_pose 服务未就绪"
+        from nav_msgs.msg import Path
+        path = Path()
+        path.header.frame_id = "map"
+        path.header.stamp = self.node.get_clock().now().to_msg()
+        path.poses = [self._pose(px, py, 0.0) for px, py in route]
+        io["route_pub"].publish(path)
+        g = NavigateToPose.Goal()
+        g.pose = self._pose(x, y, yaw)
+        g.behavior_tree = bt
+        fut = self.client.send_goal_async(g, feedback_callback=self._feedback)
+        fut.add_done_callback(lambda f, mid=mission_id: self._accepted(f, mid))
+        return ""
+
+    def _py_route_io(self):
+        """无 C++ 桥接时的路线接口 (按需创建): /agv/route、/agv/world_segments 发布，停车距离/插件事件/规划路径订阅"""
+        if self._route_io is not None:
+            return self._route_io
+        try:
+            from nav_msgs.msg import Path
+            from std_msgs.msg import Float32, Float32MultiArray, String
+            from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+            n = self.node
+            self._route_io = {"route_pub": n.create_publisher(Path, "/agv/route", latched),
+                              "segs_pub": n.create_publisher(Float32MultiArray, "/agv/world_segments", latched),
+                              "Float32MultiArray": Float32MultiArray,
+                              "subs": [n.create_subscription(Float32, "/agv/stop_distance", self._on_stop_distance, 10),
+                                       n.create_subscription(String, "/agv/nav_event", self._on_plugin_event, 20),
+                                       n.create_subscription(Path, "/plan", self._on_plan, 2)]}
+        except Exception as e:  # noqa
+            self.node.get_logger().warn(f"/agv/route 接口不可用: {e}")
+        return self._route_io
+
+    def _on_cpp_nav(self, m: dict):
+        k = m.get("k")
+        if k == "stop":
+            cb = self.on_stop_distance
+            if cb:
+                cb(float(m.get("d", 0.0)))
+        elif k == "fb":
+            if self.on_feedback and m.get("mid") == self.mission_id:
+                self.on_feedback(self.mission_id, float(m.get("dist", 0.0)), float(m.get("t", 0)), int(m.get("rec", 0)))
+        elif k == "result":
+            if self.on_result:
+                self.on_result(m.get("mid"), m.get("result", "ABORTED"))
+        elif k == "event":
+            cb = self.on_plugin_event
+            if cb and isinstance(m.get("e"), dict):
+                cb(m["e"])
+        elif k == "plan":
+            cb = self.on_plan
+            if cb:
+                cb([{"x": p[0], "y": p[1]} for p in m.get("curve", [])])
+
+    def _on_stop_distance(self, msg):
+        cb = self.on_stop_distance
+        if cb:
+            cb(float(msg.data))
+
+    def _on_plan(self, msg):
+        cb = self.on_plan
+        if not cb or not msg.poses:
+            return
+        out, last = [], None
+        for ps in msg.poses:
+            p = ps.pose.position
+            if last is None or math.hypot(p.x - last[0], p.y - last[1]) >= 0.2:
+                out.append({"x": round(p.x, 3), "y": round(p.y, 3)})
+                last = (p.x, p.y)
+        p = msg.poses[-1].pose.position
+        out.append({"x": round(p.x, 3), "y": round(p.y, 3)})
+        cb(out)
+
+    def _on_plugin_event(self, msg):
+        cb = self.on_plugin_event
+        if cb:
+            import json
+            try:
+                cb(json.loads(msg.data))
+            except Exception:
+                pass
 
     def follow_ready(self) -> bool:
         return (self.available and self.follow_client is not None and self.follow_client.server_is_ready()
@@ -351,6 +507,9 @@ class Nav2Bridge:
             self.on_result(mid, self.RESULT_TEXT.get(st, f"STATUS_{st}"))
 
     def cancel(self):
+        cpp = self._cpp()
+        if cpp is not None and self._route_via_cpp:
+            cpp.send_cancel()
         fp = getattr(self, "_fp_handle", None)
         self._fp_handle = None
         if fp is not None:
