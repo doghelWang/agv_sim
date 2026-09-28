@@ -372,6 +372,20 @@ class Navigator:
         io = (self.link.io or {}).get("inputs", {})
         if io.get("di_estop"):
             return 0.0, 0.0, 0.0
+        # 定位停更保护: Nav2 执行中 slam_toolbox 的 map→base 定位超过 LOC_STALE_S (默认 1 s) 没有更新 → 停车等待。
+        # Nav2 控制器会拿过期的 map→odom 换算路径 (手机 proot 下实测停更 11 s，RPP 冲过终点撞墙)
+        ext = getattr(self.slam, "ext", None)
+        if self.active_planner == "nav2" and ext is not None and self.slam.ros_active() and getattr(ext, "last_tf_wall", 0.0):
+            age = time.time() - ext.last_tf_wall
+            if age > float(os.environ.get("LOC_STALE_S", "1.0")):
+                if not self.obs.get("_loc_stale"):
+                    self.obs["_loc_stale"] = True
+                    self.event_hub.emit("localization", "LOC_STALE", "warning", "定位停更，停车等待",
+                                        f"slam_toolbox 定位已 {age:.1f} s 未更新，Nav2 路径换算不可信", {"age_s": round(age, 2)})
+                return 0.0, 0.0, 0.0
+            if self.obs.get("_loc_stale"):
+                self.obs["_loc_stale"] = False
+                self.event_hub.emit("localization", "LOC_RESUME", "info", "定位恢复", "", {})
         cap = self.speed_cap
         if cap and cap > 0:
             v = math.hypot(vx, vy)
@@ -383,6 +397,15 @@ class Navigator:
             sign = 1 if vx > 0 else -1
             left = self.approach_left if sign > 0 else None      # 末段进站: 只关心车头剩余行程内的障碍
             allowed, d_hit, need = self._allowed_speed(sign, left)
+            if left is not None and allowed > 0:
+                # 防护区按剩余行程缩短的前提是"车会停在停车点"。外部控制器 (Nav2) 不一定停得住 (手机上 slam 的
+                # map→odom 停更时 RPP 会冲过终点)：若按完整防护区本应减速/停车，则速度封顶到剩余行程内能停下的
+                # v = √(2·a·left)；冲过停车点 (left = 0) 即停车
+                full, _, _ = self._allowed_speed(sign, None)
+                if full < allowed:
+                    a = 0.5 * float(self.cfg.get("chassis", {}).get("max_decel_mps2", 0.5) or 0.5)
+                    v_stop = max(0.01, math.sqrt(2.0 * a * left)) if left > 0.002 else 0.0   # 与导引末段爬行一致
+                    allowed = min(allowed, max(full, v_stop))
             zone, layer = "clear", None
             if allowed <= 1e-6:
                 vx, zone, layer = 0.0, "stop", "field_" + ("front" if sign > 0 else "rear")

@@ -69,6 +69,7 @@ class RosLocalization:
         self.map_msg = None
         self.map_rev = 0
         self.last_tf = 0.0
+        self.last_tf_wall = 0.0      # 最近一次收到新的 map→base 定位的墙钟时刻 (定位停更保护用)
         self.started_at = 0.0
         self.err = None
         # C++ 发布端 (ros_bridge.cpp) 在时: TF 监听与 50 Hz 查询都在 C++ 里做，结果经 on_tf 回调送来；
@@ -108,6 +109,7 @@ class RosLocalization:
             self.proc = spawn.popen("loc", cmd)
             self.mode, self.scenario, self.started_at = mode, sid, time.time()
             self.map_msg, self.last_tf, self.err = None, 0.0, None
+            self.last_tf_wall = 0.0
             self.map_rev += 1
         if self.ekf:
             threading.Thread(target=self._align_odom, args=(pose, self.started_at), daemon=True, name="ekf-set-pose").start()
@@ -175,6 +177,7 @@ class RosLocalization:
         if stamp <= self.last_tf:
             return
         self.last_tf = stamp
+        self.last_tf_wall = time.time()
         t, q = tr.transform.translation, tr.transform.rotation
         off = getattr(self.node, "_toff", None)          # ros_bridge: 墙钟 - 仿真时间
         if off is None:
@@ -186,6 +189,7 @@ class RosLocalization:
         if not self.running() or stamp <= self.last_tf:
             return
         self.last_tf = stamp
+        self.last_tf_wall = time.time()
         self.slam.set_external(stamp - toff, pose)
 
     def grid(self):
