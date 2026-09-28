@@ -9,7 +9,7 @@
   把 C++ 的回馈转给 Nav2Bridge / RosLocalization / 界面。
   回退模式 (NAV2_ROUTE_MODE=follow_path 等) 要用 Python Action 客户端时，rclpy_node() 按需创建一个 rclpy 节点。
 
-  NAV_RCLPY_FREE=0 关闭 (走 ros_bridge.RosBridge)；车型带相机或 3D 激光时暂用 RosBridge (由它发布图像/点云)
+  NAV_RCLPY_FREE=0 关闭 (走 ros_bridge.RosBridge)。3D 激光点云与相机图像也由 C++ 从仿真拉取并发布
 """
 import itertools
 import os
@@ -37,14 +37,11 @@ class _Log:
 
 
 def usable(link) -> bool:
-    """核心模式 + 路线模式 + 车型没有相机/3D 激光 (这两类图像/点云还由 rclpy 发布)"""
+    """核心模式 + 路线模式 (回退模式的 Python Action 客户端按需再建 rclpy 节点)"""
     from nav_runtime.cpp_bridge import wanted_mode
     if os.environ.get("NAV_RCLPY_FREE", "1") == "0" or os.environ.get("NAV_CPP_CORE", "1") == "0":
         return False
-    if os.environ.get("NAV2_ROUTE_MODE", "agv") != "agv" or wanted_mode() != "cpp":
-        return False
-    s = link.sensors or {}
-    return not s.get("camera_streams") and not any(l.get("type") == "3d" for l in s.get("lidars", []))
+    return os.environ.get("NAV2_ROUTE_MODE", "agv") == "agv" and wanted_mode() == "cpp"
 
 
 class CppRos:
@@ -59,6 +56,7 @@ class CppRos:
         if not self.cpp.core:
             raise RuntimeError("C++ 桥接不在核心模式 (NAV_CPP_CORE=0)")
         self.cpp.on_relay = link.feed
+        link.media_external = True          # 3D 激光点云由 C++ 拉取发布，本进程不再长轮询
         self.cpp.on_ros = self._on_ros
         self.nav2_active = False
         self.mode_flags = {}

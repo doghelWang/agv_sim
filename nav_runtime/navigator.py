@@ -294,7 +294,13 @@ class Navigator:
             mt = L.get("mount") or {}
             rl = {"name": L["name"], "x": float(mt.get("x", 0)), "y": float(mt.get("y", 0)), "yaw": float(mt.get("yaw", 0)),
                   "roll": float(mt.get("roll", 0))}
-        return {"prot": self.prot, "outline": [h, t, l, r], "photos": photos, "refine_lidar": rl,
+        sen = self.link.sensors or {}
+        media = {"lidars3d": [{"name": x["name"], "topic": x.get("topic_hint") or f"/points/{x['name']}",
+                               "frame_id": x.get("frame_id") or f"{x['name']}_link"} for x in sen.get("lidars", []) if x.get("type") == "3d"],
+                 "cameras": [{"name": c["name"], "frame_id": c.get("frame_id", ""), "streams": list(c.get("streams", [])),
+                              "K": [float(k) for k in c.get("K", [])], "baseline_m": float(c.get("baseline_m", 0.0) or 0.0)}
+                             for c in sen.get("camera_streams", [])]}
+        return {"prot": self.prot, "outline": [h, t, l, r], "photos": photos, "refine_lidar": rl, "media": media,
                 "max_decel": float(self.cfg.get("chassis", {}).get("max_decel_mps2", 0.5) or 0.5),
                 "loc_stale_s": float(os.environ.get("LOC_STALE_S", "1.0"))}
 
@@ -329,8 +335,9 @@ class Navigator:
             n += 1
             try:
                 self.push_core(force_mode=n % 10 == 0)      # 每 2 s 强制重发一次 MODE (C++ 重启后恢复)
-            except Exception:
-                pass
+            except Exception as e:
+                if n % 50 == 1:                             # 最多 10 s 记一次
+                    self.log(f"[navigator] C++ 核心同步失败: {e!r}")
 
     def _guide_cpp(self):
         """自研导引在 C++ 核心里执行 (NAV_CPP_GUIDE=0 用本进程的 _autonomous_guidance_loop)"""

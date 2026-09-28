@@ -15,7 +15,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <cctype>
 #include <functional>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -122,6 +124,54 @@ inline std::string http_get(const Url &u, const std::string &path, int *status =
   }
   close(fd);
   return body;
+}
+
+// 一次性 GET，带响应头 (键小写)；长轮询用 (相机帧 / 3D 激光帧: X-Seq、X-Meta)
+struct Response { int status = -1; std::map<std::string, std::string> headers; std::string body; };
+
+inline Response http_get_full(const Url &u, const std::string &path, int timeout_ms = 3000, const char *accept = "*/*") {
+  Response out;
+  std::atomic<bool> stop{false};
+  int fd = connect_tcp(u, timeout_ms);
+  if (fd < 0) return out;
+  std::string req = "GET " + u.base + path + " HTTP/1.1\r\nHost: " + u.host + "\r\nAccept: " + accept + "\r\nConnection: close\r\n\r\n";
+  if (!send_all(fd, req)) { close(fd); return out; }
+  std::string h;
+  char buf[65536];
+  size_t hdr_end = std::string::npos;
+  while (hdr_end == std::string::npos) {
+    ssize_t r = recv(fd, buf, sizeof(buf), 0);
+    if (r <= 0) { close(fd); return out; }
+    h.append(buf, static_cast<size_t>(r));
+    hdr_end = h.find("\r\n\r\n");
+    if (h.size() > (1u << 20) && hdr_end == std::string::npos) { close(fd); return out; }
+  }
+  out.body = h.substr(hdr_end + 4);
+  const std::string head = h.substr(0, hdr_end);
+  auto sp = head.find(' ');
+  out.status = sp == std::string::npos ? -1 : std::atoi(head.c_str() + sp + 1);
+  size_t pos = head.find("\r\n");
+  size_t clen = std::string::npos;
+  while (pos != std::string::npos && pos < head.size()) {
+    size_t e = head.find("\r\n", pos + 2);
+    std::string line = head.substr(pos + 2, (e == std::string::npos ? head.size() : e) - pos - 2);
+    auto c = line.find(':');
+    if (c != std::string::npos) {
+      std::string k = line.substr(0, c), v = line.substr(c + 1);
+      for (auto &ch : k) ch = static_cast<char>(std::tolower(ch));
+      while (!v.empty() && v[0] == ' ') v.erase(0, 1);
+      out.headers[k] = v;
+      if (k == "content-length") clen = static_cast<size_t>(std::atoll(v.c_str()));
+    }
+    pos = e;
+  }
+  while (clen == std::string::npos || out.body.size() < clen) {
+    ssize_t r = recv(fd, buf, sizeof(buf), 0);
+    if (r <= 0) break;
+    out.body.append(buf, static_cast<size_t>(r));
+  }
+  close(fd);
+  return out;
 }
 
 class Stream {

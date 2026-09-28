@@ -94,6 +94,7 @@ class SimLink:
         self.stream_scans = False
         self.cmd_udp = None           # (host, port)：仿真声明了 UDP 指令通道时 send_cmd 走 UDP
         self.external = False         # 推送流帧由 C++ 核心转发 (feed)
+        self.media_external = False   # 3D 激光/相机由 C++ 核心拉取发布 (cpp_ros)
         self._feed_t = 0.0
         self._feed_meta: Dict = {}
         self._feed_n, self._feed_t0 = 0, time.time()
@@ -319,7 +320,7 @@ class SimLink:
         seq = -1
         is2d = next((l.get("type", "2d") == "2d" for l in self.sensors.get("lidars", []) if l["name"] == name), True)
         while not self.stop_evt.is_set():
-            if is2d and self.stream_scans:          # 2D 激光由推送流送达
+            if (is2d and self.stream_scans) or (not is2d and self.media_external):   # 2D 走推送流；3D 由 C++ 核心发布
                 time.sleep(0.5)
                 continue
             try:

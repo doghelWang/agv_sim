@@ -22,6 +22,10 @@
 // 用法: agv_ros_bridge --in <本节点接收的 socket 路径> --out <Python 接收的 socket 路径> [--core] [--ros-args ...]
 // ============================================================================
 #include <netdb.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+#include <csignal>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -39,6 +43,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -58,6 +63,9 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
@@ -260,6 +268,7 @@ class AgvRosBridge : public rclcpp::Node {
     stop_ = true;
     if (guide_) guide_->cancel();
     if (stream_) stream_->stop();
+    for (auto &t : media_threads_) if (t.joinable()) t.join();
     if (udp_fd_ >= 0) close(udp_fd_);
     if (rx_.joinable()) rx_.join();
     close(in_fd_);
@@ -663,7 +672,10 @@ class AgvRosBridge : public rclcpp::Node {
 
   void on_config(const std::string &j) {
     jl::Value v;
-    if (!jl::parse(j, v)) return;
+    if (!jl::parse(j, v)) {
+      RCLCPP_WARN(get_logger(), "安全层配置解析失败 (%zu 字节)", j.size());
+      return;
+    }
     agvsafe::Config c;
     const auto &P = v["prot"];
     c.enabled = P["enabled"].truthy(true);
@@ -702,6 +714,13 @@ class AgvRosBridge : public rclcpp::Node {
     std::lock_guard<std::mutex> lk(smu_);
     cfg_ = std::move(c);
     have_cfg_ = true;
+    if (!have_media_log_ && (!v["media"]["lidars3d"].a.empty() || !v["media"]["cameras"].a.empty())) {
+      have_media_log_ = true;
+      RCLCPP_INFO(get_logger(), "3D 激光 %zu 台、相机 %zu 台由 C++ 从仿真拉取发布", v["media"]["lidars3d"].a.size(),
+                  v["media"]["cameras"].a.size());
+    }
+    for (const auto &l : v["media"]["lidars3d"].a) start_lidar3d(l["name"].str(), l["topic"].str(), l["frame_id"].str());
+    for (const auto &c : v["media"]["cameras"].a) start_camera(c);
     const auto &rl = v["refine_lidar"];
     refine_lidar_ = rl["name"].str();
     refine_mount_[0] = rl["x"].num(); refine_mount_[1] = rl["y"].num(); refine_mount_[2] = rl["yaw"].num(); refine_mount_[3] = rl["roll"].num();
@@ -868,6 +887,149 @@ class AgvRosBridge : public rclcpp::Node {
     out.push_back(T_SAFETY);
     out.insert(out.end(), j.begin(), j.end());
     send(out);
+  }
+
+  // ================================================================ 3D 激光 / 相机 (核心模式: Python 不再搬运点云与图像)
+  // 3D 激光: 长轮询 /api/v1/sensors/lidars/{name} (二进制: float32[N,4] xyzi + uint8[N] line) → PointCloud2 (livox_ros_driver2 布局)
+  void start_lidar3d(const std::string &name, const std::string &topic, const std::string &frame) {
+    std::lock_guard<std::mutex> lk(media_mu_);
+    if (name.empty() || media_names_.count("lidar:" + name)) return;
+    media_names_.insert("lidar:" + name);
+    auto pub = create_publisher<sensor_msgs::msg::PointCloud2>(topic.empty() ? "/points/" + name : topic, sensor_qos_);
+    media_threads_.emplace_back([this, name, frame, pub] {
+      long seq = -1;
+      while (!stop_) {
+        auto r = simstream::http_get_full(stream_->url(), "/api/v1/sensors/lidars/" + name + "?after_seq=" + std::to_string(seq) + "&wait=0.5",
+                                          3000, "application/octet-stream");
+        if (r.status != 200) { std::this_thread::sleep_for(std::chrono::milliseconds(300)); continue; }
+        const long s2 = std::atol(r.headers["x-seq"].c_str());
+        if (s2 == seq) continue;
+        seq = s2;
+        jl::Value m;
+        if (!jl::parse(r.headers["x-meta"], m) || m["type"].str() != "3d") continue;
+        const size_t n = static_cast<size_t>(m["count"].num());
+        if (r.body.size() < n * 17) continue;
+        const auto *xyzi = reinterpret_cast<const float *>(r.body.data());
+        const auto *line = reinterpret_cast<const uint8_t *>(r.body.data() + n * 16);
+        sensor_msgs::msg::PointCloud2 pc;
+        const auto stamp = sim_stamp(m["t"].num(NAN));
+        pc.header.stamp = stamp;
+        pc.header.frame_id = !m["frame_id"].str().empty() ? m["frame_id"].str() : (frame.empty() ? name + "_link" : frame);
+        pc.height = 1;
+        pc.width = static_cast<uint32_t>(n);
+        auto field = [](const char *nm, uint32_t off, uint8_t dt) {
+          sensor_msgs::msg::PointField f; f.name = nm; f.offset = off; f.datatype = dt; f.count = 1; return f; };
+        pc.fields = {field("x", 0, 7), field("y", 4, 7), field("z", 8, 7), field("intensity", 12, 7), field("tag", 16, 2),
+                     field("line", 17, 2), field("timestamp", 18, 8)};
+        pc.is_bigendian = false;
+        pc.point_step = 26;
+        pc.row_step = 26 * pc.width;
+        pc.is_dense = true;
+        pc.data.resize(26 * n);
+        const double ts = stamp.sec * 1e9 + stamp.nanosec;
+        for (size_t i = 0; i < n; ++i) {
+          uint8_t *d = pc.data.data() + 26 * i;
+          std::memcpy(d, xyzi + 4 * i, 16);
+          d[16] = 0;
+          d[17] = line[i];
+          std::memcpy(d + 18, &ts, 8);
+        }
+        pub->publish(pc);
+        ++n_media_;
+      }
+    });
+  }
+
+  // 相机: 有订阅者才拉 (与 NAV_CAMERAS=auto 相同)；各流 raw 格式 → Image / CameraInfo / PointCloud2
+  void start_camera(const jl::Value &c) {
+    const std::string name = c["name"].str();
+    std::lock_guard<std::mutex> lk(media_mu_);
+    if (name.empty() || media_names_.count("cam:" + name)) return;
+    media_names_.insert("cam:" + name);
+    struct Stream { std::string st, topic; rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img;
+                    rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info;
+                    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pts; };
+    auto streams = std::make_shared<std::vector<Stream>>();
+    static const std::map<std::string, std::string> TOP = {{"rgb", "image_raw"}, {"left", "left/image_raw"}, {"right", "right/image_raw"},
+                                                           {"depth", "depth/image_raw"}, {"amplitude", "amplitude/image_raw"}, {"points", "points"}};
+    for (const auto &sv : c["streams"].a) {
+      Stream S;
+      S.st = sv.str();
+      auto it = TOP.find(S.st);
+      S.topic = "/" + name + "/" + (it == TOP.end() ? S.st : it->second);
+      if (S.st == "points") S.pts = create_publisher<sensor_msgs::msg::PointCloud2>(S.topic, sensor_qos_);
+      else {
+        S.img = create_publisher<sensor_msgs::msg::Image>(S.topic, sensor_qos_);
+        S.info = create_publisher<sensor_msgs::msg::CameraInfo>(S.topic.substr(0, S.topic.rfind('/')) + "/camera_info", sensor_qos_);
+      }
+      streams->push_back(S);
+    }
+    std::vector<double> K;
+    for (const auto &k : c["K"].a) K.push_back(k.num());
+    const double baseline = c["baseline_m"].num(0.0);
+    const std::string frame = c["frame_id"].str();
+    media_threads_.emplace_back([this, name, streams, K, baseline, frame] {
+      long seq = -1;
+      while (!stop_) {
+        size_t subs = 0;
+        for (auto &S : *streams) subs += S.pts ? S.pts->get_subscription_count() : S.img->get_subscription_count() + S.info->get_subscription_count();
+        if (!subs || streams->empty()) { std::this_thread::sleep_for(std::chrono::milliseconds(500)); continue; }
+        bool first = true;
+        const auto stamp = get_clock()->now();
+        for (auto &S : *streams) {
+          std::string q = "/api/v1/sensors/cameras/" + name + "?stream=" + S.st + "&format=raw";
+          if (first) q += "&after_seq=" + std::to_string(seq) + "&wait=1.0";
+          auto r = simstream::http_get_full(stream_->url(), q, 4000, "application/octet-stream");
+          if (r.status != 200) { std::this_thread::sleep_for(std::chrono::milliseconds(300)); break; }
+          if (first) {
+            const long s2 = std::atol(r.headers["x-seq"].c_str());
+            if (s2 == seq) break;
+            seq = s2;
+            first = false;
+          }
+          jl::Value m;
+          jl::parse(r.headers["x-meta"], m);
+          const uint32_t W = static_cast<uint32_t>(m["width"].num()), H = static_cast<uint32_t>(m["height"].num());
+          const std::string fr = S.st == "right" ? name + "_right_optical_frame" : frame;
+          if (S.pts) {
+            sensor_msgs::msg::PointCloud2 pc;
+            pc.header.stamp = stamp;
+            pc.header.frame_id = fr;
+            const uint32_t n = static_cast<uint32_t>(r.body.size() / 12);
+            pc.height = 1; pc.width = n;
+            for (auto [nm, off] : {std::pair<const char *, uint32_t>{"x", 0}, {"y", 4}, {"z", 8}}) {
+              sensor_msgs::msg::PointField f; f.name = nm; f.offset = off; f.datatype = 7; f.count = 1; pc.fields.push_back(f);
+            }
+            pc.is_bigendian = false; pc.point_step = 12; pc.row_step = 12 * n; pc.is_dense = true;
+            pc.data.assign(r.body.begin(), r.body.begin() + 12 * n);
+            S.pts->publish(pc);
+            continue;
+          }
+          sensor_msgs::msg::Image img;
+          img.header.stamp = stamp;
+          img.header.frame_id = fr;
+          img.height = H; img.width = W;
+          if (S.st == "rgb" || S.st == "left" || S.st == "right") { img.encoding = "rgb8"; img.step = W * 3; }
+          else if (S.st == "amplitude") { img.encoding = "16UC1"; img.step = W * 2; }
+          else { img.encoding = "32FC1"; img.step = W * 4; }
+          img.is_bigendian = 0;
+          if (r.body.size() < static_cast<size_t>(img.step) * H) continue;
+          img.data.assign(r.body.begin(), r.body.begin() + static_cast<size_t>(img.step) * H);
+          S.img->publish(img);
+          sensor_msgs::msg::CameraInfo ci;
+          ci.header = img.header;
+          ci.height = H; ci.width = W;
+          ci.distortion_model = "plumb_bob";
+          ci.d.assign(5, 0.0);
+          for (size_t i = 0; i < 9 && i < K.size(); ++i) ci.k[i] = K[i];
+          ci.r = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+          const double tx = S.st == "right" ? -ci.k[0] * baseline : 0.0;
+          ci.p = {ci.k[0], 0.0, ci.k[2], tx, 0.0, ci.k[4], ci.k[5], 0.0, 0.0, 0.0, 1.0, 0.0};
+          S.info->publish(ci);
+        }
+        ++n_media_;
+      }
+    });
   }
 
   // ================================================================ 其余 ROS 接口 (核心模式)
@@ -1325,6 +1487,12 @@ class AgvRosBridge : public rclcpp::Node {
   sockaddr_in udp_addr_{};
   uint32_t cmd_seq_ = 0;
   std::atomic<uint32_t> n_stream_state_{0}, n_cmd_{0}, n_cmd_err_{0};
+  // ---- 3D 激光 / 相机
+  std::mutex media_mu_;
+  bool have_media_log_ = false;
+  std::set<std::string> media_names_;
+  std::vector<std::thread> media_threads_;
+  std::atomic<uint32_t> n_media_{0};
   // ---- 其余 ROS 接口
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr active_cli_;
   rclcpp::Client<nav2_msgs::srv::LoadMap>::SharedPtr loadmap_cli_;
@@ -1359,6 +1527,12 @@ class AgvRosBridge : public rclcpp::Node {
 };
 
 int main(int argc, char **argv) {
+#ifdef __linux__
+  // 执行进程 (父进程) 被强杀时一起退出: 否则孤儿桥接仍在同一 ROS_DOMAIN 发布 TF/激光、向仿真发指令
+  const pid_t parent = getppid();
+  prctl(PR_SET_PDEATHSIG, SIGTERM);
+  if (getppid() != parent) return 0;
+#endif
   rclcpp::init(argc, argv);
   auto args = rclcpp::remove_ros_arguments(argc, argv);
   std::string in_path, out_path;

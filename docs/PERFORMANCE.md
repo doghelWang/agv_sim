@@ -246,6 +246,17 @@ Nav2 规划，空闲 60 s / 导航中 (quick_nav_check)：
 插件路线模式 (NAVIGATION.md 第 7 节) 之后导航中：整机 37.0% → **27.5%**，nav_runtime 23.6% → **16.4%**
 (路线导航的 Nav2 通信移到 C++ 桥接，Python 不再建 Action 客户端)。
 
+### 6.6 RK3588 C 化续 (阶段 B-5/B-6、C-1)
+
+| 改动 | 开关 (回退) | RK3588 实测 |
+|---|---|---|
+| 执行进程不加载 rclpy (ROS 通信全部在 C++ 桥接 `--core`) | `NAV_RCLPY_FREE=0` | nav_runtime CPU 23.6% → 6.3%，PSS 88 → 61 MB |
+| 内置 SLAM 计算内核 (`planning/native/slamcore.c`: 栅格插入 / 匹配场 / 扫描匹配) | `AGV_NATIVE_SLAM=0` | 插入 12.0 → 2.2 ms/帧，匹配 6.2 → 0.76 ms，匹配场 48 → 23 ms；与 numpy 逐格一致 (`tests/test_slamcore.py`) |
+| 3D 激光进 C 实时循环 (`simcore_rt.c scan3d_one`，高度带切片并入融合) | `SIM_RT_L3D=0` | 默认车型 (Livox + 2 台 2D) 仿真进程 22.9% → 18.3% (单核)；无噪声点云逐位一致 (`tests/test_rt_lidar3d.py`) |
+
+以前只要车型带 3D 激光，2D 激光也整体退回 Python (融合要叠加 3D 切片)；现在全部在 C 线程，Python 只读双缓冲。
+仿真进程剩余的 Python 主要是 HTTP/JSON 应答 (网关快照约 1 ms/次)，属于协议对接，按约定保留在 Python。
+
 ## 7. 复现
 
 ```bash
