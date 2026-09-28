@@ -37,6 +37,8 @@ from typing import Optional
 
 import numpy as np
 
+from nav_runtime import slam_native
+
 MODES = ("slam", "localization", "odom", "ground_truth")
 
 
@@ -101,6 +103,11 @@ class GridMap:
     def insert(self, pose, px, py, hit, sx=None, sy=None, free_cap=8.0):
         """插入一帧 (机体系): 终点 (px,py)，光束起点 (sx,sy) = 各激光安装位置 (缺省为车体中心)。
         hit=False 为无回波方向 (终点取在最大量程处)，只用于清空。"""
+        if slam_native.lib is not None:
+            slam_native.insert(self, pose, px, py, hit, sx, sy, free_cap)
+            self.updates += 1
+            self.rev += 1
+            return
         x, y, th = pose
         r = self.res
         c, s = math.cos(th), math.sin(th)
@@ -241,6 +248,8 @@ def build_fields(gm: GridMap):
     """命中密度 (仅占据格) → 细/粗两级匹配场。只在有占据的包围盒内计算。
     每条墙的密度按局部最大值归一化 (峰值=1)，因此远近墙、扫描次数不同的区域权重一致；
     峰值位置 = 命中点的平均位置 (亚栅格精度)。"""
+    if slam_native.lib is not None:
+        return slam_native.build_fields(gm, FIELD_LEVELS, Field)
     occ = gm.L > 0.0
     if not occ.any():
         return None
@@ -269,6 +278,8 @@ def build_fields(gm: GridMap):
 # ---------------------------------------------------------------------- 扫描匹配
 def match(fields, px, py, init, P0=None, sigma=0.25, iters=(8, 10)):
     """Gauss-Newton 扫描匹配 (带里程计先验)。返回 (pose, cov3x3, info)"""
+    if slam_native.lib is not None:
+        return slam_native.match(fields, px, py, init, P0, sigma, iters)
     x = np.array(init, float)
     x0 = x.copy()
     Pinv = np.linalg.inv(P0) if P0 is not None else np.zeros((3, 3))
