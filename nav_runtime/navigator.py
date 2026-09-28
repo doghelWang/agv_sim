@@ -462,24 +462,21 @@ class Navigator:
         return (0.0 if allowed is None else allowed), d_hit, need_hit
 
     def _rotation_blocked(self, direction: float) -> bool:
-        """原地转向防护: 外形外扩 rotate_margin，向 direction 转 rotate_lookahead 弧度的扫掠区内出现新的点"""
+        """原地转向防护: 外形外扩 rotate_margin，向 direction 转 rotate_lookahead 弧度的扫掠区内出现新的点
+        (圆弧与矩形精确求交，见 planning/sweep.py；原来只看 3 个角度，贴边的点会在采样之间漏过)"""
         pts = getattr(self, "_pts", None)
         if pts is None or not len(pts[0]):
             return False
-        import numpy as np
-        px, py = pts
+        from planning.sweep import arc_hits_box
+        px, py = np.asarray(pts[0], float), np.asarray(pts[1], float)
         h, t, l, r = self.outline()
         m = self.prot["rotate_margin"]
-        def inside(phi, mm):
-            c, s_ = math.cos(phi), math.sin(phi)
-            lx, ly = px * c + py * s_, -px * s_ + py * c
-            return (lx < h + mm) & (lx > -t - mm) & (ly < l + mm) & (ly > -r - mm)
-        now = inside(0.0, m)
-        look = self.prot["rotate_lookahead_rad"]
-        for k in (0.33, 0.66, 1.0):
-            if np.any(inside(direction * look * k, m) & ~now):
-                return True
-        return False
+        box = (-t - m, h + m, -r - m, l + m)
+        now = (px < h + m) & (px > -t - m) & (py < l + m) & (py > -r - m)
+        if now.all():
+            return False
+        # 车体转 +φ ⇔ 点在车体系下转 -φ
+        return bool(np.any(arc_hits_box(px[~now], py[~now], -direction * self.prot["rotate_lookahead_rad"], box)))
 
     def refresh_obstacles(self):
         self.link.refresh_world()
@@ -953,8 +950,9 @@ class Navigator:
         segs = self._obstacle_segments_all()
         h, t, l, r = self.outline()
         need = self.prot["rotate_margin"] + 0.01
+        rmax = math.hypot(max(h, t), max(l, r))
         for tt in (turn, turn - sgn * 2 * math.pi):
-            n = max(4, int(abs(tt) / 0.12) + 1)
+            n = maneuver.sweep_samples(abs(tt) * rmax, 4)     # 车角每步 ≤ 1 cm (原来每 0.12 rad，车角每步约 17 cm)
             poses = [(x, y, yaw_from + tt * i / n) for i in range(n + 1)]
             if maneuver.clearance(segs, poses, h, t, max(l, r)) >= need:
                 return 1.0 if tt > 0 else -1.0
@@ -1014,14 +1012,11 @@ class Navigator:
         a = a0 + inc * np.nonzero(ok)[0]
         px, py = r[ok] * np.cos(a), r[ok] * np.sin(a)
         m = 0.03
-        for phi in np.linspace(0.0, remain, max(2, int(remain / 0.15) + 1)):
-            x, y, th = R * math.sin(phi), sgn * R * (1 - math.cos(phi)), sgn * phi
-            c, s_ = math.cos(th), math.sin(th)
-            lx = (px - x) * c + (py - y) * s_
-            ly = -(px - x) * s_ + (py - y) * c
-            if np.any((lx > -self.tail_offset - m) & (lx < self.head_offset + m) & (np.abs(ly) < self.half_width + m)):
-                return True
-        return False
+        # 车体沿圆弧行驶 ⇔ 点在车体系下绕瞬心 (0, sgn·R) 转 -sgn·remain：圆弧与矩形精确求交
+        # (原来每 0.15 rad 采样一次，R = 0.9 m 时每步约 13 cm，比 3 cm 外扩大得多)
+        from planning.sweep import arc_hits_box
+        box = (-self.tail_offset - m, self.head_offset + m, -self.half_width - m, self.half_width + m)
+        return bool(np.any(arc_hits_box(px, py, -sgn * remain, box, 0.0, sgn * R)))
 
     def _corner_arc_loop(self, mission_id, v, R, tgt, sgn, t_end, max_w, cxy=None, sweep=None) -> bool:
         stalled = None

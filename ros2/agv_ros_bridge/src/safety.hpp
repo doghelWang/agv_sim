@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "agv_nav2_plugins/sweep.hpp"
+
 namespace agvsafe {
 
 struct Field { std::string name; double v_max = 9.0, front = 0.3, rear = 0.2, side = 0.08; };
@@ -96,18 +98,16 @@ inline double allowed_speed(const Config &c, const Env &e, int sign, bool use_le
   return allowed < 0 ? 0.0 : allowed;
 }
 
-// 原地转向扫掠 (外形外扩 rotate_margin，向 dir 转 rotate_lookahead 的 1/3、2/3、全程)
+// 原地转向扫掠 (外形外扩 rotate_margin，向 dir 转 rotate_lookahead)：圆弧与矩形精确求交 (agv_nav2_plugins/sweep.hpp)
+// 原来只看 1/3、2/3、全程 3 个角度，车角半径 1.4 m 时每步约 12 cm，贴边的点会在采样之间漏过
 inline bool rotation_blocked(const Config &c, const std::vector<Pt> &pts, double dir) {
-  const double m = c.rotate_margin;
-  auto in = [&](double x, double y, double mm) { return x < c.h + mm && x > -c.t - mm && y < c.l + mm && y > -c.r - mm; };
+  const double m = c.rotate_margin, phi = -dir * c.rotate_lookahead;   // 车体转 +φ ⇔ 点在车体系下转 -φ
+  const agv::sweep::Box body{-c.t, c.h, -c.r, c.l}, grown{-c.t - m, c.h + m, -c.r - m, c.l + m};
   for (const auto &p : pts) {
-    if (in(p.x, p.y, 0.0)) continue;                      // 起始已在车体内: 噪声
-    const bool in_m0 = in(p.x, p.y, m);
-    for (double k : {0.33, 0.66, 1.0}) {
-      const double phi = dir * c.rotate_lookahead * k, co = std::cos(phi), s = std::sin(phi);
-      const double lx = p.x * co + p.y * s, ly = -p.x * s + p.y * co;
-      if (in(lx, ly, 0.0) || (!in_m0 && in(lx, ly, m))) return true;
-    }
+    if (body.in(p.x, p.y)) continue;                      // 起始已在车体内: 噪声
+    const bool in_m0 = grown.in(p.x, p.y);
+    if (agv::sweep::arcHitsBox(p.x, p.y, 0.0, 0.0, phi, body)) return true;
+    if (!in_m0 && agv::sweep::arcHitsBox(p.x, p.y, 0.0, 0.0, phi, grown)) return true;
   }
   return false;
 }

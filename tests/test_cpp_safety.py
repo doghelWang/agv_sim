@@ -17,7 +17,8 @@ from nav_runtime.navigator import Navigator  # noqa: E402
 def build():
     exe = os.path.join(tempfile.gettempdir(), "agv_safety_harness")
     src = os.path.join(ROOT, "ros2", "agv_ros_bridge", "test", "safety_harness.cpp")
-    subprocess.check_call(["g++", "-std=c++17", "-O2", "-o", exe, src])
+    inc = os.path.join(ROOT, "ros2", "agv_nav2_plugins", "include")
+    subprocess.check_call(["g++", "-std=c++17", "-O2", "-I", inc, "-o", exe, src])
     return exe
 
 

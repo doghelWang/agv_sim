@@ -14,6 +14,8 @@
 #include <functional>
 #include <vector>
 
+#include "agv_nav2_plugins/sweep.hpp"
+
 namespace agv
 {
 
@@ -42,38 +44,50 @@ inline Pt toPose(const Pt & p, double dx, double dy, double dth)
 }
 
 // 车体从相对位姿 (dx, dy, th0) 原地转 delta (带符号) 的扫掠区是否有新的点
+// 精确判定 (sweep.hpp)：车体转 +delta ⇔ 点在车体系下绕控制点转 -delta；step 参数保留兼容，不再使用
 inline bool rotationBlocked(
   const std::vector<Pt> & pts, const Rect & r, double m, double dx, double dy, double th0, double delta,
-  double step = 0.05)
+  double /*step*/ = 0.05)
 {
   if (std::fabs(delta) < 1e-4) {return false;}
-  const int n = std::max(2, static_cast<int>(std::ceil(std::fabs(delta) / step)));
+  const sweep::Box body{-r.tail, r.head, -r.right, r.left};
+  const sweep::Box grown{-r.tail - m, r.head + m, -r.right - m, r.left + m};
+  const double c = std::cos(th0), s = std::sin(th0);
   for (const auto & p : pts) {
-    const Pt q0 = toPose(p, dx, dy, th0);
-    if (r.contains(q0.x, q0.y, 0.0)) {continue;}        // 起始已在车体内: 噪声
-    const bool in_m0 = r.contains(q0.x, q0.y, m);
-    for (int k = 1; k <= n; ++k) {
-      const Pt q = toPose(p, dx, dy, th0 + delta * k / n);
-      if (r.contains(q.x, q.y, 0.0) || (!in_m0 && r.contains(q.x, q.y, m))) {return true;}
-    }
+    const double qx = p.x - dx, qy = p.y - dy;
+    const double x = qx * c + qy * s, y = -qx * s + qy * c;
+    if (body.in(x, y)) {continue;}                     // 起始已在车体内: 噪声
+    const bool in_m0 = grown.in(x, y);
+    if (sweep::arcHitsBox(x, y, 0.0, 0.0, -delta, body)) {return true;}
+    if (!in_m0 && sweep::arcHitsBox(x, y, 0.0, 0.0, -delta, grown)) {return true;}
   }
   return false;
 }
 
 // 诊断用: 原地转 delta 过程中车体到激光点的最小距离 (m；点进入车体为负，起始已在车体内的点忽略)
+// 采样计算 (每步的 sin/cos 只算一次)；只用于日志，不参与判定
 inline double rotationClearance(
   const std::vector<Pt> & pts, const Rect & r, double dx, double dy, double th0, double delta, double step = 0.05)
 {
   const int n = std::max(2, static_cast<int>(std::ceil(std::fabs(delta) / step)));
+  std::vector<Pt> rel;
+  rel.reserve(pts.size());
+  {
+    const double c = std::cos(th0), s = std::sin(th0);
+    for (const auto & p : pts) {
+      const double qx = p.x - dx, qy = p.y - dy;
+      const double x = qx * c + qy * s, y = -qx * s + qy * c;
+      if (!r.contains(x, y, 0.0)) {rel.push_back({qx, qy});}
+    }
+  }
   double best = 1e9;
-  for (const auto & p : pts) {
-    const Pt q0 = toPose(p, dx, dy, th0);
-    if (r.contains(q0.x, q0.y, 0.0)) {continue;}
-    for (int k = 0; k <= n; ++k) {
-      const Pt q = toPose(p, dx, dy, th0 + delta * k / n);
-      const double ox = std::max({-r.tail - q.x, 0.0, q.x - r.head}), oy = std::max({-r.right - q.y, 0.0, q.y - r.left});
+  for (int k = 0; k <= n; ++k) {
+    const double th = th0 + delta * k / n, c = std::cos(th), s = std::sin(th);
+    for (const auto & q0 : rel) {
+      const double x = q0.x * c + q0.y * s, y = -q0.x * s + q0.y * c;
+      const double ox = std::max({-r.tail - x, 0.0, x - r.head}), oy = std::max({-r.right - y, 0.0, y - r.left});
       const double d = (ox == 0.0 && oy == 0.0) ?
-        -std::min({r.head - q.x, q.x + r.tail, r.left - q.y, q.y + r.right}) : std::hypot(ox, oy);
+        -std::min({r.head - x, x + r.tail, r.left - y, y + r.right}) : std::hypot(ox, oy);
       best = std::min(best, d);
     }
   }
@@ -82,21 +96,20 @@ inline double rotationClearance(
 
 // 车体从相对位姿 (0, 0, th) 沿自身朝向平移 dist (负 = 后退) 的扫掠区是否有新的点
 // (外扩只加在行驶方向的前后端；左右用车体本身 —— 贴着墙平行后退/前进不算受阻)
+// 精确判定: 车体前进 dist ⇔ 点在车体系下沿 x 移动 -dist 的线段；step 参数保留兼容，不再使用
 inline bool translationBlocked(
-  const std::vector<Pt> & pts, const Rect & r, double m, double th, double dist, double step = 0.03)
+  const std::vector<Pt> & pts, const Rect & r, double m, double th, double dist, double /*step*/ = 0.03)
 {
   if (std::fabs(dist) < 1e-4) {return false;}
-  const int n = std::max(2, static_cast<int>(std::ceil(std::fabs(dist) / step)));
+  const sweep::Box body{-r.tail, r.head, -r.right, r.left};
+  const sweep::Box grown{-r.tail - m, r.head + m, -r.right, r.left};
   const double c = std::cos(th), s = std::sin(th);
   for (const auto & p : pts) {
-    const Pt q0 = toPose(p, 0.0, 0.0, th);
-    if (r.contains(q0.x, q0.y, 0.0)) {continue;}
-    const bool in_m0 = r.contains(q0.x, q0.y, m, 0.0);
-    for (int k = 1; k <= n; ++k) {
-      const double d = dist * k / n;
-      const Pt q = toPose(p, d * c, d * s, th);
-      if (r.contains(q.x, q.y, 0.0) || (!in_m0 && r.contains(q.x, q.y, m, 0.0))) {return true;}
-    }
+    const double x = p.x * c + p.y * s, y = -p.x * s + p.y * c;
+    if (body.in(x, y)) {continue;}
+    const bool in_m0 = grown.in(x, y);
+    if (sweep::segHitsBox(x, y, -dist, 0.0, body)) {return true;}
+    if (!in_m0 && sweep::segHitsBox(x, y, -dist, 0.0, grown)) {return true;}
   }
   return false;
 }

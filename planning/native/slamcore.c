@@ -61,7 +61,12 @@ long sl_insert(float *L, float *Hd, int h, int w, double ox, double oy, double r
     for (int i = 0; i < n; ++i) if (i % every) k[i] = 0;
   }
   const long cells = (long)h * w;
-  unsigned char *mark = calloc(cells, 1);   /* 1 空闲 2 占据 */
+  /* 标记数组 (1 空闲 2 占据)：线程内复用，用完只清掉本帧碰过的格子
+   * (原来每帧 calloc 一整张地图，2000×2000 的图每帧要清零 4 MB) */
+  static _Thread_local unsigned char *mark_buf = NULL;
+  static _Thread_local long mark_cap = 0;
+  if (mark_cap < cells) { free(mark_buf); mark_buf = calloc(cells, 1); mark_cap = mark_buf ? cells : 0; }
+  unsigned char *mark = mark_buf;
   long *freel = malloc(sizeof(long) * 1024), nfree = 0, capf = 1024;
   long *occl = malloc(sizeof(long) * (n ? n : 1)), nocc = 0;
   for (int i = 0; i < n; ++i) {
@@ -110,7 +115,9 @@ long sl_insert(float *L, float *Hd, int h, int w, double ox, double oy, double r
     }
   }
   for (long q = 0; q < nocc; ++q) if (Hd[occl[q]] > HIT_CAP) Hd[occl[q]] = HIT_CAP;
-  free(mark); free(freel); free(occl); free(k); free(wsx); free(wsy); free(ca); free(sa); free(ex); free(ey);
+  for (long q = 0; q < nfree; ++q) mark[freel[q]] = 0;     /* 只清本帧碰过的格子，缓冲区留给下一帧 */
+  for (long q = 0; q < nocc; ++q) mark[occl[q]] = 0;
+  free(freel); free(occl); free(k); free(wsx); free(wsy); free(ca); free(sa); free(ex); free(ey);
   return nocc;
 }
 

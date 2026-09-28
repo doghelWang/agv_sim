@@ -18,10 +18,12 @@
 #include <vector>
 
 #include "agv_nav2_plugins/localize.hpp"
+#include "agv_nav2_plugins/sweep.hpp"
 #include "safety.hpp"
 
 extern "C" {
 double an_clearance(const double *segs, int ns, const double *poses, int np, double head, double tail, double hw);
+int an_sweep_samples(double max_travel, int min_n);
 double an_plan_corner(const double *segs, int ns, double nx, double ny, double h1, double h2, double len_in, double len_out,
                       double head, double tail, double hw, double r_pref, double clear_min, int mode, double *out);
 }
@@ -112,7 +114,8 @@ class Guidance {
     const double sgn = turn > 0 ? 1.0 : -1.0;
     const double need = m_.rotate_margin + 0.01;
     for (double tt : {turn, turn - sgn * 2 * M_PI}) {
-      const int n = std::max(4, static_cast<int>(std::fabs(tt) / 0.12) + 1);
+      // 车角每步 ≤ 1 cm (an_sweep_samples；原来每 0.12 rad，车角每步约 17 cm，比 3 cm 净空要求大得多)
+      const int n = an_sweep_samples(std::fabs(tt) * std::hypot(std::max(m_.head, m_.tail), m_.hw), 4);
       std::vector<double> p;
       for (int i = 0; i <= n; ++i) { p.push_back(x); p.push_back(y); p.push_back(yaw_from + tt * i / n); }
       if (clearance(p) >= need) return tt > 0 ? 1.0 : -1.0;
@@ -220,19 +223,17 @@ class Guidance {
     return !stop_;
   }
 
-  bool arc_blocked(double R, double sgn, double remain) const {     // navigator._arc_blocked
+  // 圆弧剩余段 (半径 R，方向 sgn，剩余转角 remain) 的车体扫掠区 (外扩 3 cm) 内是否有激光点 (navigator._arc_blocked)
+  // 车体沿圆弧行驶 ⇔ 点在车体系下绕瞬心 (0, sgn·R) 转 -sgn·remain：圆弧与矩形精确求交 (sweep.hpp)；
+  // 原来每 0.15 rad 采样一次 (R = 0.9 m 时每步约 13 cm，比 3 cm 外扩大得多)
+  bool arc_blocked(double R, double sgn, double remain) const {
     if (remain <= 0.02) return false;
     const auto pts = io_.scan_pts();
     const double m = 0.03;
-    const int n = std::max(2, static_cast<int>(remain / 0.15) + 1);
-    for (int k = 0; k < n; ++k) {
-      const double phi = remain * k / (n - 1);
-      const double x = R * std::sin(phi), y = sgn * R * (1 - std::cos(phi)), th = sgn * phi, c = std::cos(th), s = std::sin(th);
-      for (const auto &q : pts) {
-        if (std::hypot(q.x, q.y) >= R + m_.head + 1.5) continue;
-        const double lx = (q.x - x) * c + (q.y - y) * s, ly = -(q.x - x) * s + (q.y - y) * c;
-        if (lx > -m_.tail - m && lx < m_.head + m && std::fabs(ly) < m_.hw + m) return true;
-      }
+    const agv::sweep::Box box{-m_.tail - m, m_.head + m, -m_.hw - m, m_.hw + m};
+    for (const auto &q : pts) {
+      if (std::hypot(q.x, q.y) >= R + m_.head + 1.5) continue;
+      if (agv::sweep::arcHitsBox(q.x, q.y, 0.0, sgn * R, -sgn * remain, box)) return true;
     }
     return false;
   }

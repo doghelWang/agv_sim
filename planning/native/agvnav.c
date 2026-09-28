@@ -21,74 +21,109 @@ int an_abi(void) { return AN_ABI; }
 static double wrapa(double a) { return atan2(sin(a), cos(a)); }
 
 /* ---------------------------------------------------------------- 车体净空 */
-static int perimeter(double head, double tail, double hw, double step, double *out /* 2*cap */, int cap) {
-  const double E[4][4] = {{-tail, -hw, head, -hw}, {head, -hw, head, hw}, {head, hw, -tail, hw}, {-tail, hw, -tail, -hw}};
-  int k = 0;
-  for (int e = 0; e < 4; ++e) {
-    double ax = E[e][0], ay = E[e][1], bx = E[e][2], by = E[e][3];
-    int n = (int)(hypot(bx - ax, by - ay) / step) + 1;
-    if (n < 2) n = 2;
-    for (int i = 0; i < n && k < cap; ++i, ++k) {
-      out[2 * k] = ax + (bx - ax) * i / (n - 1);
-      out[2 * k + 1] = ay + (by - ay) * i / (n - 1);
-    }
-  }
-  return k;
+/* 扫掠 (原地转向/圆弧) 取位姿的数量：车体上任一点在相邻两个位姿之间移动不超过 AN_SWEEP_STEP，
+ * 采样之间漏检的净空 ≤ AN_SWEEP_STEP / 2 = 5 mm (距离随位姿变化的 Lipschitz 常数 = 该点的移动速度)。
+ * 原来原地转向固定 17 个位姿 (转 90° 时车角每步约 14 cm)、圆弧 13 个，远大于 3~5 cm 的净空阈值。 */
+#define AN_SWEEP_STEP 0.01
+int an_sweep_samples(double max_travel, int min_n) {
+  const int n = (int)ceil(max_travel / AN_SWEEP_STEP);
+  return n > min_n ? n : min_n;
 }
 
+/* 点到线段距离的平方 */
+static inline double pt_seg2(double px, double py, double ax, double ay, double bx, double by) {
+  const double dx = bx - ax, dy = by - ay;
+  double L2 = dx * dx + dy * dy;
+  if (L2 < 1e-12) L2 = 1e-12;
+  double u = ((px - ax) * dx + (py - ay) * dy) / L2;
+  u = u < 0 ? 0 : (u > 1 ? 1 : u);
+  const double ex = ax + u * dx - px, ey = ay + u * dy - py;
+  return ex * ex + ey * ey;
+}
+/* 点到轴对齐矩形 [x0,x1]×[-hw,hw] 距离的平方 (矩形内为 0) */
+static inline double pt_box2(double x, double y, double x0, double x1, double hw) {
+  const double dx = x < x0 ? x0 - x : (x > x1 ? x - x1 : 0.0);
+  const double ay = fabs(y), dy = ay > hw ? ay - hw : 0.0;
+  return dx * dx + dy * dy;
+}
+/* 线段是否与闭矩形相交 (Liang–Barsky) */
+static int seg_hits_box(double ax, double ay, double bx, double by, double x0, double x1, double hw) {
+  double t0 = 0.0, t1 = 1.0;
+  const double dx = bx - ax, dy = by - ay;
+  const double p[4] = {-dx, dx, -dy, dy}, q[4] = {ax - x0, x1 - ax, ay + hw, hw - ay};
+  for (int i = 0; i < 4; ++i) {
+    if (fabs(p[i]) < 1e-15) { if (q[i] < 0) return 0; continue; }
+    const double r = q[i] / p[i];
+    if (p[i] < 0) { if (r > t1) return 0; if (r > t0) t0 = r; }
+    else { if (r < t0) return 0; if (r < t1) t1 = r; }
+  }
+  return 1;
+}
+
+/* 车体矩形 (机体系 x ∈ [-tail, head]，|y| ≤ hw) 在一组位姿上到线段集合的最小距离 (m)。
+ *   线段端点落入车体 → -1；线段穿过车体 (端点都在车外) → 0；车体附近 (位姿包围盒 ±R) 没有线段 → 9.0
+ * 精确解: 车体系下线段 vs 矩形 —— 不相交时距离 = min(两端点到矩形, 矩形四角到线段)。
+ * (原实现在车体周边每 8 cm 取一点求点到线段距离: O(位姿 × 72 × 线段)，且会高估净空最多约 2.6 cm、
+ *  漏判斜穿车体的线段；阈值只有 3~5 cm，误差与阈值同量级) */
 double an_clearance(const double *segs, int ns, const double *poses, int np, double head, double tail, double hw) {
   if (ns <= 0 || np <= 0) return 9.0;
   double xmin = 1e300, xmax = -1e300, ymin = 1e300, ymax = -1e300;
   for (int i = 0; i < np; ++i) {
-    double x = poses[3 * i], y = poses[3 * i + 1];
+    const double x = poses[3 * i], y = poses[3 * i + 1];
     if (x < xmin) xmin = x;
     if (x > xmax) xmax = x;
     if (y < ymin) ymin = y;
     if (y > ymax) ymax = y;
   }
-  const double R = hypot(head > tail ? head : tail, hw) + 0.3;
-  int *near = (int *)malloc(sizeof(int) * ns);
+  const double rmax = hypot(head > tail ? head : tail, hw);    /* 车体外接圆半径 (相对控制点) */
+  const double R = rmax + 0.3;
+  int near_buf[256];
+  int *near = ns <= 256 ? near_buf : (int *)malloc(sizeof(int) * ns);
   int nn = 0;
   for (int j = 0; j < ns; ++j) {
     const double *s = segs + 4 * j;
-    double lox = s[0] < s[2] ? s[0] : s[2], hix = s[0] > s[2] ? s[0] : s[2];
-    double loy = s[1] < s[3] ? s[1] : s[3], hiy = s[1] > s[3] ? s[1] : s[3];
+    const double lox = s[0] < s[2] ? s[0] : s[2], hix = s[0] > s[2] ? s[0] : s[2];
+    const double loy = s[1] < s[3] ? s[1] : s[3], hiy = s[1] > s[3] ? s[1] : s[3];
     if (lox < xmax + R && hix > xmin - R && loy < ymax + R && hiy > ymin - R) near[nn++] = j;
   }
-  if (!nn) { free(near); return 9.0; }
-  double per[2 * 512];
-  const int npp = perimeter(head, tail, hw, 0.08, per, 512);
-  double best = 1e300;
-  for (int i = 0; i < np; ++i) {
+  double best = 1e300, best2 = 1e300;
+  int crossing = 0;
+  /* 控制点到各线段的距离 (剪枝用)：只与位置有关 —— 原地转向的所有位姿位置相同，按位置缓存只算一次 */
+  double dc_buf[256];
+  double *dc = nn <= 256 ? dc_buf : (double *)malloc(sizeof(double) * nn);
+  double lx = 1e300, ly = 1e300;
+  for (int i = 0; i < np && nn; ++i) {
     const double x = poses[3 * i], y = poses[3 * i + 1], c = cos(poses[3 * i + 2]), s = sin(poses[3 * i + 2]);
-    for (int q = 0; q < nn; ++q) {          /* 线段端点落入车体 → -1 */
+    if (x != lx || y != ly) {
+      for (int q = 0; q < nn; ++q) { const double *g = segs + 4 * near[q]; dc[q] = pt_seg2(x, y, g[0], g[1], g[2], g[3]); }
+      lx = x; ly = y;
+    }
+    for (int q = 0; q < nn; ++q) {
       const double *g = segs + 4 * near[q];
-      for (int e = 0; e < 2; ++e) {
-        const double ex = g[2 * e], ey = g[2 * e + 1];
-        const double lx = (ex - x) * c + (ey - y) * s, ly = -(ex - x) * s + (ey - y) * c;
-        if (lx > -tail && lx < head && fabs(ly) < hw) { free(near); return -1.0; }
+      /* 剪枝: 控制点到线段距离 − 外接圆半径 ≥ 当前最优 → 这条线段不可能更近 (端点在车内的线段不会被剪掉) */
+      const double lim = best + rmax;
+      if (best < 1e299 && dc[q] >= lim * lim) continue;
+      const double ax = (g[0] - x) * c + (g[1] - y) * s, ay = -(g[0] - x) * s + (g[1] - y) * c;
+      const double bx = (g[2] - x) * c + (g[3] - y) * s, by = -(g[2] - x) * s + (g[3] - y) * c;
+      if ((ax > -tail && ax < head && fabs(ay) < hw) || (bx > -tail && bx < head && fabs(by) < hw)) {
+        if (near != near_buf) free(near);
+        if (dc != dc_buf) free(dc);
+        return -1.0;
       }
+      if (seg_hits_box(ax, ay, bx, by, -tail, head, hw)) { crossing = 1; best = best2 = 0.0; continue; }
+      double d2 = pt_box2(ax, ay, -tail, head, hw), t;
+      if ((t = pt_box2(bx, by, -tail, head, hw)) < d2) d2 = t;
+      if ((t = pt_seg2(-tail, -hw, ax, ay, bx, by)) < d2) d2 = t;
+      if ((t = pt_seg2(head, -hw, ax, ay, bx, by)) < d2) d2 = t;
+      if ((t = pt_seg2(head, hw, ax, ay, bx, by)) < d2) d2 = t;
+      if ((t = pt_seg2(-tail, hw, ax, ay, bx, by)) < d2) d2 = t;
+      if (d2 < best2) { best2 = d2; best = sqrt(d2); }
     }
   }
-  for (int i = 0; i < np; ++i) {
-    const double x = poses[3 * i], y = poses[3 * i + 1], c = cos(poses[3 * i + 2]), s = sin(poses[3 * i + 2]);
-    for (int k = 0; k < npp; ++k) {
-      const double qx = x + c * per[2 * k] - s * per[2 * k + 1], qy = y + s * per[2 * k] + c * per[2 * k + 1];
-      for (int q = 0; q < nn; ++q) {
-        const double *g = segs + 4 * near[q];
-        const double dx = g[2] - g[0], dy = g[3] - g[1];
-        double L2 = dx * dx + dy * dy;
-        if (L2 < 1e-12) L2 = 1e-12;
-        double u = ((qx - g[0]) * dx + (qy - g[1]) * dy) / L2;
-        u = u < 0 ? 0 : (u > 1 ? 1 : u);
-        const double cx = g[0] + u * dx, cy = g[1] + u * dy;
-        const double d2 = (qx - cx) * (qx - cx) + (qy - cy) * (qy - cy);
-        if (d2 < best) best = d2;
-      }
-    }
-  }
-  free(near);
-  return sqrt(best);
+  if (near != near_buf) free(near);
+  if (dc != dc_buf) free(dc);
+  if (!nn) return 9.0;
+  return crossing ? 0.0 : best;
 }
 
 /* ---------------------------------------------------------------- 拐点过弯方式
@@ -100,11 +135,15 @@ double an_plan_corner(const double *segs, int ns, double nx, double ny, double h
                       double head, double tail, double hw, double r_pref, double clear_min, int mode, double *out) {
   const double turn = wrapa(h2 - h1);
   const double sgn = turn > 0 ? 1.0 : -1.0;
-  double rot_clr[2], rot_dir[2], poses[3 * 17];
+  const double rmax = hypot(head > tail ? head : tail, hw);
+  double rot_clr[2], rot_dir[2];
   for (int k = 0; k < 2; ++k) {
     const double tt = k == 0 ? turn : turn - sgn * 2.0 * M_PI;
-    for (int i = 0; i < 17; ++i) { poses[3 * i] = nx; poses[3 * i + 1] = ny; poses[3 * i + 2] = h1 + tt * i / 16.0; }
-    rot_clr[k] = an_clearance(segs, ns, poses, 17, head, tail, hw);
+    const int n = an_sweep_samples(fabs(tt) * rmax, 16);
+    double *poses = (double *)malloc(sizeof(double) * 3 * (n + 1));
+    for (int i = 0; i <= n; ++i) { poses[3 * i] = nx; poses[3 * i + 1] = ny; poses[3 * i + 2] = h1 + tt * i / n; }
+    rot_clr[k] = an_clearance(segs, ns, poses, n + 1, head, tail, hw);
+    free(poses);
     rot_dir[k] = tt > 0 ? 1.0 : -1.0;
   }
 #define ROT(k) do { out[0] = 2; out[1] = rot_dir[k]; for (int z = 2; z < 8; ++z) out[z] = 0; return rot_clr[k]; } while (0)
@@ -130,14 +169,16 @@ double an_plan_corner(const double *segs, int ns, double nx, double ny, double h
       const double d = R * t_half;
       const double sx = nx - d * cos(h1), sy = ny - d * sin(h1);
       const double cx = sx - sgn * R * sin(h1), cy = sy + sgn * R * cos(h1);
-      double ap[3 * 13];
-      for (int k = 0; k < 13; ++k) {
-        const double th = h1 + turn * k / 12.0;
+      const int n = an_sweep_samples(fabs(turn) * (R + rmax), 12);
+      double *ap = (double *)malloc(sizeof(double) * 3 * (n + 1));
+      for (int k = 0; k <= n; ++k) {
+        const double th = h1 + turn * k / n;
         ap[3 * k] = cx + sgn * R * sin(th);
         ap[3 * k + 1] = cy - sgn * R * cos(th);
         ap[3 * k + 2] = th;
       }
-      arcs_clr[na] = an_clearance(segs, ns, ap, 13, head, tail, hw);
+      arcs_clr[na] = an_clearance(segs, ns, ap, n + 1, head, tail, hw);
+      free(ap);
       const double a[8] = {1, 0, R, d, h2, turn, cx, cy};
       memcpy(arcs[na], a, sizeof(a));
       ++na;
@@ -172,7 +213,7 @@ double an_plan_corner(const double *segs, int ns, double nx, double ny, double h
 #define OFF_NET_COST 3.0
 #define ATTACH_SLACK 0.5
 
-typedef struct { int to; double w; } Arc;
+typedef struct { int to; double w; int pair; } Arc;      /* pair: 节点对编号 (同一对节点的重复边共用) */
 typedef struct { double key[6]; double val; int used; } CacheEnt;
 
 typedef struct {
@@ -184,6 +225,9 @@ typedef struct {
   double *elen;
   int *adj_off, *adj_cnt;     /* 真实节点的邻接 (按 Python edges[u] 的追加顺序) */
   Arc *adj;
+  int *epair;                 /* m: 边 → 节点对编号 */
+  int npair;
+  int *pair_first;            /* npair: 该节点对序号最小的边 */
   double *segs;
   int ns;
   double half_width, circum;
@@ -191,16 +235,17 @@ typedef struct {
   double fp_head, fp_tail, fp_hw, fp_r, fp_cmin;
   int fp_mode;
   CacheEnt *cache;
-  int cache_cap;
+  int cache_cap, cache_used;
 } Router;
 
 void *an_router_new(void) { return calloc(1, sizeof(Router)); }
 
 static void router_clear(Router *r) {
   free(r->pos); free(r->rank); free(r->eu); free(r->ev); free(r->elen); free(r->adj_off); free(r->adj_cnt); free(r->adj);
-  free(r->segs); free(r->cache);
+  free(r->segs); free(r->cache); free(r->epair); free(r->pair_first);
+  r->epair = r->pair_first = NULL; r->npair = 0;
   r->pos = NULL; r->rank = NULL; r->eu = r->ev = NULL; r->elen = NULL; r->adj_off = r->adj_cnt = NULL; r->adj = NULL;
-  r->segs = NULL; r->cache = NULL; r->cache_cap = 0;
+  r->segs = NULL; r->cache = NULL; r->cache_cap = 0; r->cache_used = 0;
 }
 
 void an_router_free(void *h) {
@@ -233,12 +278,23 @@ void an_router_set_graph(void *h, const double *nodes, int n, const int *rank, c
     r->adj_cnt[r->ev[e]]++;
   }
   for (int i = 0; i < n; ++i) r->adj_off[i + 1] = r->adj_off[i] + r->adj_cnt[i];
+  /* 节点对编号: 同一对 (无序) 节点之间的重复边共用一个编号 (建图时一次 O(m²)，规划时 O(1) 查) */
+  r->epair = (int *)malloc(sizeof(int) * (m ? m : 1));
+  r->pair_first = (int *)malloc(sizeof(int) * (m ? m : 1));
+  r->npair = 0;
+  for (int e = 0; e < m; ++e) {
+    int pid = -1;
+    for (int q = 0; q < e; ++q)
+      if ((r->eu[q] == r->eu[e] && r->ev[q] == r->ev[e]) || (r->eu[q] == r->ev[e] && r->ev[q] == r->eu[e])) { pid = r->epair[q]; break; }
+    if (pid < 0) { pid = r->npair++; r->pair_first[pid] = e; }
+    r->epair[e] = pid;
+  }
   r->adj = (Arc *)malloc(sizeof(Arc) * (2 * m + 1));
   int *fill = (int *)calloc(n ? n : 1, sizeof(int));
   for (int e = 0; e < m; ++e) {           /* Python: edges[u].append((v, d)); edges[v].append((u, d)) */
     int u = r->eu[e], v = r->ev[e];
-    r->adj[r->adj_off[u] + fill[u]++] = (Arc){v, r->elen[e]};
-    r->adj[r->adj_off[v] + fill[v]++] = (Arc){u, r->elen[e]};
+    r->adj[r->adj_off[u] + fill[u]++] = (Arc){v, r->elen[e], r->epair[e]};
+    r->adj[r->adj_off[v] + fill[v]++] = (Arc){u, r->elen[e], r->epair[e]};
   }
   free(fill);
   r->ns = ns;
@@ -258,12 +314,28 @@ void an_router_set_footprint(void *h, int on, double head, double tail, double h
   free(r->cache);
   r->cache = NULL;
   r->cache_cap = 0;
+  r->cache_used = 0;
 }
 
 /* 拐点惩罚 (与 Python 同一个缓存键: 坐标保留 2 位小数) */
+static void cache_put(CacheEnt *tab, int cap, const double *key, double val) {
+  unsigned long hsh = 1469598103934665603ul;
+  for (int i = 0; i < 6; ++i) { long long v = llround(key[i] * 100.0); hsh = (hsh ^ (unsigned long)v) * 1099511628211ul; }
+  for (int probe = 0, idx = (int)(hsh % (unsigned long)cap); probe < cap; ++probe) {
+    CacheEnt *e = &tab[(idx + probe) % cap];
+    if (e->used) continue;
+    memcpy(e->key, key, sizeof(e->key));
+    e->val = val;
+    e->used = 1;
+    return;
+  }
+}
+
+/* 拐点惩罚 (与 Python 同一个缓存键: 坐标保留 2 位小数)。开放寻址表负载过半即扩容重建
+ * (原来固定 4096 项，满了以后插入静默失败，之后每次查询都要扫整张表) */
 static double corner_penalty(Router *r, const double *a, const double *b, const double *c) {
   double key[6] = {py_round2(a[0]), py_round2(a[1]), py_round2(b[0]), py_round2(b[1]), py_round2(c[0]), py_round2(c[1])};
-  if (!r->cache) { r->cache_cap = 4096; r->cache = (CacheEnt *)calloc(r->cache_cap, sizeof(CacheEnt)); }
+  if (!r->cache) { r->cache_cap = 4096; r->cache_used = 0; r->cache = (CacheEnt *)calloc(r->cache_cap, sizeof(CacheEnt)); }
   unsigned long hsh = 1469598103934665603ul;
   for (int i = 0; i < 6; ++i) { long long v = llround(key[i] * 100.0); hsh = (hsh ^ (unsigned long)v) * 1099511628211ul; }
   int idx = (int)(hsh % (unsigned long)r->cache_cap);
@@ -277,14 +349,16 @@ static double corner_penalty(Router *r, const double *a, const double *b, const 
   const double clr = an_plan_corner(r->segs, r->ns, b[0], b[1], h1, h2, hypot(b[0] - a[0], b[1] - a[1]), hypot(c[0] - b[0], c[1] - b[1]),
                                     r->fp_head, r->fp_tail, r->fp_hw, r->fp_r, r->fp_cmin, r->fp_mode, out);
   const double val = clr < r->fp_cmin ? CORNER_BLOCK_COST : 0.0;
-  for (int probe = 0; probe < r->cache_cap; ++probe) {
-    CacheEnt *e = &r->cache[(idx + probe) % r->cache_cap];
-    if (e->used) continue;
-    memcpy(e->key, key, sizeof(key));
-    e->val = val;
-    e->used = 1;
-    break;
+  if (2 * (r->cache_used + 1) > r->cache_cap) {            /* 扩容 ×2 并重建 */
+    const int ncap = r->cache_cap * 2;
+    CacheEnt *nt = (CacheEnt *)calloc(ncap, sizeof(CacheEnt));
+    for (int i = 0; i < r->cache_cap; ++i) if (r->cache[i].used) cache_put(nt, ncap, r->cache[i].key, r->cache[i].val);
+    free(r->cache);
+    r->cache = nt;
+    r->cache_cap = ncap;
   }
+  cache_put(r->cache, r->cache_cap, key, val);
+  r->cache_used++;
   return val;
 }
 
@@ -337,19 +411,17 @@ static int attach_cmp(const void *a, const void *b) {        /* 稳定: 距离�
 static int attach(const Router *r, const double *pt, const double *obs, int k, const char *blocked, Attach *out, int cap) {
   int nc = 0, nf = 0;
   Attach *fb = (Attach *)malloc(sizeof(Attach) * (r->m + 1));
-  char *seen = (char *)calloc(r->m + 1, 1);
+  char *seen = (char *)calloc(r->npair + 1, 1);            /* 按节点对: 同一对节点的重复边一并视为已处理 */
   int order = 0;
   for (int u = 0; u < r->n; ++u) {
     for (int a = r->adj_off[u]; a < r->adj_off[u] + r->adj_cnt[u]; ++a) {
       const int v = r->adj[a].to;
       const double L = r->adj[a].w;
-      /* 找对应的无向边序号 */
-      int e = -1;
-      for (int q = 0; q < r->m; ++q)
-        if ((r->eu[q] == u && r->ev[q] == v) || (r->eu[q] == v && r->ev[q] == u)) { if (!seen[q]) { e = q; break; } }
-      if (e < 0 || blocked[e] || L < 1e-6) continue;
-      for (int q = 0; q < r->m; ++q)                       /* 同一对节点的重复边一并视为已处理 */
-        if ((r->eu[q] == u && r->ev[q] == v) || (r->eu[q] == v && r->ev[q] == u)) seen[q] = 1;
+      const int pid = r->adj[a].pair;
+      if (seen[pid]) continue;
+      const int e = r->pair_first[pid];                     /* 该节点对序号最小的边 (原逻辑取第一条未处理的) */
+      if (blocked[e] || L < 1e-6) continue;
+      seen[pid] = 1;
       const double *U = r->pos + 2 * u, *V = r->pos + 2 * v;
       double t = ((pt[0] - U[0]) * (V[0] - U[0]) + (pt[1] - U[1]) * (V[1] - U[1])) / (L * L);
       t = t < 0 ? 0 : (t > 1 ? 1 : t);
@@ -428,6 +500,8 @@ int an_router_plan(void *h, double sx, double sy, double gx, double gy, const do
   const int n = r->n, S = n, G = n + 1, N = n + 2;
   char *blocked = (char *)calloc(r->m + 1, 1);
   if (k) for (int e = 0; e < r->m; ++e) blocked[e] = (char)edge_blocked_r(r->pos + 2 * r->eu[e], r->pos + 2 * r->ev[e], obs, k, r->half_width + 0.15);
+  char *pair_blocked = (char *)calloc(r->npair + 1, 1);     /* 节点对里任一条边被阻断 → 整对不走 (与原逻辑一致) */
+  for (int e = 0; e < r->m; ++e) if (blocked[e]) pair_blocked[r->epair[e]] = 1;
   const double sp[2] = {sx, sy}, gp[2] = {gx, gy};
   Attach sc[3], gc[3];
   Attach *tmp = (Attach *)malloc(sizeof(Attach) * (r->m + 1));
@@ -437,7 +511,7 @@ int an_router_plan(void *h, double sx, double sy, double gx, double gy, const do
   memcpy(gc, tmp, sizeof(Attach) * ng_);
   free(tmp);
   *out_length = 0.0;
-  if (!ns_ || !ng_) { free(blocked); return 0; }
+  if (!ns_ || !ng_) { free(blocked); free(pair_blocked); return 0; }
 
   /* 状态 (节点, 来向)：来向 -1..N-1 → 下标 (prv+1) */
   const int NS = N * (N + 1);
@@ -463,16 +537,14 @@ int an_router_plan(void *h, double sx, double sy, double gx, double gy, const do
         xoff[u] = w;
         if (u < n) {
           for (int a = r->adj_off[u]; a < r->adj_off[u] + r->adj_cnt[u]; ++a) {
-            int v = r->adj[a].to, e = -1;
-            for (int q = 0; q < r->m; ++q) if ((r->eu[q] == u && r->ev[q] == v) || (r->eu[q] == v && r->ev[q] == u)) { e = q; if (blocked[q]) break; }
-            if (e >= 0 && blocked[e]) continue;
+            if (pair_blocked[r->adj[a].pair]) continue;
             xadj[w++] = r->adj[a];
           }
-          for (int q = 0; q < A->nlinks; ++q) if (A->link_n[q] == u) xadj[w++] = (Arc){S, A->link_w[q]};
-          for (int q = 0; q < B->nlinks; ++q) if (B->link_n[q] == u) xadj[w++] = (Arc){G, B->link_w[q]};
+          for (int q = 0; q < A->nlinks; ++q) if (A->link_n[q] == u) xadj[w++] = (Arc){S, A->link_w[q], -1};
+          for (int q = 0; q < B->nlinks; ++q) if (B->link_n[q] == u) xadj[w++] = (Arc){G, B->link_w[q], -1};
         } else if (u == S) {
-          for (int q = 0; q < A->nlinks; ++q) xadj[w++] = (Arc){A->link_n[q], A->link_w[q]};
-          if (A->edge == B->edge) xadj[w++] = (Arc){G, hypot(A->px - B->px, A->py - B->py)};
+          for (int q = 0; q < A->nlinks; ++q) xadj[w++] = (Arc){A->link_n[q], A->link_w[q], -1};
+          if (A->edge == B->edge) xadj[w++] = (Arc){G, hypot(A->px - B->px, A->py - B->py), -1};
         }
         xcnt[u] = w - xoff[u];
       }
@@ -523,7 +595,7 @@ int an_router_plan(void *h, double sx, double sy, double gx, double gy, const do
       }
     }
   }
-  free(hp.a); free(cost); free(par); free(xadj); free(xoff); free(xcnt); free(blocked);
+  free(hp.a); free(cost); free(par); free(xadj); free(xoff); free(xcnt); free(blocked); free(pair_blocked);
   if (!have_best) { free(best_seq); return 0; }
   /* 点列与标签整理 (与 Python 一致) */
   int cnt = 0;
