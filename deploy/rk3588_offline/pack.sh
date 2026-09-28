@@ -4,9 +4,9 @@
 #   bash deploy/rk3588_offline/pack.sh [输出目录]      → agv-rk-rootfs.tar.xz + agv_ros.sh
 # 镜像 agv-rk = agv-nav (ROS 2/Nav2) + 仿真依赖 + 完整代码 (同目录 Dockerfile)
 # 然后 (dropbear 没有 sftp-server，scp 不可用，用管道):
-#   cat <输出目录>/agv_ros.sh | ssh root@<板卡> 'mkdir -p /mnt/agv_ros && cat > /mnt/agv_ros/agv_ros.sh'
-#   cat <输出目录>/agv-rk-rootfs.tar.xz | ssh root@<板卡> 'cat > /mnt/agv_ros/agv-rk-rootfs.tar.xz'
-#   ssh root@<板卡> 'sh /mnt/agv_ros/agv_ros.sh install'
+#   cat <输出目录>/agv_ros.sh | ssh root@<板卡> 'mkdir -p /mnt/misc/agv_ros && cat > /mnt/misc/agv_ros/agv_ros.sh'
+#   cat <输出目录>/agv-rk-rootfs.tar.xz | ssh root@<板卡> 'cat > /mnt/misc/agv_ros/agv-rk-rootfs.tar.xz'
+#   ssh root@<板卡> 'sh /mnt/misc/agv_ros/agv_ros.sh install'
 # ============================================================================
 set -e
 cd "$(dirname "$0")/../.."

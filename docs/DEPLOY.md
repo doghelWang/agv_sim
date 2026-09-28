@@ -108,8 +108,8 @@ bash deploy.sh down
 ### 4.1 无 Docker、不能联网、重启即还原的板卡 (RK3588 车载控制器，chroot 单机全套)
 
 与手机单机模式相同：资源平台 :8082 + 节点代理 :8070 (process 运行时) + 实例 (仿真 / Web 网关 / 执行 ROS 2+Nav2) 全在板卡上。
-实测板卡 (192.168.1.64)：busybox + dropbear，根文件系统在内存里 (重启恢复出厂)，只有 `/mnt` (ext4) 持久；
-没有 Docker / gcc / bash，有 `chroot`、`xz`。板上跑着原有业务进程，部署不碰它们，全部放在 `/mnt/agv_ros`，删掉该目录即卸载。
+实测板卡 (192.168.1.64)：busybox + dropbear，根文件系统在内存里 (重启恢复出厂)，`/mnt` (ext4) 持久，但厂商 initrun.sh 在部分条件下会把 `/mnt` 换挂到别的分区，所以放在 `/mnt/misc`；
+没有 Docker / gcc / bash，有 `chroot`、`xz`。板上跑着原有业务进程，部署不碰它们，全部放在 `/mnt/misc/agv_ros`，删掉该目录即卸载。
 运行环境是 `deploy/rk3588_offline/Dockerfile` 构建的 agv-rk 镜像 (agv-nav + MuJoCo 等仿真依赖 + 完整代码 + 编译好的 libsimcore)，
 docker export 成目录树后在板卡上 chroot 运行。
 
@@ -117,18 +117,18 @@ docker export 成目录树后在板卡上 chroot 运行。
 # 1) 能联网的 arm64 机器 (Apple 芯片 Mac + Docker Desktop)：→ dist/rk3588/agv-rk-rootfs.tar.xz (428 MB，解包后 2.6 GB)
 bash deploy/rk3588_offline/pack.sh dist/rk3588
 # 2) 拷到板卡 (dropbear 没有 sftp-server，scp 不可用，用管道) 并安装 (解包约 1 分钟；再次安装会保留平台数据/SLAM 地图)
-cat dist/rk3588/agv_ros.sh | ssh root@<板卡> 'mkdir -p /mnt/agv_ros && cat > /mnt/agv_ros/agv_ros.sh'
-cat dist/rk3588/agv-rk-rootfs.tar.xz | ssh root@<板卡> 'cat > /mnt/agv_ros/agv-rk-rootfs.tar.xz'
-ssh root@<板卡> 'cp /root/.ssh/authorized_keys /mnt/agv_ros/ && sh /mnt/agv_ros/agv_ros.sh install'
+cat dist/rk3588/agv_ros.sh | ssh root@<板卡> 'mkdir -p /mnt/misc/agv_ros && cat > /mnt/misc/agv_ros/agv_ros.sh'
+cat dist/rk3588/agv-rk-rootfs.tar.xz | ssh root@<板卡> 'cat > /mnt/misc/agv_ros/agv-rk-rootfs.tar.xz'
+ssh root@<板卡> 'cp /root/.ssh/authorized_keys /mnt/misc/agv_ros/ && sh /mnt/misc/agv_ros/agv_ros.sh install'
 # 3) 每次重启后在板卡本地执行一次：恢复 SSH 公钥 (含 chmod 755 /root，dropbear 拒绝组/其他可写的家目录) + 挂载 +
 #    启动平台/代理 + 自动拉起实例 (已有实例就重启最近的那个，默认规划器 nav2，AGV_PLANNER=dijkstra 可改)
-sh /mnt/agv_ros/agv_ros.sh boot          # 其余: start | stop | status | shell | install
+sh /mnt/misc/agv_ros/agv_ros.sh boot          # 其余: start | stop | status | shell | install
 ```
 
-浏览器打开 `http://<板卡>:8082` (资源平台)，工作台 `http://<板卡>:8082/inst/i01/`。日志在 `/mnt/agv_ros/logs/` (平台/代理/自启)
-与 `/mnt/agv_ros/rootfs/root/.agv-agent/logs/` (实例)。平台与代理监听局域网，实例进程只监听 127.0.0.1，ROS 2 只走 127.0.0.1。
+浏览器打开 `http://<板卡>:8082` (资源平台)，工作台 `http://<板卡>:8082/inst/i01/`。日志在 `/mnt/misc/agv_ros/logs/` (平台/代理/自启)
+与 `/mnt/misc/agv_ros/rootfs/root/.agv-agent/logs/` (实例)。平台与代理监听局域网，实例进程只监听 127.0.0.1，ROS 2 只走 127.0.0.1。
 快速回归在板卡上直接跑 (实例端口与树莓派 i12 相同)：
-`chroot /mnt/agv_ros/rootfs /usr/bin/env -i PATH=/usr/bin:/bin bash -c 'cd /opt/agv && INST=i01 NAV_LOG="cat /root/.agv-agent/logs/agv-nav-i01.log" bash tools/quick_nav_check.sh'`
+`chroot /mnt/misc/agv_ros/rootfs /usr/bin/env -i PATH=/usr/bin:/bin bash -c 'cd /opt/agv && INST=i01 NAV_LOG="cat /root/.agv-agent/logs/agv-nav-i01.log" bash tools/quick_nav_check.sh'`
 
 验证 (2026-09-28，RK3588 单机，Nav2)：实例部署到运行约 15 s，仿真 RTF 1.00，执行进程收到状态 50 Hz，整机 CPU 空闲约 75%；
 quick_nav_check 两次均 3/3 到达、无 NAV2_RETRY：横向偏差最大 37.7 / 33.5 mm，终点误差最大 26.3 / 21.9 mm (贴墙工位 S10，其余 8~16 mm)，

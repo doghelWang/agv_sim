@@ -3,19 +3,20 @@
 # RK3588 离线单机全套 (对应手机单机模式): 资源平台 :8082 + 节点代理 :8070 + 实例 (仿真 / Web 网关 / 执行 ROS 2+Nav2)
 # 全部跑在 chroot (Ubuntu 22.04，agv-rk 镜像 docker export 而来) 里。
 #
-# 板卡情况 (192.168.1.64): 根文件系统在内存里 (rootfs)，重启后恢复出厂；只有 /mnt (ext4) 持久。
+# 板卡情况 (192.168.1.64): 根文件系统在内存里 (rootfs)，重启后恢复出厂；/mnt (ext4) 持久，但厂商 initrun.sh
+# 在部分硬件/条件下会把 /mnt 换挂到别的分区 (U 盘 / 另一块 eMMC)，所以放在 /mnt/misc/agv_ros (厂商约定的持久目录)。
 # 没有 Docker / gcc / bash，只有 busybox + chroot。板上原有的业务进程 (carServer / cmodel_daemon / S99app …)
-# 一概不碰；删掉 /mnt/agv_ros 即完全卸载。
+# 一概不碰；删掉 /mnt/misc/agv_ros 即完全卸载。本脚本按自身所在目录定位，整个目录可以整体搬走。
 #
-#   sh /mnt/agv_ros/agv_ros.sh boot       # 重启后执行: 恢复 SSH 公钥 + 挂载 + 启动平台/代理并自动拉起实例
-#   sh /mnt/agv_ros/agv_ros.sh install    # 解包 agv-rk-rootfs.tar.xz (保留平台数据 /root/.agv-hub)
-#   sh /mnt/agv_ros/agv_ros.sh key|mount|start|stop|status|shell
+#   sh /mnt/misc/agv_ros/agv_ros.sh boot       # 重启后执行: 恢复 SSH 公钥 + 挂载 + 启动平台/代理并自动拉起实例
+#   sh /mnt/misc/agv_ros/agv_ros.sh install    # 解包 agv-rk-rootfs.tar.xz (保留平台数据 /root/.agv-hub)
+#   sh /mnt/misc/agv_ros/agv_ros.sh key|mount|umount|start|stop|status|shell
 #
 # 平台 :8082 与节点代理 :8070 监听局域网 (与手机单机模式相同)；实例进程由平台设为只监听 127.0.0.1，经平台 /inst/<id>/ 访问；
 # ROS 2 只走 127.0.0.1 (ROS_LOCALHOST_ONLY=1)。环境变量: AGV_HUB_PORT (8082)、AGENT_NAME (rk3588)、AGV_PLANNER (nav2)
 # 打包见同目录 pack.sh (在能联网的 arm64 机器上执行)
 # ============================================================================
-BASE=/mnt/agv_ros
+BASE=$(cd "$(dirname "$0")" && pwd)
 R=$BASE/rootfs
 LOG=$BASE/logs
 HUB_PORT=${AGV_HUB_PORT:-8082}
@@ -71,6 +72,8 @@ start() {
         tok=$(cat $R/root/.agv-hub/cluster_token 2>/dev/null)
         bg agent "HUB_API=http://127.0.0.1:$HUB_PORT JOIN_TOKEN='$tok' AGENT_RUNTIME=process AGENT_NAME=$NODE AGENT_PORT=8070 \
             AGV_DEVICE_MODEL='RK3588' exec python3 -m agent.server"
+        # 自动拉起要等代理可达 (否则实例部署报"节点不可达"就放弃了)
+        i=0; until up http://127.0.0.1:8070/api/v1/health; do i=$((i + 1)); [ $i -gt 60 ] && { echo "节点代理没有起来，见 $LOG/agent.log"; return 1; }; sleep 1; done
         echo "节点代理 :8070 已启动"
     fi
     # 自动拉起实例: 已在运行就不动 / 重启最近的实例 (保留 SLAM 地图) / 没有就新部署 (仿真 + 执行都在本机)
@@ -118,9 +121,10 @@ case "$1" in
     key) key ;;
     install) install ;;
     mount) do_mount ;;
+    umount) umount_all ;;
     start) start ;;
     stop) stop ;;
     status) status ;;
     shell) do_mount && chroot $R /bin/bash -l ;;
-    *) sed -n 2,18p "$0" ;;
+    *) sed -n 2,19p "$0" ;;
 esac
