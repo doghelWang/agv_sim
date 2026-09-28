@@ -220,3 +220,13 @@ Python 的 Action 客户端改为按需创建 —— bt_navigator 每 10 ms 发�
   孤儿会造成同名节点并存，lifecycle_manager 配置失败 ("No transition matching 1 found for current state active")。
 - 扫掠检查的约定：起始已在外扩区内的点以前整个忽略 (Python `_rotation_blocked` 同样如此)，贴墙 1 cm 时向墙转也不算受阻；
   C++ 版改为"进入车体本身即受阻，外扩区只看新进入的点"，平移只在行驶方向外扩。Python 版留待阶段 B 移到 C++ 时一并替换。
+
+### 7.6 阶段 B/C 之后回归 (2026-09-28，RK3588 i03，执行进程不加载 rclpy + 3D/相机由 C++ 发布 + SLAM/仿真内核 C 化)
+
+| 规划 | 终点误差 (mm) S5 / S10 / P0 | 终点朝向误差 | 横向偏差 max | 碰撞 | 事件 |
+|---|---|---|---|---|---|
+| nav2 (插件路线) | 3.2 / 7.6 / 4.4 | ≤ 0.14° | 43.1 mm (圆弧过弯) | 0 | 无恢复 (NAV2_SUCCEEDED ×3) |
+| dijkstra (C++ 自研导引) | 4.9 / 8.0 / 2.7 | ≤ 0.12° | 26.3 mm | 0 | APPROACH_END / NAV_DOCKING ×3，无重新进站 |
+
+- 孤儿桥接：执行进程被强杀 (SIGKILL / 崩溃) 时 SIGTERM 清理不会执行，C++ 桥接 (独立进程组) 留在原 ROS_DOMAIN 继续发布 TF/激光。
+  桥接启动时设 `PR_SET_PDEATHSIG`，父进程一退出即收到 SIGTERM (rclcpp 正常关闭)。i03 重启后只剩新桥接一个。
