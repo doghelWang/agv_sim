@@ -1,5 +1,18 @@
 # 交接: 导航遗留问题排查 (接 HANDOFF_C_REFACTOR 之后)
 
+## ★ 环境更新 (2026-09-28，优先于下文第 0 节)
+- **没有树莓派了**。第 0、2 节里所有树莓派 (rpi117 / i12 / Docker) 相关内容暂不适用；`quick_nav_check.sh`、`ab_bench_i12.sh` 是为树莓派写的，要在新设备上用需改地址/实例名。
+- **手机**: Pixel 4，IP **10.70.136.239**，Termux SSH 端口 **8022** (用户 `u0_a226`)。
+  - 之前登录用的私钥在另一台 Mac mini 上；在新机器上先把自己的公钥加到手机 Termux 的 `~/.ssh/authorized_keys` (需要用户在手机上操作)。
+  - 单手机模式：本机平台 :8082，实例 i04 (仿真 8100 / 网关 8101 / 执行 8102，只监听 127.0.0.1)。
+  - 手机上已是 d1a5299 代码，C 内核与 C++ 桥接已编译。更新用 `bash ~/update_from_git.sh` (手机有代理可访问 GitHub)。
+  - 测量脚本：`bash ~/agvbench/phone_bench.sh <标签>` (dijkstra 3 目标 + Nav2 3 目标 + 贴墙 3 点 + CPU 采样)。
+- **新增 RK3588**: 192.168.1.64，**不能联网**，SSH 需用户开通；系统 / Docker / 磁盘情况未知。
+  - 所有依赖都要从能联网的机器带过去：仿真侧是 pip 包 (numpy<2、mujoco>=3.3、pillow、psutil、protobuf 的 aarch64 wheel) 与 gcc；执行侧需要 ROS 2 Humble + Nav2 + slam_toolbox + robot_localization。
+  - 若 RK3588 有 Docker：在能联网的 arm64 机器 (如 Apple 芯片 Mac 装 Docker) 上用 `deploy.sh build sim|nav` 构建镜像，`docker save` 后拷过去 `docker load`；nav 镜像约 2.4 GB。
+  - 建议的验证组合：RK3588 跑执行 (Nav2/slam) + 手机跑仿真 (对应旧文档里推荐的组合 C)，前提是两台设备互通，且手机退出单手机模式。
+- 第 3 节第 1 项 (P0 出发即中止) 可以直接在手机上复现排查。
+
 ## 0. 代码与环境
 - 仓库 https://github.com/doghelWang/agv_sim ，main = `4ab9ebd`。本机克隆在 `~/agv_sim` (与 GitHub 同步)。
 - 先读: `docs/NAVIGATION.md` (两种规划器、Nav2 中断根因、恢复流程)、`docs/PERFORMANCE.md` 第 5~6 节 (C/C++ 化结果)。
