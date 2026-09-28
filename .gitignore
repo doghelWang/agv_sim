@@ -21,3 +21,4 @@ sim_core/native/libsimcore.dylib
 ros2/build/
 ros2/install/
 ros2/log/
+dist/

@@ -105,6 +105,34 @@ bash deploy.sh down
 不能联网构建的机器：在同架构机器上 `bash deploy.sh save` 导出，拷过去 `bash deploy.sh load`。
 本机装有 ROS 2 Humble (Ubuntu 22.04 裸机) 时也可以不用 Docker：`bash start_sim.sh` 直接起三进程。
 
+### 4.1 无 Docker、不能联网、重启即还原的板卡 (RK3588 车载控制器，chroot)
+
+实测板卡 (192.168.1.64)：busybox + dropbear，根文件系统在内存里 (重启恢复出厂)，只有 `/mnt` (ext4) 持久；
+没有 Docker / gcc / bash，有 `chroot`、`xz`。板上跑着原有业务进程，部署不碰它们，全部放在 `/mnt/agv_ros`，删掉该目录即卸载。
+
+```bash
+# 1) 能联网的 arm64 机器 (Apple 芯片 Mac + Docker Desktop，约 10 分钟)：构建 agv-nav 并 docker export → 406 MB 的 tar.xz
+bash deploy/rk3588_offline/pack.sh dist/rk3588
+# 2) 拷到板卡 (dropbear 没有 sftp-server，scp 不可用，用管道) 并解包 (约 50 s，解包后 2.4 GB)
+ssh root@<板卡> 'mkdir -p /mnt/agv_ros'
+cat dist/rk3588/agv_ros.sh | ssh root@<板卡> 'cat > /mnt/agv_ros/agv_ros.sh'
+cat dist/rk3588/agv-nav-rootfs.tar.xz | ssh root@<板卡> 'cat > /mnt/agv_ros/agv-nav-rootfs.tar.xz'
+ssh root@<板卡> 'cd /mnt/agv_ros && mkdir -p rootfs && xz -dc agv-nav-rootfs.tar.xz | tar -x -C rootfs'
+ssh root@<板卡> 'cp /root/.ssh/authorized_keys /mnt/agv_ros/'   # 公钥备份，重启后由 boot 恢复
+# 3) 每次重启后在板卡本地执行一次：恢复 SSH 公钥 (含 chmod 755 /root，dropbear 拒绝组/其他可写的家目录) + 挂载 + 启动执行进程
+sh /mnt/agv_ros/agv_ros.sh boot          # 其余: start | stop | status | shell
+```
+
+执行进程与 DDS 只监听/只走 127.0.0.1 (`AGV_BIND=127.0.0.1`、`ROS_LOCALHOST_ONLY=1`)，不向车载网络发包。
+仿真放在另一台机器 (如 Mac: `docker run -p 127.0.0.1:8090:8090 -p 127.0.0.1:8088:8088 -e SIM_CMD_UDP=0 -e NAV_API=http://host.docker.internal:8091 agv-sim:latest`)，
+两边用 SSH 隧道接通，不对局域网开端口 (UDP 速度指令过不了 SSH 隧道，所以 `SIM_CMD_UDP=0`，执行进程改用 REST 下发)：
+`ssh -N -R 127.0.0.1:8090:127.0.0.1:8090 -L 127.0.0.1:8091:127.0.0.1:8091 root@<板卡>`。
+
+验证 (2026-09-28，RK3588 执行 + M1 Mac 仿真)：Nav2 启动到激活约 1 分钟，执行进程收到状态 49.6 Hz、链路 0 错误，板卡整机 CPU 空闲约 70%；
+`GW=http://127.0.0.1:8088 NAV=http://127.0.0.1:8091 NAV_LOG="ssh root@<板卡> cat /mnt/agv_ros/logs/nav.log" bash tools/quick_nav_check.sh`
+两次均 3/3 到达，终点误差 42~74 mm (贴墙工位) / 18 mm (P0)，定位误差最大 54~85 mm，与树莓派上贴墙工位的已知问题 (NAVIGATION.md 待查项) 同一现象；
+controller_server 30 Hz 控制频率告警约 175 次 / 4 分钟。
+
 ## 5. 端口
 
 | 端口 | 进程 | 说明 |
