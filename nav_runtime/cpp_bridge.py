@@ -13,6 +13,7 @@ C++ ROS 2 发布端 (ros2/agv_ros_bridge) 的 Python 客户端  —— NAV_ROS_B
     NAV    路线导航回馈 (JSON)：结果 / 反馈 (5 Hz) / 停车点剩余行程 / 插件事件 / 规划曲线 / 安全层事件 (sevent)
 
   核心模式 (NAV_CPP_CORE=1，默认)：C++ 直接连仿真推送流并发布 ROS，Nav2 /cmd_vel 经 C++ 安全层下发；
+    自研导引 (NAV_CPP_GUIDE=1，默认) 也在 C++ 里执行 (GUIDE 下发路线/拐点/参数，回收状态与结束)；
     Python → C++  CONFIG (保护空间/外形/光电，JSON)、MODE (是否转发 Nav2 指令、TF 发布标志、限速等，JSON)
     C++ → Python  RELAY (推送流帧原样: 状态/元信息/IO/融合扫描，内置 SLAM 需要时含各激光原始帧)、SAFETY (安全层快照)
 
@@ -34,7 +35,8 @@ from common import spawn
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAGIC = b"AGV1"
-T_STATE, T_SCAN, T_ROUTE, T_CANCEL, T_CONFIG, T_MODE, T_TF, T_STATS, T_NAV = 1, 2, 3, 4, 5, 6, 10, 11, 12
+T_STATE, T_SCAN, T_ROUTE, T_CANCEL, T_CONFIG, T_MODE, T_GUIDE, T_GUIDE_CANCEL = 1, 2, 3, 4, 5, 6, 7, 8
+T_TF, T_STATS, T_NAV = 10, 11, 12
 T_RELAY, T_SAFETY = 20, 30
 F_OWN_ODOM, F_MAP_ODOM, F_IMU, F_HAS_T = 1, 2, 4, 8
 _STATE = struct.Struct("<4sBd6d3d3d4dBH")
@@ -87,6 +89,7 @@ class CppBridge:
         self.on_relay: Optional[Callable] = None         # cb(帧类型, bytes) 核心模式: 仿真推送流帧
         self.on_safety: Optional[Callable] = None        # cb(dict) 核心模式: 安全层快照
         self.on_sevent: Optional[Callable] = None        # cb(dict) 核心模式: 安全层事件
+        self.on_guide: Optional[Callable] = None         # cb(dict) 核心模式: 自研导引状态 / 结束
         self.core = os.environ.get("NAV_CPP_CORE", "1") != "0"
         self._last_mode = None
         self.stats = {"state": 0, "scan": 0, "merged": 0, "tf": 0, "restarts": 0, "send_errors": 0}
@@ -194,6 +197,13 @@ class CppBridge:
         self._config = json.dumps(cfg, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         self._send(MAGIC + bytes([T_CONFIG]) + self._config)
 
+    def send_guide(self, msg: dict) -> None:
+        import json
+        self._send(MAGIC + bytes([T_GUIDE]) + json.dumps(msg, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+    def send_guide_cancel(self) -> None:
+        self._send(MAGIC + bytes([T_GUIDE_CANCEL]))
+
     def send_mode(self, mode: dict, force: bool = False) -> None:
         import json
         b = json.dumps(mode, separators=(",", ":")).encode("utf-8")
@@ -239,7 +249,9 @@ class CppBridge:
                     m = json.loads(b[5:].decode("utf-8"))
                 except Exception:
                     continue
-                cb = self.on_safety if b[4] == T_SAFETY else (self.on_sevent if m.get("k") == "sevent" else self.on_nav)
+                k = m.get("k")
+                cb = self.on_safety if b[4] == T_SAFETY else (self.on_sevent if k == "sevent" else
+                                                              (self.on_guide if k in ("guide", "guide_done") else self.on_nav))
                 if cb is not None:
                     try:
                         cb(m)

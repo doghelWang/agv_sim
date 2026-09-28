@@ -29,6 +29,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <deque>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -62,6 +65,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "guidance.hpp"
 #include "json_lite.hpp"
 #include "safety.hpp"
 #include "sim_stream.hpp"
@@ -69,7 +73,7 @@
 namespace {
 
 constexpr char MAGIC[4] = {'A', 'G', 'V', '1'};
-enum : uint8_t { T_STATE = 1, T_SCAN = 2, T_ROUTE = 3, T_CANCEL = 4, T_CONFIG = 5, T_MODE = 6,
+enum : uint8_t { T_STATE = 1, T_SCAN = 2, T_ROUTE = 3, T_CANCEL = 4, T_CONFIG = 5, T_MODE = 6, T_GUIDE = 7, T_GUIDE_CANCEL = 8,
                  T_TF = 10, T_STATS = 11, T_NAV = 12,
                  // 核心模式 C++ → Python: 仿真推送流帧原样转发 (类型号 = 20 + 推送流帧类型) 与安全层快照
                  T_RELAY = 20, T_SAFETY = 30 };
@@ -246,6 +250,7 @@ class AgvRosBridge : public rclcpp::Node {
 
   ~AgvRosBridge() override {
     stop_ = true;
+    if (guide_) guide_->cancel();
     if (stream_) stream_->stop();
     if (udp_fd_ >= 0) close(udp_fd_);
     if (rx_.joinable()) rx_.join();
@@ -291,6 +296,8 @@ class AgvRosBridge : public rclcpp::Node {
         else if (buf[4] == T_CANCEL) cancel_route();
         else if (buf[4] == T_CONFIG) on_config(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
         else if (buf[4] == T_MODE) on_mode(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
+        else if (buf[4] == T_GUIDE) on_guide(std::string(reinterpret_cast<const char *>(buf.data() + 5), n - 5));
+        else if (buf[4] == T_GUIDE_CANCEL) { if (guide_) guide_->cancel(); }
       } catch (const std::exception &e) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "消息处理失败: %s", e.what());
       }
@@ -528,7 +535,7 @@ class AgvRosBridge : public rclcpp::Node {
     for (double &v : mo) v = r.get<double>();
     for (double &v : im5) v = r.get<double>();
     r.get<uint32_t>();
-    r.get<uint8_t>();
+    const uint8_t sflags = r.get<uint8_t>();
     r.get<double>();
     r.get<double>();
     r.get<uint32_t>();
@@ -546,6 +553,17 @@ class AgvRosBridge : public rclcpp::Node {
       if (mode_own_odom_) flags |= F_OWN_ODOM;
       if (mode_map_odom_) { flags |= F_MAP_ODOM; std::copy(mode_m2o_, mode_m2o_ + 3, m2o); }
       v_meas_ = od6[3];
+      w_meas_ = od6[5];
+      paused_ = sflags & 4;
+      odom_now_ = {od6[0], od6[1], od6[2]};
+      odom_hist_.push_back({t, od6[0], od6[1], od6[2]});
+      while (odom_hist_.size() > 400) odom_hist_.pop_front();     // 8 s @ 50 Hz
+      steer_.clear();
+      for (size_t i = 0; i < nj && i < joint_names_.size(); ++i) {
+        std::string lo = joint_names_[i];
+        for (auto &ch : lo) ch = static_cast<char>(std::tolower(ch));
+        if (lo.find("steer") != std::string::npos) steer_.push_back(jp[i]);
+      }
     }
     if (names.size() != nj) {
       names.resize(nj);
@@ -609,8 +627,20 @@ class AgvRosBridge : public rclcpp::Node {
       }
       relay(4, b, n);                      // 界面/执行进程用 (10 Hz)
       send_safety(false);
-    } else if (want_raw_lidar_) {
-      relay(4, b, n);                      // 内置 SLAM 需要原始激光帧时才转发
+    } else {
+      if (want_raw_lidar_) relay(4, b, n);   // 内置 SLAM 需要原始激光帧时才转发
+      std::lock_guard<std::mutex> lk(smu_);
+      if (!refine_lidar_.empty() && name == refine_lidar_) {        // 精定位用主激光原始帧 (机体系)
+        const double sg = std::cos(refine_mount_[3]) >= 0 ? 1.0 : -1.0;     // 倒装 (roll = π) 扫描方向相反
+        refine_pts_.clear();
+        for (size_t i = 0; i < cnt; ++i) {
+          const double r = rs[i];
+          if (!std::isfinite(r) || r < rmin + 1e-3 || r >= rmax - 1e-3) continue;
+          const double a = refine_mount_[2] + sg * (a0 + inc * static_cast<double>(i));
+          refine_pts_.push_back({refine_mount_[0] + r * std::cos(a), refine_mount_[1] + r * std::sin(a)});
+        }
+        refine_t_ = wall_now();
+      }
     }
   }
 
@@ -655,6 +685,9 @@ class AgvRosBridge : public rclcpp::Node {
     std::lock_guard<std::mutex> lk(smu_);
     cfg_ = std::move(c);
     have_cfg_ = true;
+    const auto &rl = v["refine_lidar"];
+    refine_lidar_ = rl["name"].str();
+    refine_mount_[0] = rl["x"].num(); refine_mount_[1] = rl["y"].num(); refine_mount_[2] = rl["yaw"].num(); refine_mount_[3] = rl["roll"].num();
   }
 
   void on_mode(const std::string &j) {
@@ -674,20 +707,30 @@ class AgvRosBridge : public rclcpp::Node {
 
   // Nav2 /cmd_vel (velocity_smoother 输出) → 安全层 → 仿真
   void on_cmd_vel(double vx, double vy, double wz) {
+    {
+      std::lock_guard<std::mutex> lk(smu_);
+      if (!nav2_fwd_ || !have_cfg_) return;
+    }
+    const double sd_age = wall_now() - stop_wall_;
+    filter_and_send(vx, vy, wz, false, sd_age < 0.5, stop_dist_, true, "nav2");   // 停车点剩余行程: RouteController 20 Hz 以上刷新
+  }
+
+  // 安全层 (navigator.safety_filter) → 仿真指令；loc_check: 定位停更检查 (只对 Nav2)
+  void filter_and_send(double vx, double vy, double wz, bool in_arc, bool has_left, double left, bool loc_check, const char *source) {
     agvsafe::Result r;
     std::string ev_type, ev_level, ev_title, ev_msg, ev_cat = "sensors";
     {
       std::lock_guard<std::mutex> lk(smu_);
-      if (!nav2_fwd_ || !have_cfg_) return;
+      if (!have_cfg_) { send_cmd(vx, vy, wz, source); return; }
       agvsafe::Env e;
       e.estop = estop_;
       const double now_w = wall_now();
-      e.loc_check = loc_ext_ && last_tf_wall_ > 0.0;
+      e.loc_check = loc_check && loc_ext_ && last_tf_wall_ > 0.0;
       e.loc_age = now_w - last_tf_wall_;
       e.speed_cap = speed_cap_;
-      const double sd_age = now_w - stop_wall_;
-      e.has_left = sd_age < 0.5;                        // RouteController 的停车点剩余行程 (20 Hz 以上刷新)
-      e.approach_left = stop_dist_;
+      e.has_left = has_left;
+      e.approach_left = left;
+      e.in_arc = in_arc;
       e.v_meas = v_meas_;
       e.bands = bands_;
       e.pts = &pts_;
@@ -713,7 +756,7 @@ class AgvRosBridge : public rclcpp::Node {
       layer_now_ = r.layer;
     }
     if (!ev_type.empty()) send_event(ev_cat, ev_type, ev_level, ev_title, ev_msg);
-    send_cmd(r.vx, r.vy, r.wz, "nav2");
+    send_cmd(r.vx, r.vy, r.wz, source);
   }
 
   // 防护区状态机 (navigator._zone): 预警 3 s 内只报一次；进入 slow/stop 报事件；恢复到 clear 报解除
@@ -808,6 +851,171 @@ class AgvRosBridge : public rclcpp::Node {
     out.push_back(T_SAFETY);
     out.insert(out.end(), j.begin(), j.end());
     send(out);
+  }
+
+  // ================================================================ 自研导引 (guidance.hpp)
+  // 仿真里程计在仿真时刻 t 的位姿 (线性插值；比最新帧新时按速度外推 ≤ 0.1 s)
+  bool odom_at(double t, double *o) const {
+    if (odom_hist_.empty()) return false;
+    const auto &h = odom_hist_;
+    if (t <= h.front()[0]) { o[0] = h.front()[1]; o[1] = h.front()[2]; o[2] = h.front()[3]; return true; }
+    if (t >= h.back()[0]) {
+      const double dt = std::min(t - h.back()[0], 0.1), th = h.back()[3];
+      o[0] = h.back()[1] + (v_meas_ * std::cos(th)) * dt;
+      o[1] = h.back()[2] + (v_meas_ * std::sin(th)) * dt;
+      o[2] = th + w_meas_ * dt;
+      return true;
+    }
+    size_t lo = 0, hi = h.size() - 1;
+    while (hi - lo > 1) { size_t mid = (lo + hi) / 2; if (h[mid][0] < t) lo = mid; else hi = mid; }
+    const double u = h[hi][0] <= h[lo][0] ? 0.0 : (t - h[lo][0]) / (h[hi][0] - h[lo][0]);
+    o[0] = h[lo][1] + u * (h[hi][1] - h[lo][1]);
+    o[1] = h[lo][2] + u * (h[hi][2] - h[lo][2]);
+    o[2] = h[lo][3] + u * std::atan2(std::sin(h[hi][3] - h[lo][3]), std::cos(h[hi][3] - h[lo][3]));
+    return true;
+  }
+  static void compose(const double *a, const double *b, double *o) {
+    const double c = std::cos(a[2]), s = std::sin(a[2]);
+    o[0] = a[0] + c * b[0] - s * b[1];
+    o[1] = a[1] + s * b[0] + c * b[1];
+    o[2] = std::atan2(std::sin(a[2] + b[2]), std::cos(a[2] + b[2]));
+  }
+  // 导引用 map 位姿: 精定位修正 > slam_toolbox TF 修正 > 执行进程下发的 map→odom (内置 SLAM / 真值)
+  guide::Pose guide_pose() {
+    std::lock_guard<std::mutex> lk(smu_);
+    const double *M = have_corr_ ? corr_ : (loc_ext_ && have_m_tf_ ? m_tf_ : mode_m2o_);
+    double o[3];
+    compose(M, odom_now_.data(), o);
+    return {o[0], o[1], o[2]};
+  }
+
+  void on_guide(const std::string &j) {
+    jl::Value v;
+    if (!jl::parse(j, v)) return;
+    guide::Mission m;
+    m.mid = static_cast<long>(v["mid"].num());
+    for (const auto &w : v["wps"].a) m.wps.emplace_back(w[0].num(), w[1].num());
+    for (const auto &l : v["labels"].a) m.labels.push_back(l.str());
+    m.labels.resize(m.wps.size());
+    for (const auto &c : v["corners"].a) {
+      guide::Corner C;
+      if (!c.is_null()) {
+        C.kind = static_cast<int>(c["kind"].num());
+        C.rot = c["rot"].num(); C.R = c["R"].num(); C.d = c["d"].num(); C.turn = c["turn"].num(); C.heading = c["heading"].num();
+        C.v = c["v"].num(0.35); C.cx = c["cx"].num(); C.cy = c["cy"].num(); C.clr = c["clr"].num(9.0);
+      }
+      m.corners.push_back(C);
+    }
+    m.corners.resize(m.wps.size());
+    m.target_yaw = v["yaw"].num();
+    m.replan_left = static_cast<int>(v["replan_left"].num(2));
+    m.planner = v["planner"].str();
+    m.chassis = v["chassis"].str();
+    m.corner_mode = v["corner_mode"].str().empty() ? "auto" : v["corner_mode"].str();
+    m.max_v = v["max_v"].num(1.2); m.max_w = v["max_w"].num(1.6); m.max_decel = v["max_decel"].num(0.5);
+    m.max_ang_decel = v["max_ang_decel"].num(1.0); m.track_L = v["track_L"].num(0.6);
+    m.head = v["head"].num(0.6); m.tail = v["tail"].num(0.6); m.hw = v["hw"].num(0.4);
+    m.corner_radius = v["corner_radius"].num(0.9); m.body_margin = v["body_margin"].num(0.05);
+    m.rotate_margin = v["rotate_margin"].num(0.02); m.arrive_tol = v["arrive_tol"].num(0.25);
+    for (const auto &x : v["segs"].a) m.segs.push_back(x.num());
+    for (size_t i = 0; i + 3 < v["refine_segs"].a.size(); i += 4) {
+      const auto &a = v["refine_segs"].a;
+      m.refine_segs.push_back({a[i].num(), a[i + 1].num(), a[i + 2].num(), a[i + 3].num()});
+    }
+    m.refine = v["refine"].truthy(true);
+    m.refine_dist = v["refine_dist"].num(0.8);
+    guide_mid_ = m.mid;
+    {
+      std::lock_guard<std::mutex> lk(smu_);
+      have_corr_ = false;                     // 新任务: 精定位修正从头开始
+    }
+    if (!guide_) guide_ = std::make_unique<guide::Guidance>(make_guide_io());
+    guide_->start(std::move(m));
+  }
+
+  guide::Io make_guide_io() {
+    guide::Io io;
+    io.pose = [this] { return guide_pose(); };
+    io.v_meas = [this] { std::lock_guard<std::mutex> lk(smu_); return v_meas_; };
+    io.w_meas = [this] { std::lock_guard<std::mutex> lk(smu_); return w_meas_; };
+    io.steer = [this] { std::lock_guard<std::mutex> lk(smu_); return steer_; };
+    io.hold = [this] { std::lock_guard<std::mutex> lk(smu_); return paused_ || estop_; };
+    io.allowed = [this](int sign, bool has_left, double left, double *d_hit) {
+      std::lock_guard<std::mutex> lk(smu_);
+      if (!cfg_.enabled || cfg_.fields.empty()) return 99.0;
+      agvsafe::Env e;
+      e.bands = bands_;
+      double need;
+      return agvsafe::allowed_speed(cfg_, e, sign, sign > 0 && has_left, left, d_hit, &need);
+    };
+    io.photo_block = [this](bool front, bool has_left, double left) {
+      std::lock_guard<std::mutex> lk(smu_);
+      agvsafe::Env e;
+      e.has_left = has_left;
+      e.approach_left = left;
+      for (const auto &p : cfg_.photos) {
+        if (std::find(photo_on_.begin(), photo_on_.end(), p.di) == photo_on_.end()) continue;
+        auto it = photo_dist_.find(p.name);
+        e.photo_hits.emplace_back(&p, it == photo_dist_.end() ? -1.0 : it->second);
+      }
+      agvsafe::Result r;
+      if (!cfg_.fields.empty()) agvsafe::photo_sides(cfg_, e, agvsafe::field_for_speed(cfg_, v_meas_), false, r);
+      return front ? !r.photo_front.empty() : !r.photo_rear.empty();
+    };
+    io.rotation_blocked = [this](double dir) {
+      std::lock_guard<std::mutex> lk(smu_);
+      return cfg_.enabled && agvsafe::rotation_blocked(cfg_, pts_, dir);
+    };
+    io.scan_pts = [this] {
+      std::lock_guard<std::mutex> lk(smu_);
+      std::vector<agv::Pt> out;
+      out.reserve(pts_.size());
+      for (const auto &p : pts_) out.push_back({p.x, p.y});
+      return out;
+    };
+    io.refine_scan = [this](std::vector<agv::Pt> &out, double t_stop) {
+      for (int i = 0; i < 40; ++i) {                  // 最多等 2 s
+        {
+          std::lock_guard<std::mutex> lk(smu_);
+          if (refine_t_ > t_stop + 0.1 && !refine_pts_.empty()) { out = refine_pts_; return true; }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      return false;
+    };
+    io.cmd = [this](double vx, double vy, double wz, bool in_arc, bool has_left, double left) {
+      filter_and_send(vx, vy, wz, in_arc, has_left, left, false, "nav:guide");
+    };
+    io.set_correction = [this](const guide::Pose &p) {       // corr = 精定位位姿 ∘ inv(当前里程计)
+      std::lock_guard<std::mutex> lk(smu_);
+      const double th = p.th - odom_now_[2], c = std::cos(th), s2 = std::sin(th);
+      corr_[0] = p.x - (c * odom_now_[0] - s2 * odom_now_[1]);
+      corr_[1] = p.y - (s2 * odom_now_[0] + c * odom_now_[1]);
+      corr_[2] = th;
+      have_corr_ = true;
+    };
+    io.event = [this](const std::string &type, const std::string &level, const std::string &title, const std::string &msg) {
+      send_event("navigation", type, level, title, msg);
+    };
+    io.status = [this](const std::string &st, int idx, double rem) {
+      const double t = wall_now();
+      if (st == guide_st_ && idx == guide_idx_ && t - guide_st_t_ < 0.2) return;
+      guide_st_ = st;
+      guide_idx_ = idx;
+      guide_st_t_ = t;
+      char b[160];
+      std::snprintf(b, sizeof(b), "{\"k\":\"guide\",\"mid\":%ld,\"st\":\"%s\",\"idx\":%d,\"rem\":%.3f}", guide_mid_, st.c_str(), idx, rem);
+      send_nav(b);
+    };
+    io.done = [this](bool, const std::string &result) {
+      const auto p = guide_pose();
+      char b[200];
+      std::snprintf(b, sizeof(b), "{\"k\":\"guide_done\",\"mid\":%ld,\"result\":\"%s\",\"x\":%.4f,\"y\":%.4f,\"yaw\":%.5f}",
+                    guide_mid_, result.c_str(), p.x, p.y, p.th);
+      send_nav(b);
+      guide_st_.clear();
+    };
+    return io;
   }
 
   static double wall_now() {
@@ -926,6 +1134,15 @@ class AgvRosBridge : public rclcpp::Node {
       last_tf_ = stamp;
       std::lock_guard<std::mutex> lk(smu_);
       last_tf_wall_ = wall_now();
+      // 定位修正 M = TF(map→base) ∘ inv(该时刻的仿真里程计) (与 nav_runtime/slam.py set_external 同一算法)
+      double od[3];
+      if (odom_at(stamp - off, od)) {
+        const double th = mb[2] - od[2], c = std::cos(th), s2 = std::sin(th);
+        m_tf_[0] = mb[0] - (c * od[0] - s2 * od[1]);
+        m_tf_[1] = mb[1] - (s2 * od[0] + c * od[1]);
+        m_tf_[2] = th;
+        have_m_tf_ = true;
+      }
     }
     std::vector<uint8_t> b(MAGIC, MAGIC + 4);
     b.push_back(T_TF);
@@ -1000,6 +1217,23 @@ class AgvRosBridge : public rclcpp::Node {
   sockaddr_in udp_addr_{};
   uint32_t cmd_seq_ = 0;
   std::atomic<uint32_t> n_stream_state_{0}, n_cmd_{0}, n_cmd_err_{0};
+  // ---- 自研导引
+  std::unique_ptr<guide::Guidance> guide_;
+  long guide_mid_ = 0;
+  std::string guide_st_;
+  int guide_idx_ = 0;
+  double guide_st_t_ = 0;
+  double w_meas_ = 0.0;
+  bool paused_ = false;
+  std::array<double, 3> odom_now_{{0, 0, 0}};
+  std::deque<std::array<double, 4>> odom_hist_;
+  std::vector<double> steer_;
+  double m_tf_[3] = {0, 0, 0}, corr_[3] = {0, 0, 0};
+  bool have_m_tf_ = false, have_corr_ = false;
+  std::string refine_lidar_;
+  double refine_mount_[4] = {0, 0, 0, 0};
+  std::vector<agv::Pt> refine_pts_;
+  double refine_t_ = 0.0;
   std::mutex tmu_;
   bool has_off_ = false, own_odom_ = false, has_odom_stamp_ = false;
   double off_ = 0.0, odom_stamp_ = 0.0, last_tf_ = 0.0;

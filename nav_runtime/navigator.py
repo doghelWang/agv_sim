@@ -287,7 +287,14 @@ class Navigator:
         h, t, l, r = self.outline()
         photos = [{"name": p["name"], "di": p["di"], "x": float(p["mount"]["x"]), "y": float(p["mount"]["y"]),
                    "yaw": float(p["mount"]["yaw"])} for p in (self.link.sensors or {}).get("photoelectric", [])]
-        return {"prot": self.prot, "outline": [h, t, l, r], "photos": photos,
+        l2d = [x for x in (self.link.sensors or {}).get("lidars", []) if x.get("type", "2d") == "2d"]
+        rl = {}
+        if l2d:          # 精定位用视场最宽、束数最多的 2D 激光原始帧
+            L = max(l2d, key=lambda x: (float(x.get("fov_deg", 0)), int(x.get("beams", 0))))
+            mt = L.get("mount") or {}
+            rl = {"name": L["name"], "x": float(mt.get("x", 0)), "y": float(mt.get("y", 0)), "yaw": float(mt.get("yaw", 0)),
+                  "roll": float(mt.get("roll", 0))}
+        return {"prot": self.prot, "outline": [h, t, l, r], "photos": photos, "refine_lidar": rl,
                 "max_decel": float(self.cfg.get("chassis", {}).get("max_decel_mps2", 0.5) or 0.5),
                 "loc_stale_s": float(os.environ.get("LOC_STALE_S", "1.0"))}
 
@@ -305,6 +312,7 @@ class Navigator:
             return
         if self._core_sent != (cpp, self._core_cfg_ver) or cpp.on_safety is None:
             cpp.on_safety = self._on_core_safety
+            cpp.on_guide = self._on_core_guide
             cpp.on_sevent = lambda e: self.event_hub.emit(e.get("cat", "sensors"), e.get("type", "SAFETY"), e.get("level", "info"),
                                                           e.get("title", ""), e.get("msg", ""), {"source": "cpp"})
             try:
@@ -323,6 +331,80 @@ class Navigator:
                 self.push_core(force_mode=n % 10 == 0)      # 每 2 s 强制重发一次 MODE (C++ 重启后恢复)
             except Exception:
                 pass
+
+    def _guide_cpp(self):
+        """自研导引在 C++ 核心里执行 (NAV_CPP_GUIDE=0 用本进程的 _autonomous_guidance_loop)"""
+        return self._core() if os.environ.get("NAV_CPP_GUIDE", "1") != "0" else None
+
+    def _start_guide_cpp(self, cpp, mission_id, waypoints, target_yaw, replan_left, corners, labels):
+        ch = self.cfg.get("chassis", {})
+        h, t, l, r = self.outline()
+        cs = []
+        for i in range(len(waypoints)):
+            c = corners[i] if corners and i < len(corners) else None
+            if not c:
+                cs.append(None)
+                continue
+            d, clr = c
+            if "rotate" in d:
+                cs.append({"kind": 2, "rot": float(d["rotate"]), "clr": float(clr)})
+            else:
+                cs.append({"kind": 1, "R": d["R"], "d": d["d"], "turn": d["turn"], "heading": d["heading"], "v": d.get("v", 0.35),
+                           "cx": d["cx"], "cy": d["cy"], "clr": float(clr)})
+        static = [list(map(float, w[:4])) for w in self.dijkstra_planner._static_segments()]
+        with self.lock:
+            planner, chassis = self.active_planner, self.active_chassis_type
+        msg = {"mid": mission_id, "wps": [[float(p[0]), float(p[1])] for p in waypoints],
+               "labels": [x or "" for x in (labels or [])], "corners": cs, "yaw": float(target_yaw), "replan_left": replan_left,
+               "planner": planner, "chassis": chassis, "corner_mode": self.prot.get("corner_mode", "auto"),
+               "max_v": min(1.2, ch.get("max_speed_mps", 1.5)), "max_w": min(1.6, ch.get("max_ang_speed_radps", 2.0)),
+               "max_decel": self.max_decel, "max_ang_decel": float(ch.get("max_ang_decel_radps2", 1.0) or 1.0),
+               "track_L": self.track_L, "head": h, "tail": t, "hw": max(l, r), "corner_radius": self.corner_radius(),
+               "body_margin": self.prot["body_margin"], "rotate_margin": self.prot["rotate_margin"],
+               "arrive_tol": self.prot["docking"]["arrive_tolerance"],
+               "segs": [float(v) for sg in self._obstacle_segments_all() for v in sg[:4]],
+               "refine_segs": [v for sg in static for v in sg],
+               "refine": os.environ.get("NAV2_REFINE_LOC", "1") != "0", "refine_dist": 0.8}
+        self._guide_targets = getattr(self, "_guide_targets", {})
+        self._guide_targets[mission_id] = (waypoints[-1][0], waypoints[-1][1], target_yaw, replan_left)
+        self.push_core(force_mode=True)
+        cpp.send_guide(msg)
+
+    def _on_core_guide(self, m: dict):
+        """C++ 自研导引: 状态 (NAVIGATING/OBSTACLE_WAIT、当前路段) 与结束 (ARRIVED/FAILED/REPLAN/ABORT)"""
+        mid = m.get("mid")
+        if m.get("k") == "guide":
+            with self.lock:
+                if self.current_mission_id == mid and self.telemetry["nav_status"] in ("NAVIGATING", "PLANNING", "OBSTACLE_WAIT"):
+                    self.telemetry["nav_status"] = m.get("st", "NAVIGATING")
+                    self.telemetry["path_index"] = int(m.get("idx", 1))
+            return
+        res = m.get("result")
+        tgt = getattr(self, "_guide_targets", {}).pop(mid, None)
+        with self.lock:
+            if self.current_mission_id != mid:
+                return
+        if res == "REPLAN" and tgt:
+            threading.Thread(target=self.send_nav_goal, args=(tgt[0], tgt[1], tgt[2]), kwargs={"_replan_left": tgt[3] - 1},
+                             daemon=True).start()
+            return
+        if res == "ARRIVED":
+            with self.lock:
+                self.telemetry["nav_status"] = "ARRIVED"
+                self.telemetry["plan_path"] = []
+                self.telemetry["nav_dist_rem"] = 0.0
+                fx, fy, fyaw = self.telemetry["x"], self.telemetry["y"], self.telemetry["yaw"]
+            self.recorder.end_session("ARRIVED")
+            ty = tgt[2] if tgt else fyaw
+            dock = round(ty / (math.pi / 2.0)) * (math.pi / 2.0)
+            dev = abs(round(math.degrees(math.atan2(math.sin(dock - fyaw), math.cos(dock - fyaw))), 2))
+            self.event_hub.emit("navigation", "MISSION_ARRIVED", "success", f"任务 #{mid} 停靠到位完成",
+                                f"已就位停靠，位置: ({fx:.2f}, {fy:.2f}) | 航向对齐偏差: {dev}° (C++ 导引)",
+                                {"mission_id": mid, "x": round(fx, 3), "y": round(fy, 3), "yaw": round(fyaw, 3), "dev_deg": dev})
+        elif res == "FAILED":
+            with self.lock:
+                self.telemetry["nav_status"] = "FAILED"
+            self.recorder.end_session("FAILED")
 
     def _on_core_safety(self, m: dict):
         """C++ 安全层快照 (10~20 Hz): 各档走廊最近障碍；Nav2 执行中防护区状态以 C++ 为准"""
@@ -576,6 +658,9 @@ class Navigator:
                 self.event_hub.emit("safety", "ESTOP", "danger", "急停触发", "执行进程暂停当前任务，等待急停复位", st)
                 if busy:
                     self.nav2.cancel() if self.active_planner == "nav2" else None
+                    cpp = self._guide_cpp()
+                    if cpp is not None:
+                        cpp.send_guide_cancel()             # C++ 自研导引随任务挂起一并停止 (复位后按原目标重新下发)
                     with self.lock:
                         self._estop_resume = self.telemetry.get("target_goal")
                         self.current_mission_id += 1          # 结束当前导引线程
@@ -593,6 +678,9 @@ class Navigator:
                     self.telemetry["nav_status"] = "BUMPER_STOP"
                     self.telemetry["plan_path"] = []
                 self.nav2.cancel()
+                cpp = self._guide_cpp()
+                if cpp is not None:
+                    cpp.send_guide_cancel()
                 self._mission_end("BUMPER_STOP")
                 self.recorder.end_session("BUMPER_STOP")
                 for _ in range(3):
@@ -1053,6 +1141,9 @@ class Navigator:
             self.telemetry["nav_status"] = "PLANNING"
         self._new_mission(mission_id, x, y, target_dock_yaw, planner)
 
+        cpp = self._guide_cpp()
+        if cpp is not None:
+            cpp.send_guide_cancel()                     # 新任务: 停掉 C++ 里仍在执行的自研导引
         # Path Planning Selection
         if planner == "nav2":
             return self._send_nav2_goal(mission_id, cur_x, cur_y, x, y, target_dock_yaw, matched_station, stations)
@@ -1136,6 +1227,12 @@ class Navigator:
             f"目标工位: ({x:.2f}, {y:.2f}) | 目标航向: {round(math.degrees(target_dock_yaw), 1)}° | 规划算法: {planner.upper()} | 规划航点: {len(raw_path)} 个",
             {"mission_id": mission_id, "target_x": x, "target_y": y, "target_yaw": target_dock_yaw, "waypoints_count": len(raw_path)}
         )
+        cpp = self._guide_cpp()
+        if cpp is not None:
+            with self.lock:
+                self.telemetry["nav_status"] = "NAVIGATING"
+            self._start_guide_cpp(cpp, mission_id, raw_path, target_dock_yaw, _replan_left, corners, labels)
+            return
         threading.Thread(target=self._autonomous_guidance_loop, args=(mission_id, raw_path, target_dock_yaw, _replan_left), daemon=True).start()
 
     def _autonomous_guidance_loop(self, mission_id: int, waypoints: list, target_yaw: float, replan_left: int = 2):
@@ -1817,6 +1914,9 @@ class Navigator:
 
     def cancel_nav(self):
         self.nav2.cancel()
+        cpp = self._guide_cpp()
+        if cpp is not None:
+            cpp.send_guide_cancel()
         self._agv_mission = None
         self.approach_left = None
         with self.lock:
