@@ -55,7 +55,12 @@ COPY docker/nav_entrypoint.sh /usr/local/bin/agv-nav-entrypoint
 COPY ros2/ ros2/
 # 规划算法 C 库 (planning/native，ctypes 加载；编译失败时自动用 Python 实现)
 RUN bash planning/native/build.sh gcc || echo "[警告] libagvnav 编译失败，规划使用 Python 实现"
-RUN cd ros2 && (bash -c ". /opt/ros/humble/setup.bash && colcon build --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release" \
+# 编译并行度按构建时可用内存定 (单个 C++ 编译单元峰值约 1.5~2 GB；默认按 CPU 数并行在 4 GB 的 Docker VM 里会 OOM，
+# 编译失败后只剩一行警告、执行进程悄悄退回 Python 发布)。BUILD_JOBS 可覆盖
+ARG BUILD_JOBS=
+RUN cd ros2 && J=${BUILD_JOBS:-$(awk -v n=$(nproc) '/MemAvailable/{j=int($2/1800000); if(j<1)j=1; if(j>n)j=n; print j}' /proc/meminfo)} \
+    && echo "[构建] ros2 编译并行度 $J" \
+    && (bash -c ". /opt/ros/humble/setup.bash && MAKEFLAGS=-j$J colcon build --parallel-workers 1 --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release" \
         || echo "[警告] agv_ros_bridge 编译失败，执行进程将使用 Python 发布") && rm -rf build log
 RUN mkdir -p maps /data/slam_maps
 

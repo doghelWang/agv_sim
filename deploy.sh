@@ -22,6 +22,7 @@
 # 环境变量: SIM_API_PORT(8090) NAV_API_PORT(8091) WEB_PORT(8088) ROS_DOMAIN_ID(0)
 #          BUILD_PROXY(构建用 HTTP 代理，缺省不用) APT_MIRROR(清华，设为空=官方源) PIP_INDEX(清华，设为空=官方源)
 #          BASE_REGISTRY(基础镜像镜像站，如 docker.m.daocloud.io；Docker Hub 拉取失败/限流时用)
+#          BUILD_JOBS(nav 镜像 C++ 编译并行度，缺省按构建时可用内存 ≈1.8 GB/路)
 #          SIM_PHYSICS SIM_CAMERA_RENDER SIM_CAMERA_MAX_HZ CMODEL_FILE NAV_USE_ROS NAV2_AUTOSTART
 # ============================================================================
 set -e
@@ -53,6 +54,7 @@ build_args() {
         BA="$BA --build-arg APT_MIRROR=$APT_MIRROR"
     fi
     BA="$BA --build-arg PIP_INDEX=${PIP_INDEX-https://pypi.tuna.tsinghua.edu.cn/simple}"
+    [ -n "$BUILD_JOBS" ] && BA="$BA --build-arg BUILD_JOBS=$BUILD_JOBS"
     # Docker Hub 拉不动 (国内/限流 429) 时用镜像站: BASE_REGISTRY=docker.m.daocloud.io 或 mirror.gcr.io
     if [ -n "$BASE_REGISTRY" ]; then
         say "基础镜像从 $BASE_REGISTRY 拉取"
