@@ -302,6 +302,7 @@ class Navigator:
                              for c in sen.get("camera_streams", [])]}
         return {"prot": self.prot, "outline": [h, t, l, r], "photos": photos, "refine_lidar": rl, "media": media,
                 "max_decel": float(self.cfg.get("chassis", {}).get("max_decel_mps2", 0.5) or 0.5),
+                "max_ang_decel": float(self.cfg.get("chassis", {}).get("max_ang_decel_radps2", 1.0) or 1.0),
                 "loc_stale_s": float(os.environ.get("LOC_STALE_S", "1.0"))}
 
     def _core_mode(self) -> dict:
@@ -475,8 +476,11 @@ class Navigator:
         now = (px < h + m) & (px > -t - m) & (py < l + m) & (py > -r - m)
         if now.all():
             return False
-        # 车体转 +φ ⇔ 点在车体系下转 -φ
-        return bool(np.any(arc_hits_box(px[~now], py[~now], -direction * self.prot["rotate_lookahead_rad"], box)))
+        # 预看转角含当前角速度的制动转角 (protection.rotate_lookahead)；车体转 +φ ⇔ 点在车体系下转 -φ
+        look = protection.rotate_lookahead(self.prot, self.telemetry.get("wz", 0.0),
+                                           float(self.cfg.get("chassis", {}).get("max_ang_decel_radps2", 1.0) or 1.0),
+                                           getattr(self, "_rot_left", -1.0))
+        return bool(np.any(arc_hits_box(px[~now], py[~now], -direction * look, box)))
 
     def refresh_obstacles(self):
         self.link.refresh_world()
@@ -819,7 +823,11 @@ class Navigator:
                 settle = 0
             w = min(max_w, math.sqrt(2.0 * alpha * max(0.0, abs(e_pred))), 1.5 * abs(e_pred))
             w = math.copysign(max(0.01 if abs(e) >= 0.005 else 0.0, w), e_pred if abs(e_pred) > 1e-4 else e)
-            self.publish_cmd_vel(0.0, 0.0, w)
+            self._rot_left = abs(e)                         # 安全层转向预看不越过目标角太多 (protection.rotate_lookahead)
+            try:
+                self.publish_cmd_vel(0.0, 0.0, w)
+            finally:
+                self._rot_left = -1.0
             if self.obs.get("layer") == "rotate":
                 block_since = block_since or time.time()
                 with self.lock:
@@ -1391,7 +1399,14 @@ class Navigator:
                         return
                     # 受阻 2 s 仍不解除 (多为静止的墙/设备，常见于定位偏差几厘米、地图算得刚好够转的位置):
                     # 先往远离障碍的方向让一点再转，最多 3 次；让不开时按原逻辑等待 8 s 后终止 (与 guidance.hpp 一致)
-                    res = self._rotate_to(mission_id, seg_heading, rot_dir, max_w, 2.0)
+                    # 起转前先用激光查整个转角的扫掠区 (与 guidance.hpp / Nav2 插件一致)：_rotation_dir 只看地图，
+                    # 地图里没有的障碍等转起来再靠安全层急停，高角速度下制动转角不够会碰上
+                    with self.lock:
+                        qyaw0 = self.telemetry["yaw"]
+                    turn0 = math.atan2(math.sin(seg_heading - qyaw0), math.cos(seg_heading - qyaw0))
+                    if rot_dir and abs(turn0) > 0.5 and turn0 * rot_dir < 0:
+                        turn0 += rot_dir * 2 * math.pi
+                    res = "blocked" if self._sweep_block_side(turn0) else self._rotate_to(mission_id, seg_heading, rot_dir, max_w, 2.0)
                     for _ in range(3):
                         if res != "blocked":
                             break

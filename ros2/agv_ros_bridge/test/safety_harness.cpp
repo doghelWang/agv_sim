@@ -19,6 +19,8 @@ int main() {
     c.slow_ratio = P["slow_ratio"].num(2.0);
     c.rotate_margin = P["rotate_margin"].num(0.02);
     c.rotate_lookahead = P["rotate_lookahead_rad"].num(0.25);
+    c.reaction_s = P["reaction_s"].num(0.3);
+    c.ang_decel = v["ang_decel"].num(1.0);
     c.docking_front = P["docking"]["front"].num(0.02);
     c.photo_mode = P["photo"]["mode"].str();
     c.photo_front = P["photo"]["front"].num(); c.photo_rear = P["photo"]["rear"].num(); c.photo_side = P["photo"]["side"].num();
@@ -35,6 +37,8 @@ int main() {
     e.approach_left = v["left"].num(0.0);
     e.in_arc = v["in_arc"].truthy();
     e.v_meas = v["v_meas"].num();
+    e.w_meas = v["w_meas"].num(0.0);
+    e.rot_left = v["rot_left"].num(-1.0);
     e.bands = agvsafe::compute_bands(c, pts);
     e.pts = &pts;
     for (const auto &h : v["hits"].a)

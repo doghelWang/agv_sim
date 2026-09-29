@@ -40,10 +40,11 @@ class FakeNav:
         self.speed_cap = case["speed_cap"] or None
         self.approach_left = case["left"]
         self.in_arc = case["in_arc"]
-        self.cfg = {"chassis": {"max_decel_mps2": case["max_decel"] * 1.0}}
+        self.cfg = {"chassis": {"max_decel_mps2": case["max_decel"] * 1.0, "max_ang_decel_radps2": case.get("ang_decel", 1.0)}}
         self.obs = {"zone": "clear", "layer": None}
         self.lock = __import__("threading").Lock()
-        self.telemetry = {"vx": case["v_meas"]}
+        self.telemetry = {"vx": case["v_meas"], "wz": case.get("w_meas", 0.0)}
+        self._rot_left = case.get("rot_left", -1.0)
         di = {p["di"]: (p["name"] in [h[0] for h in case["hits"]]) for p in case["photos"]}
         di["di_estop"] = case["estop"]
         self.link = types.SimpleNamespace(
@@ -90,7 +91,8 @@ def rand_case(rng):
     return {"prot": P, "outline": [h, t, l, r], "max_decel": 0.6, "photos": photos, "hits": hits, "pts": pts,
             "estop": rng.random() < 0.05, "speed_cap": rng.choice([0.0, 0.0, 0.3, 0.6]),
             "left": rng.choice([None, None, round(rng.uniform(0.0, 1.5), 3)]), "in_arc": rng.random() < 0.1,
-            "v_meas": rng.uniform(-0.5, 1.2), "cmd": cmd}, body
+            "v_meas": rng.uniform(-0.5, 1.2), "w_meas": rng.choice([0.0, rng.uniform(-1.6, 1.6)]),
+            "ang_decel": rng.choice([1.0, 1.7453, 0.5]), "rot_left": rng.choice([-1.0, -1.0, rng.uniform(0.0, 3.0)]), "cmd": cmd}, body
 
 
 def run_python(case, body):

@@ -10,7 +10,8 @@
     fields[]           行驶防护区，按速度分档 (v_max 升序，取第一个 v_max ≥ |v| 的档)
                          front/rear: 车头/车尾外的停车距离；side: 两侧外扩
     slow_ratio         减速区 = 停车区 × slow_ratio；进入减速区限速 slow_speed
-    rotate_margin      原地转向防护：车体外扩该值后，前方 rotate_lookahead_rad 弧度的扫掠区内有点即停止转向
+    rotate_margin      原地转向防护：车体外扩该值后，前方 rotate_lookahead_rad 弧度 (再加当前角速度的制动转角，见 rotate_lookahead)
+                       的扫掠区内有点即停止转向
     docking            末段进站: front=车头剩余行程外允许的最小余量；arrive_tolerance=前方受限时视为到位的距离
     reaction_s         制动校核用的系统反应时间 (传感器+控制+制动建立)
 """
@@ -149,6 +150,18 @@ def field_for_speed(P: dict, v: float) -> Tuple[int, dict]:
         if v <= f["v_max"] + 1e-6:
             return i, f
     return len(P["fields"]) - 1, P["fields"][-1]
+
+
+def rotate_lookahead(P: dict, w: float, ang_decel: float, rot_left: float = -1.0) -> float:
+    """原地转向防护的预看转角 = 基础 rotate_lookahead_rad + 当前角速度的制动转角 (反应时间 + ω²/2α)，不超过 π。
+    固定 0.25 rad 在 1.6 rad/s 时远小于制动转角 (约 0.7 rad)：不在地图里的障碍 (人/车/临时物) 进入扫掠区时来不及停。
+    rot_left ≥ 0 (导引知道剩余转角) 时不超过 剩余转角 + rotate_lookahead_rad：与前向防护区按剩余行程缩短同理，
+    否则接近目标角时预看会越过目标，被目标方向之外贴近的墙误停 (与 safety.hpp 一致)"""
+    w = abs(w)
+    look = P["rotate_lookahead_rad"] + w * P["reaction_s"] + w * w / (2.0 * max(ang_decel, 0.1))
+    if rot_left >= 0.0:
+        look = min(look, rot_left + P["rotate_lookahead_rad"])
+    return min(math.pi, look)
 
 
 def braking_distance(v: float, decel: float, reaction_s: float) -> float:

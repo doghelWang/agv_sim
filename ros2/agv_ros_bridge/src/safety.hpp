@@ -29,6 +29,7 @@ struct Config {
   double photo_front = 0.3, photo_rear = 0.3, photo_side = 0.1, mute_near_stop = 0.1;
   double h = 0.6, t = 0.6, l = 0.4, r = 0.4;       // 当前外形 (带载时 = 车体 ∪ 负载)
   double max_decel = 0.5;
+  double ang_decel = 1.0, reaction_s = 0.3;       // 原地转向防护: 按当前角速度加上制动转角
   double loc_stale_s = 1.0;
   std::vector<Photo> photos;
 };
@@ -45,6 +46,8 @@ struct Env {
   double approach_left = 0.0;
   bool in_arc = false;
   double v_meas = 0.0;             // 当前速度 (选档)
+  double w_meas = 0.0;             // 当前角速度 (原地转向防护的制动转角)
+  double rot_left = -1.0;          // 导引的剩余转角 (≥0 生效): 转向预看不超过 剩余 + rotate_lookahead
   std::vector<std::pair<double, double>> bands;   // 各档走廊内最近障碍 (前, 后)，<0 = 无
   const std::vector<Pt> *pts = nullptr;           // 融合扫描点 (机体系)
   // 触发的光电: 名称 → 检测距离 (<0 = 未知，保守响应)
@@ -98,10 +101,21 @@ inline double allowed_speed(const Config &c, const Env &e, int sign, bool use_le
   return allowed < 0 ? 0.0 : allowed;
 }
 
-// 原地转向扫掠 (外形外扩 rotate_margin，向 dir 转 rotate_lookahead)：圆弧与矩形精确求交 (agv_nav2_plugins/sweep.hpp)
+// 预看转角 = rotate_lookahead + 当前角速度的制动转角 (反应时间 + ω²/2α)，不超过 π (planning/protection.rotate_lookahead)
+// 固定 0.25 rad 在 1.6 rad/s 时远小于制动转角 (约 0.7 rad)：不在地图里的障碍进入扫掠区时来不及停
+// rot_left ≥ 0 (导引知道剩余转角) 时不超过 剩余 + rotate_lookahead：与前向防护区按剩余行程缩短同理，
+// 否则接近目标角时预看越过目标，被目标方向之外贴近的墙误停
+inline double rotate_look(const Config &c, double w, double rot_left = -1.0) {
+  w = std::fabs(w);
+  double look = c.rotate_lookahead + w * c.reaction_s + w * w / (2.0 * std::max(c.ang_decel, 0.1));
+  if (rot_left >= 0.0) look = std::min(look, rot_left + c.rotate_lookahead);
+  return std::min(M_PI, look);
+}
+
+// 原地转向扫掠 (外形外扩 rotate_margin，向 dir 转 look 弧度)：圆弧与矩形精确求交 (agv_nav2_plugins/sweep.hpp)
 // 原来只看 1/3、2/3、全程 3 个角度，车角半径 1.4 m 时每步约 12 cm，贴边的点会在采样之间漏过
-inline bool rotation_blocked(const Config &c, const std::vector<Pt> &pts, double dir) {
-  const double m = c.rotate_margin, phi = -dir * c.rotate_lookahead;   // 车体转 +φ ⇔ 点在车体系下转 -φ
+inline bool rotation_blocked(const Config &c, const std::vector<Pt> &pts, double dir, double look) {
+  const double m = c.rotate_margin, phi = -dir * look;   // 车体转 +φ ⇔ 点在车体系下转 -φ
   const agv::sweep::Box body{-c.t, c.h, -c.r, c.l}, grown{-c.t - m, c.h + m, -c.r - m, c.l + m};
   for (const auto &p : pts) {
     if (body.in(p.x, p.y)) continue;                      // 起始已在车体内: 噪声
@@ -179,7 +193,7 @@ inline Result filter(const Config &c, const Env &e, double vx, double vy, double
     r.d_hit = d_hit;
     r.need = need;
   } else if (c.enabled && std::fabs(r.vx) < 0.05 && std::fabs(r.wz) > 0.05) {
-    if (e.pts && rotation_blocked(c, *e.pts, r.wz > 0 ? 1.0 : -1.0)) { r.wz = 0.0; r.zone = "stop"; r.layer = "rotate"; }
+    if (e.pts && rotation_blocked(c, *e.pts, r.wz > 0 ? 1.0 : -1.0, rotate_look(c, e.w_meas, e.rot_left))) { r.wz = 0.0; r.zone = "stop"; r.layer = "rotate"; }
   } else {
     r.zone = "";                                   // 不涉及防护区的指令: 保持原状态
   }

@@ -254,3 +254,66 @@ Python 的 Action 客户端改为按需创建 —— bt_navigator 每 10 ms 发�
 - 改前 2/3。
 - 改后 3/3：终点误差 7.4 / 6.2 / 4.1 mm，≤ 0.14°，无碰撞；N_N3 处 `TURN_RETREAT` 后退 0.04 m 后转过。
 - Nav2 模式同一实例 3/3 (≤ 3.7 mm)，不经过这段代码。
+
+## 9. MacBook Docker 验证 (2026-09-29，main 6748699 + 本节修复)
+
+### 9.1 环境
+
+- MacBook Air (M1，8 核，8 GB)，macOS 15.6；**Docker Desktop 4.39** (未用 colima)。VM 设为 8 CPU / 6 GiB (8 GB 主机给不了 12 GiB)，打开 host 网络。
+  - Docker Desktop 的 host 网络需要登录 Docker 账号才对 Mac 生效；未登录时平台/实例只在 VM 内可达，本次验证在 VM 内用 `--network host` 的辅助容器跑脚本。
+- 构建：`build all` 168 s + `build platform` 2 s (apt/pip 层有缓存)；之后单改 nav 镜像约 115~145 s。agv_nav2_plugins / agv_ros_bridge 均 Finished，无"编译失败"。
+  - 修复：nav 镜像的 colcon 编译并行度原来按 CPU 数 (8)，单个 C++ 编译单元峰值约 1.5~2 GB，4 GiB 的 Docker VM 会 OOM，编译失败后只剩一行警告、执行进程悄悄退回 Python 发布。
+    改为按构建时可用内存定 (约 1.8 GB/路，`BUILD_JOBS` 可覆盖)：4 GiB VM 下 1 路，6 GiB 下 2 路。
+- 实例：平台 :8080，grid_9_square + 测试车模型，仿真/执行都在本机；端口 8100/8101/8102，部署到 running 约 12~18 s。
+  - 运行方式：`/api/v1/nav` link transport = cpp、state_hz 50、C++ 核心 (执行进程不加载 rclpy)；仿真 native = "ok (mujoco C API: ok)"，MuJoCo 3.14.0，RTF 1.0。
+
+### 9.2 结果 (quick_nav_check，3 个代表点)
+
+| 规划 / 桥接 | 到达 | 终点误差 max | 航向 max | 横向偏差 max | 定位误差 max | 碰撞 | 恢复 / 事件 |
+|---|---|---|---|---|---|---|---|
+| nav2 / C++ (修复前，两轮) | 3/3、3/3 | 6.6、4.3 mm | 0.08°、0.11° | 40.3、60.0 mm | 59.4、38.0 mm | 0 | 无 (NAV2_SUCCEEDED ×3) |
+| dijkstra / C++ (修复前) | 3/3 | 7.9 mm | 0.12° | 42.6 mm | 55.9 mm | 0 | 无 TURN_RETREAT (本轮 N_N3 转向未持续受阻) |
+| dijkstra / py (修复前) | 3/3 | **25.6 mm** | 7.68° (1 次，后 6 次复测 ≤ 1.0°) | 92.7 mm | 51.0 mm | 0 | 无 |
+| nav2 / C++ (修复后) | 3/3 | 3.8 mm | 0.08° | 39.6 mm | 68.8 mm | 0 | 无 |
+| dijkstra / C++ (修复后) | 3/3 | 7.2 mm | 0.14° | 56.9 mm | 52.8 mm | 0 | TURN_RETREAT ×1 (N_N3)、APPROACH_RETRY ×1 |
+| dijkstra / py (修复后) | 3/3 | **25.5 mm** | 0.89° | 88.4 mm | 875 mm (单个采样) | 0 | 无 |
+
+- C++ 桥接两种规划器合格；参考 Mac mini (nav2 ≤ 3.7 mm，dijkstra ≤ 7.4 mm) 一致。
+- **py 桥接 (Python 执行进程 + Python 导引) 终点误差超 20 mm，根因是定位偏置，不是控制**：到位后静止 3 s 对比 (6 次)，
+  S5 (-7.5, 7.5) 处执行进程自认误差 2~5 mm，而定位与真值差 33~36 mm；S10/P0 航向 0.5~1.1° 同样来自定位。
+  C++ 导引到位前用激光对墙体做精定位 (LOC_REFINE) 修掉这部分，Python 导引没有这一步 (精定位只有 C++ 实现)。
+  行驶中定位并不滞后：把真值夹在两次读取之间估计，定位位姿滞后中位 7 ms (p90 55 ms)；早先看到的 100~190 mm "误差"是探针请求本身的延迟。
+- 定位误差 875 mm 是 py 桥接一次运行中的单个采样 (C++ 桥接各轮 ≤ 69 mm)，未进一步排查。
+
+### 9.3 发现的问题：导引原地转向会转进"地图里没有、激光看得见"的障碍
+
+复现：P0 朝东，车头左前 80° 方位 1.54 m 放一个旋转 45° 的 0.2 m 箱子 (真实角点伸进车角扫掠圆；执行进程地图按不旋转的外框算，净空 3.6 cm 够转)，
+下发 S1 (0, 5) 朝北 (起步左转 90°)。
+
+- 修复前：C++ 与 Python 导引都**触边** (前触边 press_count 1)，车转到 66° 左右才停住。
+- 时间线 (25 Hz 记录真值)：峰值角速度约 1.05 rad/s；安全层在转过约 22° 时判受阻 (OBS_STOP)，但之后约 0.4 s 才开始减速，再约 18° 才停下，越过了约 60° 的接触角。
+- 两个原因：
+  1. 导引起转前只用**地图**判断能否转 (`rotation_dir`)，激光扫掠只在转起来以后由安全层逐步预看；Nav2 插件 RouteController 起转前会用激光查整个转角，导引没有。
+  2. 安全层转向预看固定 0.25 rad (约 14°)。本车 1.6 rad/s、角减速度 1.745 rad/s² 时制动转角约 0.73 rad，再加反应时间，远大于 14°：转起来以后进入扫掠区的障碍 (人/车) 来不及停。
+
+改法 (C++ `guidance.hpp` / `safety.hpp` / `bridge_node.cpp` 与 Python `navigator.py` / `planning/protection.py` 同步)：
+
+1. 导引起转前用激光查**整个剩余转角**的扫掠区 (`sweep_block_side`，与安全层同一判定)，有点就不起转，直接进入第 8 节的"让位后重转"。
+2. 安全层转向预看改为随角速度：`rotate_lookahead_rad + |ω|·reaction_s + ω²/(2·max_ang_decel)` (与前向防护区的制动距离同一模型)，
+   且导引给出剩余转角时不超过 `剩余转角 + rotate_lookahead_rad` (与前向防护区按剩余行程缩短同理；否则接近目标角时预看越过目标，被目标方向之外贴近的墙误停，S10 对位时出现过)。
+
+修复后同一复现：C++ 与 Python 都 0 触边，TURN_RETREAT 后退 0.13~0.14 m 后转过；`tests/test_cpp_safety.py` 5000/5000 (新增随机角速度、剩余转角)。
+Python 导引的 `_retreat_for_turn` 在这个复现里实际执行了 (后退 0.14 m，扫掠区清空后重转)；3 个代表点的常规运行中 Python 版未触发 (转向受阻都在 0.5 s 内自行解除)。
+
+另：仿真支持旋转的障碍物 (`yaw`)，但执行进程地图 (`planning/maneuver.box_segments`) 按不旋转的外框处理，旋转放置的障碍物在地图里会偏小，本次未改。
+
+### 9.4 资源占用 (docker stats，导航中 30 s 平均，CPU 为单核百分比)
+
+| 场景 | agv-nav (Nav2 + slam_toolbox + 执行进程 + C++ 桥接) | agv-sim | 平台 hub + agent |
+|---|---|---|---|
+| nav2 / C++ | 83~111%，333~427 MiB | 19~21%，98~124 MiB | < 1%，约 50 MiB |
+| dijkstra / C++ | 81~90%，347~408 MiB | 17~21%，104~117 MiB | < 1% |
+| dijkstra / py | 139~142%，326~335 MiB | 9~11%，98~101 MiB | < 1% |
+
+对照 PERFORMANCE.md 6.5 (RK3588，导航中，单核百分比)：slam_toolbox 93% + Nav2 各服务器约 65% + 执行进程 6~16%，仿真约 25%；
+M1 上执行侧整体约 0.8~1.1 核、仿真约 0.2 核，内存合计约 0.5 GB。py 桥接执行侧多用约 0.5 核 (rclpy 回调与 Python 发布)。

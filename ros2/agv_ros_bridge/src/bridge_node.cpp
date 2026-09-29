@@ -691,6 +691,7 @@ class AgvRosBridge : public rclcpp::Node {
     c.slow_ratio = P["slow_ratio"].num(2.0);
     c.rotate_margin = P["rotate_margin"].num(0.02);
     c.rotate_lookahead = P["rotate_lookahead_rad"].num(0.25);
+    c.reaction_s = P["reaction_s"].num(0.3);
     c.docking_front = P["docking"]["front"].num(0.02);
     const auto &ph = P["photo"];
     if (!ph.is_null()) {
@@ -703,6 +704,7 @@ class AgvRosBridge : public rclcpp::Node {
     const auto &o = v["outline"];
     c.h = o[0].num(0.6); c.t = o[1].num(0.6); c.l = o[2].num(0.4); c.r = o[3].num(0.4);
     c.max_decel = v["max_decel"].num(0.5);
+    c.ang_decel = v["max_ang_decel"].num(1.0);
     c.loc_stale_s = v["loc_stale_s"].num(1.0);
     for (const auto &p : v["photos"].a) {
       agvsafe::Photo ph2;
@@ -752,7 +754,8 @@ class AgvRosBridge : public rclcpp::Node {
   }
 
   // 安全层 (navigator.safety_filter) → 仿真指令；loc_check: 定位停更检查 (只对 Nav2)
-  void filter_and_send(double vx, double vy, double wz, bool in_arc, bool has_left, double left, bool loc_check, const char *source) {
+  void filter_and_send(double vx, double vy, double wz, bool in_arc, bool has_left, double left, bool loc_check, const char *source,
+                       double rot_left = -1.0) {
     agvsafe::Result r;
     std::string ev_type, ev_level, ev_title, ev_msg, ev_cat = "sensors";
     {
@@ -768,6 +771,8 @@ class AgvRosBridge : public rclcpp::Node {
       e.approach_left = left;
       e.in_arc = in_arc;
       e.v_meas = v_meas_;
+      e.w_meas = w_meas_;
+      e.rot_left = rot_left;
       e.bands = bands_;
       e.pts = &pts_;
       for (const auto &p : cfg_.photos) {
@@ -1232,9 +1237,9 @@ class AgvRosBridge : public rclcpp::Node {
       if (!cfg_.fields.empty()) agvsafe::photo_sides(cfg_, e, agvsafe::field_for_speed(cfg_, v_meas_), false, r);
       return front ? !r.photo_front.empty() : !r.photo_rear.empty();
     };
-    io.rotation_blocked = [this](double dir) {
+    io.rotation_blocked = [this](double dir, double rot_left) {
       std::lock_guard<std::mutex> lk(smu_);
-      return cfg_.enabled && agvsafe::rotation_blocked(cfg_, pts_, dir);
+      return cfg_.enabled && agvsafe::rotation_blocked(cfg_, pts_, dir, agvsafe::rotate_look(cfg_, w_meas_, rot_left));
     };
     io.scan_pts = [this] {
       std::lock_guard<std::mutex> lk(smu_);
@@ -1253,8 +1258,8 @@ class AgvRosBridge : public rclcpp::Node {
       }
       return false;
     };
-    io.cmd = [this](double vx, double vy, double wz, bool in_arc, bool has_left, double left) {
-      filter_and_send(vx, vy, wz, in_arc, has_left, left, false, "nav:guide");
+    io.cmd = [this](double vx, double vy, double wz, bool in_arc, bool has_left, double left, double rot_left) {
+      filter_and_send(vx, vy, wz, in_arc, has_left, left, false, "nav:guide", rot_left);
     };
     io.set_correction = [this](const guide::Pose &p) {       // corr = 精定位位姿 ∘ inv(当前里程计)
       std::lock_guard<std::mutex> lk(smu_);

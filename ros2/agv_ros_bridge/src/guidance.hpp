@@ -66,10 +66,10 @@ struct Io {
   // 防护区: sign=+1 前进 / -1 倒车；has_left/left 末段剩余行程 → 允许速度 (0 = 停车)，d_hit 触发距离
   std::function<double(int, bool, double, double *)> allowed;
   std::function<bool(bool, bool, double)> photo_block;      // 光电 (前向?, 有剩余行程?, 剩余行程) 触发 (距停车点很近时屏蔽前向)
-  std::function<bool(double)> rotation_blocked;             // 原地转向扫掠 (方向 ±1) 是否受阻 (与安全层同一判定)
+  std::function<bool(double, double)> rotation_blocked;     // 原地转向扫掠 (方向 ±1，剩余转角) 是否受阻 (与安全层同一判定)
   std::function<std::vector<agv::Pt>()> scan_pts;           // 融合扫描点 (机体系)
   std::function<bool(std::vector<agv::Pt> &, double)> refine_scan;   // 停车后 (参数: 停车时刻) 取主激光原始帧点
-  std::function<void(double, double, double, bool, bool, double)> cmd;   // vx, vy, wz, in_arc, has_left, left → 经安全层下发
+  std::function<void(double, double, double, bool, bool, double, double)> cmd;   // vx, vy, wz, in_arc, has_left, left, rot_left → 经安全层下发
   std::function<void(const Pose &)> set_correction;         // 精定位结果 (map 位姿) → 定位修正
   std::function<void(const std::string &, const std::string &, const std::string &, const std::string &)> event;
   std::function<void(const std::string &, int, double)> status;   // 状态 (NAVIGATING/OBSTACLE_WAIT/...), 航点, 剩余
@@ -97,7 +97,7 @@ class Guidance {
   // ---------------------------------------------------------------- 基本动作
   static void sleep_s(double s) { std::this_thread::sleep_for(std::chrono::microseconds(static_cast<long>(s * 1e6))); }
   static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-  void cmd(double vx, double vy, double wz, bool in_arc = false) { io_.cmd(vx, vy, wz, in_arc, has_left_, left_); }
+  void cmd(double vx, double vy, double wz, bool in_arc = false) { io_.cmd(vx, vy, wz, in_arc, has_left_, left_, rot_left_); }
   bool dual() const { return m_.chassis == "dual_steer"; }
   double sweep_radius() const { return std::hypot(std::max(m_.head, m_.tail), m_.hw) + m_.rotate_margin; }
   static std::string f2(double v) { char b[32]; std::snprintf(b, sizeof(b), "%.2f", v); return b; }
@@ -182,8 +182,11 @@ class Guidance {
       } else settle = 0;
       double w = std::min({max_w, std::sqrt(2.0 * alpha * std::max(0.0, std::fabs(e_pred))), 1.5 * std::fabs(e_pred)});
       w = std::copysign(std::max(std::fabs(e) >= tol ? 0.01 : 0.0, w), std::fabs(e_pred) > 1e-4 ? e_pred : e);
+      rot_left_ = std::fabs(e);                      // 安全层转向预看不越过目标角太多 (safety.hpp rotate_look)
       cmd(0, 0, w);
-      if (std::fabs(w) > 0.05 && io_.rotation_blocked(w > 0 ? 1.0 : -1.0)) {
+      const bool blk = std::fabs(w) > 0.05 && io_.rotation_blocked(w > 0 ? 1.0 : -1.0, rot_left_);
+      rot_left_ = -1.0;
+      if (blk) {
         if (block_since < 0) block_since = now();
         io_.status("OBSTACLE_WAIT", idx_, rem_);
         if (now() - block_since > block_limit) return 2;
@@ -468,7 +471,12 @@ class Guidance {
         if (!align_steer(true, (rot_dir != 0 ? rot_dir : init_err) > 0 ? 1.0 : -1.0)) return "ABORT";
         // 受阻 2 s 仍不解除 (多为墙/设备等静止障碍，常见于定位偏差几厘米、地图算得刚好够转的位置):
         // 先往远离障碍的方向让一点再转，最多 3 次；让不开时按原逻辑等待 8 s 后终止
-        int res = rotate_to(seg_h, rot_dir, max_w, 0.005, 2.0);
+        // 起转前先用激光查整个转角的扫掠区 (与 Nav2 插件 RouteController 起转前的检查一致)：rotation_dir 只看地图，
+        // 地图里没有的障碍 (人/车/临时物/形状与地图不符) 如果等转起来再靠安全层急停，高角速度下制动转角不够会碰上
+        const Pose q0 = io_.pose();
+        double turn0 = wrap(seg_h - q0.th);
+        if (rot_dir != 0 && std::fabs(turn0) > 0.5 && turn0 * rot_dir < 0) turn0 += rot_dir * 2 * M_PI;
+        int res = sweep_block_side(turn0) != 0 ? 2 : rotate_to(seg_h, rot_dir, max_w, 0.005, 2.0);
         for (int k = 0; res == 2 && k < 3 && !stop_; ++k) {
           wait_until_stopped();
           const Pose q = io_.pose();
@@ -656,6 +664,7 @@ class Guidance {
   double rem_ = 0;
   bool has_left_ = false;
   double left_ = 0;
+  double rot_left_ = -1.0;   // 原地转向时的剩余转角 (安全层转向预看用)，其余时刻 -1
 
 };
 
