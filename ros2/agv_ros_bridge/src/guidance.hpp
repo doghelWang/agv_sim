@@ -166,7 +166,7 @@ class Guidance {
   }
 
   // 原地转向到 target (±0.3°)，ω = √(2·α·|e|) (navigator._rotate_to)。返回 0 done / 1 abort / 2 blocked
-  int rotate_to(double target, double rot_dir, double max_w, double tol = 0.005) {
+  int rotate_to(double target, double rot_dir, double max_w, double tol = 0.005, double block_limit = 8.0) {
     const double alpha = 0.6 * m_.max_ang_decel;
     double block_since = -1;
     int settle = 0;
@@ -186,11 +186,56 @@ class Guidance {
       if (std::fabs(w) > 0.05 && io_.rotation_blocked(w > 0 ? 1.0 : -1.0)) {
         if (block_since < 0) block_since = now();
         io_.status("OBSTACLE_WAIT", idx_, rem_);
-        if (now() - block_since > 8.0) return 2;
+        if (now() - block_since > block_limit) return 2;
       } else block_since = -1;
       sleep_s(0.03);
     }
     return 1;
+  }
+
+  // 剩余转角 turn (带符号) 的原地转向扫掠区 (外扩 rotate_margin，与安全层同一判定) 内的激光点在车前还是车后:
+  // +1 前方 / -1 后方 / 0 无阻挡。定位有几厘米误差时，地图上够转的位置实际可能差一点，据此决定往哪边让。
+  int sweep_block_side(double turn) const {
+    const auto pts = io_.scan_pts();
+    const double m = m_.rotate_margin, phi = -turn;      // 车体转 +φ ⇔ 点在车体系下转 -φ
+    const agv::sweep::Box body{-m_.tail, m_.head, -m_.hw, m_.hw}, grown{-m_.tail - m, m_.head + m, -m_.hw - m, m_.hw + m};
+    double sx = 0.0;
+    int n = 0;
+    for (const auto &q : pts) {
+      if (body.in(q.x, q.y)) continue;
+      if (agv::sweep::arcHitsBox(q.x, q.y, 0.0, 0.0, phi, body) ||
+          (!grown.in(q.x, q.y) && agv::sweep::arcHitsBox(q.x, q.y, 0.0, 0.0, phi, grown))) { sx += q.x; ++n; }
+    }
+    return n == 0 ? 0 : (sx >= 0.0 ? 1 : -1);
+  }
+
+  // 转向受阻时调整位姿: 沿车身往远离障碍的方向慢速移动，直到剩余转角的扫掠区清空 (再多走 2 cm 余量)，最多 max_d
+  bool retreat_for_turn(double turn, double max_d = 0.3) {
+    const int side = sweep_block_side(turn);
+    if (side == 0) return true;
+    const double dir = -side;
+    if (!align_steer(false, dir)) return false;
+    const Pose p0 = io_.pose();
+    const double co = std::cos(p0.th), si = std::sin(p0.th);
+    double clear_at = -1.0, done = 0.0;
+    const double t_end = now() + 4.0 + max_d / 0.05;
+    while (!stop_ && now() < t_end) {
+      if (io_.hold()) { cmd(0, 0, 0); sleep_s(0.04); continue; }
+      const Pose p = io_.pose();
+      done = dir * ((p.x - p0.x) * co + (p.y - p0.y) * si);
+      if (clear_at < 0.0 && sweep_block_side(turn) == 0) clear_at = done;
+      if ((clear_at >= 0.0 && done >= clear_at + 0.02) || done >= max_d) break;
+      std::vector<double> ahead = {p.x + dir * 0.03 * co, p.y + dir * 0.03 * si, p.th};
+      if (clearance(ahead) < m_.body_margin) break;       // 地图上再走就贴到墙/设备了
+      cmd(dir * 0.06, 0, 2.0 * wrap(p0.th - p.th));
+      sleep_s(0.03);
+    }
+    wait_until_stopped();
+    const bool ok = !stop_ && sweep_block_side(turn) == 0;
+    io_.event("TURN_RETREAT", ok ? "info" : "warning", std::string("转向受阻: ") + (dir < 0 ? "后退 " : "前移 ") + f2(std::fabs(done)) + " m",
+              ok ? "剩余转角的扫掠区 (外扩 " + f2(m_.rotate_margin) + " m) 已无障碍，重新转向"
+                 : "移动后扫掠区仍有障碍 (地图余量不足或障碍物较近)");
+    return ok;
   }
 
   // 离站倒车: 沿车身反方向找最近的可转向位置 (≤ 3 m) 倒过去 (navigator._back_out)
@@ -421,7 +466,19 @@ class Guidance {
         }
         if (rd != 0.0) rot_dir = rd;
         if (!align_steer(true, (rot_dir != 0 ? rot_dir : init_err) > 0 ? 1.0 : -1.0)) return "ABORT";
-        const int res = rotate_to(seg_h, rot_dir, max_w);
+        // 受阻 2 s 仍不解除 (多为墙/设备等静止障碍，常见于定位偏差几厘米、地图算得刚好够转的位置):
+        // 先往远离障碍的方向让一点再转，最多 3 次；让不开时按原逻辑等待 8 s 后终止
+        int res = rotate_to(seg_h, rot_dir, max_w, 0.005, 2.0);
+        for (int k = 0; res == 2 && k < 3 && !stop_; ++k) {
+          wait_until_stopped();
+          const Pose q = io_.pose();
+          double left = wrap(seg_h - q.th);
+          if (rot_dir != 0 && std::fabs(left) > 0.5 && left * rot_dir < 0) left += rot_dir * 2 * M_PI;
+          const bool ok = retreat_for_turn(left);
+          if (!align_steer(true, left > 0 ? 1.0 : -1.0)) return "ABORT";
+          res = rotate_to(seg_h, rot_dir, max_w, 0.005, ok ? 2.0 : 8.0);
+          if (!ok) break;
+        }
         if (res == 1) return "ABORT";
         if (res == 2) {
           io_.event("ROTATE_BLOCKED", "danger", "原地转向受阻",

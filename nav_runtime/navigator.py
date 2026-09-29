@@ -791,7 +791,7 @@ class Navigator:
             time.sleep(0.03)
         return True
 
-    def _rotate_to(self, mission_id, target_yaw: float, rot_dir: float, max_w: float) -> str:
+    def _rotate_to(self, mission_id, target_yaw: float, rot_dir: float, max_w: float, block_limit: float = 8.0) -> str:
         """原地转向到 target_yaw (±0.3°)。按角减速度规划角速度 ω = √(2·α·|e|)，避免超调。返回 done/abort/blocked"""
         alpha = 0.6 * float(self.cfg.get("chassis", {}).get("max_ang_decel_radps2", 1.0) or 1.0)
         block_since = None
@@ -824,12 +824,73 @@ class Navigator:
                 block_since = block_since or time.time()
                 with self.lock:
                     self.telemetry["nav_status"] = "OBSTACLE_WAIT"
-                if time.time() - block_since > 8.0:
+                if time.time() - block_since > block_limit:
                     return "blocked"
             else:
                 block_since = None
             time.sleep(0.03)
         return "abort"
+
+    def _sweep_block_side(self, turn: float) -> int:
+        """剩余转角 turn (带符号) 的原地转向扫掠区 (外扩 rotate_margin，与安全层同一判定) 内的激光点在车前 (+1) 还是车后 (-1)，0 = 无阻挡"""
+        pts = getattr(self, "_pts", None)
+        if pts is None or not len(pts[0]):
+            return 0
+        import numpy as np
+        from planning.sweep import arc_hits_box
+        px, py = pts
+        h, t, l, r = self.outline()
+        m = self.prot["rotate_margin"]
+        body, grown = (-t, h, -r, l), (-t - m, h + m, -r - m, l + m)
+        inb = (px > body[0]) & (px < body[1]) & (py > body[2]) & (py < body[3])
+        ing = (px > grown[0]) & (px < grown[1]) & (py > grown[2]) & (py < grown[3])
+        hit = arc_hits_box(px, py, -turn, body) | (~ing & arc_hits_box(px, py, -turn, grown))
+        hit &= ~inb
+        if not hit.any():
+            return 0
+        return 1 if float(np.sum(px[hit])) >= 0.0 else -1
+
+    def _retreat_for_turn(self, mission_id, turn: float, max_d: float = 0.3) -> bool:
+        """转向受阻时调整位姿: 沿车身往远离障碍的方向慢速移动，直到剩余转角的扫掠区清空 (再多走 2 cm)，最多 max_d"""
+        side = self._sweep_block_side(turn)
+        if side == 0:
+            return True
+        d = -float(side)
+        if not self._align_steer(mission_id, "drive", d):
+            return False
+        segs = self._obstacle_segments_all()
+        h, t, l, r = self.outline()
+        with self.lock:
+            x0, y0, yaw0 = self.telemetry["x"], self.telemetry["y"], self.telemetry["yaw"]
+        co, si = math.cos(yaw0), math.sin(yaw0)
+        clear_at, done = None, 0.0
+        t_end = time.time() + 4.0 + max_d / 0.05
+        while self.running and time.time() < t_end:
+            with self.lock:
+                if self.current_mission_id != mission_id:
+                    return False
+                cx, cy, cyaw = self.telemetry["x"], self.telemetry["y"], self.telemetry["yaw"]
+                paused = self.is_paused
+            if paused:
+                self.publish_cmd_vel(0.0, 0.0, 0.0)
+                time.sleep(0.04)
+                continue
+            done = d * ((cx - x0) * co + (cy - y0) * si)
+            if clear_at is None and self._sweep_block_side(turn) == 0:
+                clear_at = done
+            if (clear_at is not None and done >= clear_at + 0.02) or done >= max_d:
+                break
+            if maneuver.clearance(segs, [(cx + d * 0.03 * co, cy + d * 0.03 * si, cyaw)], h, t, max(l, r)) < self.prot["body_margin"]:
+                break                                         # 地图上再走就贴到墙/设备了
+            self.publish_cmd_vel(d * 0.06, 0.0, 2.0 * math.atan2(math.sin(yaw0 - cyaw), math.cos(yaw0 - cyaw)))
+            time.sleep(0.03)
+        self._wait_until_stopped(mission_id)
+        ok = self.current_mission_id == mission_id and self._sweep_block_side(turn) == 0
+        self.event_hub.emit("navigation", "TURN_RETREAT", "info" if ok else "warning",
+                            f"转向受阻: {'后退' if d < 0 else '前移'} {abs(done):.2f} m",
+                            f"剩余转角的扫掠区 (外扩 {self.prot['rotate_margin']:.2f} m) 已无障碍，重新转向" if ok
+                            else "移动后扫掠区仍有障碍 (地图余量不足或障碍物较近)", {"dist": round(abs(done), 3)})
+        return ok
 
     def _back_out(self, mission_id, x, y, yaw, yaw_to=None) -> bool:
         """离站倒车: 沿当前车身反方向找最近的「可原地转向」位置 (≤ 3 m，倒车路径车体净空满足)，倒车过去。
@@ -1328,7 +1389,26 @@ class Navigator:
                         rot_dir = rd
                     if not self._align_steer(mission_id, "rotate", 1.0 if (rot_dir or init_heading_err) > 0 else -1.0):
                         return
-                    res = self._rotate_to(mission_id, seg_heading, rot_dir, max_w)
+                    # 受阻 2 s 仍不解除 (多为静止的墙/设备，常见于定位偏差几厘米、地图算得刚好够转的位置):
+                    # 先往远离障碍的方向让一点再转，最多 3 次；让不开时按原逻辑等待 8 s 后终止 (与 guidance.hpp 一致)
+                    res = self._rotate_to(mission_id, seg_heading, rot_dir, max_w, 2.0)
+                    for _ in range(3):
+                        if res != "blocked":
+                            break
+                        self._wait_until_stopped(mission_id)
+                        with self.lock:
+                            qyaw = self.telemetry["yaw"]
+                        left = math.atan2(math.sin(seg_heading - qyaw), math.cos(seg_heading - qyaw))
+                        if rot_dir and abs(left) > 0.5 and left * rot_dir < 0:
+                            left += rot_dir * 2 * math.pi
+                        ok = self._retreat_for_turn(mission_id, left)
+                        if self.current_mission_id != mission_id:
+                            return
+                        if not self._align_steer(mission_id, "rotate", 1.0 if left > 0 else -1.0):
+                            return
+                        res = self._rotate_to(mission_id, seg_heading, rot_dir, max_w, 2.0 if ok else 8.0)
+                        if not ok:
+                            break
                     if res == "abort":
                         return
                     if res == "blocked":

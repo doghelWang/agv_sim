@@ -35,7 +35,10 @@
 - 全部场景 468 个拐点过弯决策 (拐点 × 来去方向 × 两种模式)：通过/不通过**翻转 0 个**；8 个在 fms_workshop 环线拐点上新旧都不通过 (净空 4.6 mm / 0 mm)，只是"都不通过时报告哪个半径"从 0.9 变成 0.945。
 - 本机自研导引 3 个贴墙代表点位：3/3 到达，终点误差 ≤ 10.7 mm，0 碰撞。
 - 一致性测试：`tests/test_agvnav.py` (C vs Python 净空 / 过弯 / 拓扑规划 1000/1000/1200)、`tests/test_cpp_safety.py` (2000/2000)、`tests/test_slamcore.py`、`tests/test_sim_core.py` (22 项)、`ros2/agv_nav2_plugins/test/test_geom.cpp` 全部通过。
-- **未在真实 ROS/Nav2 环境验证**：`geom.hpp` (Nav2 控制器与位姿调整插件) 与 `guidance.hpp` 的改动只在本机编译与单测验证过，需在装有 ROS 的设备上编译桥接和插件后跑一次 `tools/quick_nav_check.sh`。
+- ROS/Nav2 环境验证 (Mac Docker，colima arm64)：nav 镜像内编译桥接与插件通过。
+  - Nav2 3/3 (≤ 3.7 mm)。
+  - dijkstra 起初 2/3：精确转向扫掠判出贴墙转向时车角离墙只剩 17 mm (旧的 3 角度采样漏判)，加上约 3 cm 的定位偏差，导引只会等 8 s 后终止。
+  - 补上"让位后重转" (`TURN_RETREAT`，见 NAVIGATION.md 第 8 节) 后 3/3。
 
 ## 4. 看过但暂不改的
 
