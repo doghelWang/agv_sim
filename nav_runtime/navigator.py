@@ -1671,7 +1671,7 @@ class Navigator:
                     self.nav2.cancel(quiet=True)
                     time.sleep(1.0)
                     if hard and self.nav2.restart_stack():
-                        t_end = time.time() + float(os.environ.get("NAV2_RESTART_WAIT", "120"))
+                        t_end = time.time() + float(os.environ.get("NAV2_RESTART_WAIT", "300"))   # 含启动看门狗重来一两次的时间
                         time.sleep(5.0)
                         while time.time() < t_end and not self.nav2.agv_ready() and self.current_mission_id == mid:
                             time.sleep(0.5)

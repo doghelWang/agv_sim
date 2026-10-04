@@ -196,6 +196,10 @@ class Nav2Bridge:
     # ------------------------------------------------------------------
     def _is_active(self) -> bool:
         if self.cppmode:                      # C++ 桥接每 2 s 查询一次 lifecycle_manager
+            # Nav2 刚 (重新) 启动的头 10 s 不采信: 桥接上报的还是上一套 Nav2 的"已激活" (查询 2 s 一次，无应答要 6 s 才放弃)。
+            # 曾因此把卡在 "Configuring controller_server" 的新 Nav2 当成已就绪，启动看门狗不再重启它，任务永远等下去
+            if time.time() - getattr(self.supervisor, "started_at", 0.0) < 10.0:
+                return False
             return bool(getattr(self.node, "nav2_active", False))
         if self._active_cli is None or not self._active_cli.service_is_ready():
             return False
@@ -208,7 +212,8 @@ class Nav2Bridge:
     def _watchdog(self):
         """Nav2 生命周期看门狗: 启动后 NAV2_BRINGUP_TIMEOUT 秒内没有全部激活 (lifecycle_manager 放弃，
         例如负载高时某个节点 get_state 响应超时 → "Aborting bringup")，重启 Nav2，最多 NAV2_BRINGUP_RETRIES 次"""
-        timeout = float(os.environ.get("NAV2_BRINGUP_TIMEOUT", "150"))
+        # Android: 正常 30~60 s 就绪；lifecycle_manager 等某个节点的 configure/activate 应答没有超时，请求丢了就永远卡住，90 s 没好就重来
+        timeout = float(os.environ.get("NAV2_BRINGUP_TIMEOUT", "90" if os.path.exists("/system/build.prop") else "150"))
         max_retry = int(os.environ.get("NAV2_BRINGUP_RETRIES", "3"))
         retries, seen, was_active = 0, None, False
         while True:
@@ -257,6 +262,10 @@ class Nav2Bridge:
         self._route_active = False
         self.goal_handle = None
         self._active = False
+        try:
+            self.node.nav2_active = False      # 桥接缓存的旧状态
+        except Exception:
+            pass
         return bool(sup.start(*args))
 
     def status(self) -> dict:

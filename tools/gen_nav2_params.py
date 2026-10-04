@@ -114,7 +114,12 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
     # 关闭后 Nav2 自己不再看障碍，避障/停车由执行进程安全层 (防护区，过滤 Nav2 输出的 cmd_vel) 负责，
     # 原地转向的扫掠检查由 RouteFollow 用实测激光点完成。NAV2_LOCAL_OBSTACLES=1/0 强制开/关。
     _lo = os.environ.get("NAV2_LOCAL_OBSTACLES", "0" if os.path.exists("/system/build.prop") else "1") == "1"
-    local_plugins = '["obstacle_layer", "inflation_layer"]' if _lo else '["inflation_layer"]'
+    # 关掉时不是把障碍层从插件表里拿掉，而是保留一个"没有观测源"的障碍层:
+    #   没有观测源 = 不订阅激光 = 没有 tf2 MessageFilter (卡死的来源)；
+    #   但它每轮仍把车体轮廓范围报成"需要更新"，膨胀层才会被调用。只剩膨胀层时，行为树恢复流程一清空局部代价地图
+    #   (ClearEntireCostmap)，膨胀层就再也不会被调用、永远是"未就绪"，controller_server 收到目标后在
+    #   `while (!costmap_ros_->isCurrent())` 里无限等 —— 表现为"线路跟随中断后任务停滞、取消无应答、只能重启 Nav2"。
+    local_plugins = '["obstacle_layer", "inflation_layer"]'
     # 行为树: Android 上 tick 100 Hz → 50 Hz，等动作/服务应答的超时 20 ms → 1000 ms (200 ms 时仍偶发超时:
     # proot 下一次 DDS 往返本身就要几毫秒到几十毫秒，被限到小核或降频时会到几百毫秒)。Termux 被限制到小核时 (cpuset moderate，
     # 负载 6 以上) controller/planner 20 ms 内应答不了，行为树报 "Timed out while waiting for action server to acknowledge goal
@@ -123,6 +128,9 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
     bt_loop_ms = int(os.environ.get("NAV2_BT_LOOP_MS", "20" if _android else "10"))
     bt_srv_timeout_ms = int(os.environ.get("NAV2_BT_SERVER_TIMEOUT_MS", "1000" if _android else "20"))
     ctrl_hz = 20.0 if os.path.exists("/system/build.prop") else 30.0
+    # 控制器连续算不出指令多久才放弃 (s)。手机被限到小核时 slam_toolbox 的 map→odom 会偶尔晚 0.3~1 s
+    # ("extrapolation into the future")，0.5 s 就放弃会触发 后退 → 重新规划 的恢复流程，而那段流程在小核上最容易卡死
+    fail_tol = float(os.environ.get("NAV2_FAILURE_TOLERANCE", "1.5" if _android else "0.5"))
     # RPP 查 map→odom 时最多等待 (s)；0.1 在树莓派上不够 (slam_toolbox 的 map→odom 偶尔落后 0.1~0.4 s → 线路跟随中断)
     rpp_tf_tol = float(os.environ.get("NAV2_TF_TOLERANCE", "0.3"))
     global_plugins = '["static_layer", "obstacle_layer", "inflation_layer"]' if _go else '["static_layer", "inflation_layer"]'
@@ -366,7 +374,7 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: {0.001 if holo else 0.5}
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.5
+    failure_tolerance: {fail_tol}
     odom_topic: /odom
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: {goal_checkers}
@@ -407,8 +415,8 @@ local_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         max_obstacle_height: {max_z:.2f}
-        observation_sources: {sources}
-{src_block('        ')}
+        observation_sources: {sources if _lo else '""'}
+{src_block('        ') if _lo else ''}
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
