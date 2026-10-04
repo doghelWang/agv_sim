@@ -3,13 +3,17 @@
      默认用悬浮窗盖在 Termux 上面显示 —— Termux 仍是前台应用，仿真/导航进程才能用全部 CPU 核
      (三星系统会把不在前台的 Termux 限制到 3 个小核)。悬浮窗权限用 adb 授权一次:
        adb shell appops set com.agvsim.cover SYSTEM_ALERT_WINDOW allow
+       adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow      (屏幕灭着时由面板点亮)
      没有这个权限时退回普通全屏页面 (面板在前台，Termux 会被限核)。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.agvsim.cover" android:versionCode="2" android:versionName="1.1">
+    package="com.agvsim.cover" android:versionCode="3" android:versionName="1.2">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 屏幕灭着时点亮 (开机自启 / 息屏后重新打开)。Android 13+ 还要: adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow -->
+    <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
     <queries><package android:name="com.termux" /></queries>
     <application android:label="AMR 仿真面板" android:hardwareAccelerated="true" android:usesCleartextTraffic="true">
         <!-- 三星 Z Flip 外屏 (Flex Window) 允许显示 -->

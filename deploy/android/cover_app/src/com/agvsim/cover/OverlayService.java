@@ -1,5 +1,6 @@
 package com.agvsim.cover;
 
+import android.app.ActivityOptions;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -11,6 +12,7 @@ import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.view.Display;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
@@ -36,6 +38,27 @@ public class OverlayService extends Service {
         startForeground(1, new Notification.Builder(this, "panel").setContentTitle("AMR 仿真面板")
                 .setContentText("悬浮显示中，长按面板关闭").setSmallIcon(android.R.drawable.ic_menu_view).build());
         remove();
+        h.removeCallbacksAndMessages(null);
+        final Intent req = in;
+        final boolean keep = in.getBooleanExtra("keep_on", true);
+        DisplayManager dm0 = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+        Display m0 = dm0.getDisplay(Display.DEFAULT_DISPLAY);
+        boolean anyOn = m0 != null && m0.getState() == Display.STATE_ON;
+        for (int i = 1; i <= 3 && !anyOn; i++) { Display x = dm0.getDisplay(i); anyOn = x != null && x.getState() == Display.STATE_ON; }
+        if (keep && !anyOn) {
+            // 屏幕是灭的 (开机自启、息屏后重新打开): 先点亮，等屏幕状态稳定后再决定显示在哪块屏
+            try {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP, "agvcover:wake").acquire(5000);
+            } catch (Exception e) { /* 没有 WAKE_LOCK 权限时照常显示 */ }
+            h.postDelayed(new Runnable() { public void run() { show(req); } }, 1200);
+        } else {
+            show(in);
+        }
+        return START_STICKY;
+    }
+
+    private void show(Intent in) {
         // 显示在哪块屏: extra display 指定；否则外屏亮着用外屏，不然用主屏
         DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
         Display d = in.getIntExtra("display", -1) >= 0 ? dm.getDisplay(in.getIntExtra("display", -1)) : null;
@@ -47,6 +70,8 @@ public class OverlayService extends Service {
                     Display x = dm.getDisplay(i);
                     if (x != null && x.getState() == Display.STATE_ON) d = x;
                 }
+                // 都没亮 (没能点亮屏幕): 有外屏就用外屏 —— 之后屏幕亮起来时面板已经在上面
+                for (int i = 1; i <= 3 && d == null; i++) d = dm.getDisplay(i);
             }
         }
         if (d == null) d = dm.getDisplay(Display.DEFAULT_DISPLAY);
@@ -79,8 +104,19 @@ public class OverlayService extends Service {
         web.setOnTouchListener(new View.OnTouchListener() {
             public boolean onTouch(View v, MotionEvent e) { gd.onTouchEvent(e); return true; }
         });
-        try { wm.addView(web, lp); } catch (Exception e) { web = null; stopSelf(); }
-        return START_NOT_STICKY;
+        try { wm.addView(web, lp); } catch (Exception e) { web = null; stopSelf(); return; }
+        // 把 Termux 调到同一块屏的前台 (面板不抢焦点，盖在它上面): Termux 是前台应用时仿真/导航进程才能用全部 CPU 核。
+        // 本应用有悬浮窗权限，允许从后台打开页面；--ez termux false 不调
+        if (in.getBooleanExtra("termux", true)) {
+            Intent t = getPackageManager().getLaunchIntentForPackage("com.termux");
+            if (t != null) {
+                t.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                try {
+                    if (d != null) startActivity(t, ActivityOptions.makeBasic().setLaunchDisplayId(d.getDisplayId()).toBundle());
+                    else startActivity(t);
+                } catch (Exception e) { /* 没装 Termux 或系统不允许: 面板照常显示 */ }
+            }
+        }
     }
 
     private void remove() {

@@ -104,7 +104,7 @@ tail -f ~/autostart.log                  # 1~3 分钟后打印访问地址，也
 - 规划器自动设为 Nav2 (`AGV_AUTOSTART_PLANNER=nav2`，插件路线模式：拐点圆弧过弯、进站精定位；Flip 5 实测停车误差 < 5 mm，见 NAVIGATION.md 第 8 节)。`AGV_AUTOSTART_PLANNER=dijkstra` 改回自研导引。
 - 访问：手机浏览器打开 `http://127.0.0.1:8082` (资源平台)，实例列表里点「工作台」(地址 `/inst/<实例>/`)；其它设备连手机热点或同一 WiFi 后用 `http://<手机IP>:8082`。
   单手机模式下实例的仿真、执行、Web 网关端口 (8100~8103 等) 都只监听本机，工作台由平台反向代理，局域网只开放平台端口 8082 (和节点代理 8070)；「经典调度台」只能在手机本机浏览器打开。装了 Termux:API 时会弹一条通知。
-- 开机自启需要 Termux:Boot (打开过一次)；手机重启后幽灵进程设置仍有效。
+- 开机自启需要 Termux:Boot (与 Termux 同一来源的版本，打开过一次)；手机重启后幽灵进程设置仍有效。三星手机上系统启动完成后约 2 分钟才触发 (Flip 5 实测：重启后约 3 分钟实例运行、Nav2 就绪)；设了锁屏密码时要先解锁一次。启动脚本会先打开外屏面板 (点亮屏幕并常亮、把 Termux 调到前台) 再起平台与实例，见 deploy/android/README.md。
 - 回到集群模式 (接入板卡主平台)：把 `~/.agv.env` 里两行改成 `AGV_LOCAL_HUB=0`、`AGV_AUTOSTART=0`，再 `bash ~/stop_agv.sh; bash ~/start_agv.sh`。手机在两个平台上的节点记录互不影响。
 
 ## 5. 关闭幽灵进程限制 (Android 12+ 必做)

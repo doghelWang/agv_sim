@@ -28,6 +28,7 @@ GPU 射线求交服务 `~/gpucastd` (源码 `sim_core/native/gpucast/`) 由 `upd
 ```bash
 adb install -r agv-cover.apk
 adb shell appops set com.agvsim.cover SYSTEM_ALERT_WINDOW allow     # 悬浮窗权限
+adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow          # 屏幕灭着时由面板点亮 (开机自启)
 adb shell am start --display 1 -n com.agvsim.cover/.MainActivity    # Z Flip 外屏是 display 1；之后 start_agv.sh 会自动打开
 ```
 
