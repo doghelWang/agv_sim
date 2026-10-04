@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>节点状态面板</title>
-<!-- 小屏状态面板 (折叠屏外屏 748×720 等)：节点 / 实例 / 实时率 / 温度 / 激光俯视图。只读，数据全部来自平台已有接口。
+<!-- 小屏状态面板 (折叠屏外屏 748×720 等)：节点 / 实例 / 实时率 / 温度 / 激光俯视图 + 规划路径。只读，数据全部来自平台已有接口。
      打开: http://<平台>/cover.html   可选参数 ?inst=i01 指定实例，?period=2 刷新周期 (秒) -->
 <style>
   :root { --bg:#05080c; --card:#0e151d; --line:#1d2a38; --fg:#e8eef5; --dim:#7f90a3; --ok:#3ddc84; --warn:#ffb020; --bad:#ff5a52; --acc:#4da3ff; }
@@ -59,7 +59,7 @@ const Q = new URLSearchParams(location.search);
 const PERIOD = Math.max(1, parseFloat(Q.get("period") || "2")) * 1000;
 const $ = id => document.getElementById(id);
 const STATUS = { running: "运行中", deploying: "部署中", degraded: "降级", error: "异常", stopped: "已停止" };
-const NAV = { ARRIVED: "已到达", NAVIGATING: "导航中", IDLE: "空闲", FAILED: "失败", CANCELED: "已取消", PLANNING: "规划中" };
+const NAV = { ARRIVED: "已到达", NAVIGATING: "导航中", IDLE: "空闲", FAILED: "失败", CANCELED: "已取消", PLANNING: "规划中", OBSTACLE_WAIT: "避障等待", SAFETY_STOP: "安全停车", ABORTED: "已中止" };
 async function j(url) {
   const c = new AbortController(), t = setTimeout(() => c.abort(), 4000);
   try { const r = await fetch(url, { signal: c.signal, cache: "no-store" }); if (!r.ok) throw new Error(r.status); return await r.json(); }
@@ -84,6 +84,25 @@ function draw(t) {
     const d = ranges[i]; if (!(d > 0.05) || d > rmax) continue;
     const a = yaw + amin + i * ainc;
     g.fillRect(cx + Math.cos(a) * d * s - dpr, cy - Math.sin(a) * d * s - dpr, 2 * dpr, 2 * dpr);
+  }
+  // 规划路径 (plan_curve: 含过渡圆弧的稠密曲线；没有则用拓扑节点折线) + 途经节点 + 目标点。到达后变暗
+  const px = p => [cx + (p.x - t.x) * s, cy - (p.y - t.y) * s];
+  const curve = (t.plan_curve && t.plan_curve.length > 1) ? t.plan_curve : (t.plan_path || []);
+  const active = !/ARRIVED|IDLE|FAILED|CANCEL/.test(t.nav_status || "IDLE");
+  if (curve.length > 1) {
+    g.save(); g.globalAlpha = active ? 1 : 0.35;
+    g.strokeStyle = "#ffb020"; g.lineWidth = 3 * dpr; g.lineJoin = "round"; g.lineCap = "round";
+    g.beginPath(); curve.forEach((p, i) => { const q = px(p); i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]); }); g.stroke();
+    g.fillStyle = "#ffb020";
+    (t.plan_path || []).forEach(p => { const q = px(p); g.beginPath(); g.arc(q[0], q[1], 4 * dpr, 0, 6.2832); g.fill(); });
+    g.restore();
+  }
+  if (t.target_goal && (active || curve.length > 1)) {
+    const q = px(t.target_goal);
+    g.save(); g.globalAlpha = active ? 1 : 0.35; g.strokeStyle = "#ff5a52"; g.lineWidth = 3 * dpr;
+    g.beginPath(); g.arc(q[0], q[1], 9 * dpr, 0, 6.2832); g.stroke();
+    if (typeof t.target_goal.yaw === "number") { g.beginPath(); g.moveTo(q[0], q[1]); g.lineTo(q[0] + Math.cos(t.target_goal.yaw) * 20 * dpr, q[1] - Math.sin(t.target_goal.yaw) * 20 * dpr); g.stroke(); }
+    g.restore();
   }
   const fp = (t.robot_spec || {}).footprint || [[0.6, 0.4], [0.6, -0.4], [-0.6, -0.4], [-0.6, 0.4]];
   g.beginPath();
