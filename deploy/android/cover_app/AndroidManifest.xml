@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 外屏状态面板: 全屏 WebView 打开本机平台的 /cover.html (折叠屏外屏用；普通手机也能装) -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.agvsim.cover" android:versionCode="1" android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="AMR 仿真面板" android:hardwareAccelerated="true" android:usesCleartextTraffic="true">
+        <!-- 三星 Z Flip 外屏 (Flex Window) 允许显示 -->
+        <meta-data android:name="com.samsung.android.foldable.support.cover" android:value="true" />
+        <meta-data android:name="android.max_aspect" android:value="2.5" />
+        <activity android:name=".MainActivity" android:label="AMR 仿真面板" android:exported="true"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

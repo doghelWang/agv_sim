@@ -5,6 +5,7 @@
 . ~/agv_common.sh
 echo "=== 停止 AMR 仿真节点 ($AGV_DISTRO) ==="
 pkill -f "^([^ ]*/)?python3? [^ ]*proot_spawner.py" 2>/dev/null
+pkill -f "^([^ ]*/)?gpucastd 8068" 2>/dev/null
 sleep 0.5
 pkill -9 -f "^([^ ]*/)?proot .*(containers/$AGV_DISTRO/|installed-rootfs/$AGV_DISTRO)" 2>/dev/null
 sleep 1

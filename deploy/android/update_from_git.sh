@@ -59,6 +59,11 @@ R="$AGV_ROOTFS/opt/agv/deploy/android"
 for f in agv_common.sh start_agv.sh stop_agv.sh status_agv.sh update_from_git.sh proot_spawner.py; do
     cp "$R/$f" ~/"$f" && chmod +x ~/"$f"
 done
+# GPU 射线求交服务: 在 Termux 里 (不是容器里) 编译，要用系统的 C 库才能加载厂商 OpenCL 驱动；没有 cc 就跳过 (pkg install clang)
+if command -v cc >/dev/null && [ -f "$AGV_ROOTFS/opt/agv/sim_core/native/gpucast/gpucastd.c" ]; then
+    cc -O2 -o ~/gpucastd.new "$AGV_ROOTFS/opt/agv/sim_core/native/gpucast/gpucastd.c" -ldl -lm -lpthread 2>/dev/null \
+        && mv -f ~/gpucastd.new ~/gpucastd && echo 'gpucastd 已编译 (GPU 射线求交服务)' || echo '[警告] gpucastd 编译失败，仿真使用 CPU 求交'
+fi
 mkdir -p ~/.termux/boot && cp "$R/termux-boot-01-start-agv.sh" ~/.termux/boot/01-start-agv.sh && chmod +x ~/.termux/boot/01-start-agv.sh
 if [ "$1" = "--restart" ]; then
     bash ~/stop_agv.sh

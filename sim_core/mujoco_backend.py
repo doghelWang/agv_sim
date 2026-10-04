@@ -33,6 +33,7 @@ except Exception:  # pragma: no cover
     MUJOCO_VERSION = None
 
 from . import native as _native
+from .native import gpucast as _gpucast
 from .world import CEILING_HEIGHT
 
 # 相机/3D 射线求交走 C 内核的长方体/圆柱求交 (sc_cast_prims)；SIM_NATIVE_CAST=0 退回 mj_multiRay
@@ -59,6 +60,7 @@ class MuJoCoBackend:
         self.dt = dt
         self.threads = int(threads or os.environ.get("SIM_RAY_THREADS", str(max(1, min(2, os.cpu_count() or 1)))))
         self.pool = ThreadPoolExecutor(self.threads) if self.threads > 1 else None
+        self.gpu = _gpucast.GpuCast()        # GPU 射线求交服务 (gpucastd)，不在线时不启用
         self.m = self.d = None
         self.robot_body = -1
         self.robot_geoms: set = set()
@@ -368,6 +370,23 @@ class MuJoCoBackend:
             self._prims_cache = (ver, m, arr)
             return arr
 
+    def render_camera_gpu(self, origin, Rw, fx, fy, cx, cy, W, H, max_range, sigma, seed):
+        """整帧 RGB 相机交给 GPU 求交服务 (方向 + 求交 + 着色 + 噪声) → uint8 [H,W,3]；不可用时返回 None"""
+        n = W * H
+        tex = getattr(self, "_floor_tex", None)
+        if not NATIVE_CAST or tex is None or n < _gpucast.MIN_RAYS or not self.gpu.available():
+            return None
+        prims = self._cast_prims()
+        if prims is None:
+            return None
+        t0 = time.perf_counter()
+        img = self.gpu.render((self._ray_ver, id(self.m)), prims, CEILING_HEIGHT, self.floor_geom, self.ceiling_geom,
+                              self.geom_rgb, tex, self._floor_org, origin, Rw, fx, fy, cx, cy, W, H, max_range, sigma, seed)
+        if img is not None:
+            self.ray_count += n
+            self.ray_ms += (time.perf_counter() - t0) * 1000.0
+        return img
+
     def cast(self, origin, dirs: np.ndarray, max_range: float, want_normal: bool = False):
         """单原点多射线 → (dist[inf=无回波], geomid[-1], normal[N,3]|None)；dirs 需为单位向量"""
         t0 = time.perf_counter()
@@ -376,10 +395,19 @@ class MuJoCoBackend:
         if n == 0:
             return np.zeros(0), np.zeros(0, np.int32), None
         lib = _native.lib
-        if NATIVE_CAST and lib is not None and hasattr(lib, "sc_cast_prims"):
+        gpu = self.gpu if n >= _gpucast.MIN_RAYS and self.gpu.available() else None
+        if NATIVE_CAST and (gpu is not None or (lib is not None and hasattr(lib, "sc_cast_prims"))):
             # C 内核直接对长方体/圆柱求交 (结果与 mj_multiRay 相同，几何体少时快数倍)；SIM_NATIVE_CAST=0 关闭
             prims = self._cast_prims()
-            if prims is not None:
+            if prims is not None and gpu is not None:
+                # 射线多 (相机/深度) 且 GPU 求交服务在线: 交给 GPU (float，与 CPU 版相差 0.1 mm 量级)；失败则继续走 CPU
+                r = gpu.cast((self._ray_ver, id(self.m)), prims, CEILING_HEIGHT, self.floor_geom, self.ceiling_geom,
+                             pnt, dirs, max_range, want_normal)
+                if r is not None:
+                    self.ray_count += n
+                    self.ray_ms += (time.perf_counter() - t0) * 1000.0
+                    return r
+            if prims is not None and lib is not None and hasattr(lib, "sc_cast_prims"):
                 d = np.ascontiguousarray(dirs, np.float64)
                 dist = np.empty(n, np.float64)
                 gid = np.empty(n, np.int32)

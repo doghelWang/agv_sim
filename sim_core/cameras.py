@@ -166,8 +166,23 @@ class CameraSensor:
         img = self._rgb_gl(engine, noise)
         if img is not None:
             return {"rgb": img}
+        img = self._rgb_gpu(engine, x, y, th, noise)
+        if img is not None:
+            return {"rgb": img}
         o, dw, dist, gid, nrm = self._cast(world, engine, x, y, th)
         return {"rgb": self._rgb(engine, o, dw, dist, gid, nrm, noise)}
+
+    def _rgb_gpu(self, engine, x, y, th, noise: bool):
+        """GPU 求交服务在线时整帧在 GPU 上成像 (sim_core/native/gpucast)；否则返回 None 走 CPU"""
+        if not NATIVE_CAM or engine is None or not hasattr(engine, "render_camera_gpu"):
+            return None
+        c, s = math.cos(th), math.sin(th)
+        Rw = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1.0]]) @ self.R
+        lo = np.array([self.mx, self.my, self.mz])
+        o = np.array([x + c * lo[0] - s * lo[1], y + s * lo[0] + c * lo[1], lo[2]])
+        sigma = float(self.cfg.get("pixel_noise", 2.0)) if noise else 0.0
+        return engine.render_camera_gpu(o, Rw, self.fx, self.fy, self.cx, self.cy, self.W, self.H, self.range_max, sigma,
+                                        random.getrandbits(32))
 
 
 class StereoCamera(CameraSensor):

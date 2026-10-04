@@ -24,7 +24,10 @@ print(f"本机平台 :{port}    ", ("运行中" if h else "未运行") + (f" (�
 a = get("http://127.0.0.1:8070/api/v1/health")
 print("节点代理 :8070    ", "运行中" if a else "未运行", json.dumps(a, ensure_ascii=False)[:160] if a else "")
 EOF
+pgrep -f "^([^ ]*/)?gpucastd 8068" >/dev/null && echo "GPU 求交 :8068    运行中 ($(sed -n 's/.*设备 \(.*\)，监听.*/\1/p' ~/gpucastd.log 2>/dev/null))" || echo "GPU 求交 :8068    未运行 (仿真用 CPU 求交)"
 echo "---------------------------------------------------"
+# 可用 CPU 核: Termux 不在前台时，部分机型 (三星) 会把它限制到小核 (cpuset moderate/background = 0-2)，仿真与导航都会变慢
+echo "可用 CPU 核: $(grep Cpus_allowed_list /proc/self/status | awk '{print $2}')  (cpuset $(cat /proc/self/cpuset 2>/dev/null))"
 echo "CPU 频率 (MHz): $(for c in /sys/devices/system/cpu/cpu[0-9]*; do echo -n "$(( $(cat $c/cpufreq/scaling_cur_freq 2>/dev/null || echo 0) / 1000 )) "; done)"
 b=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); [ -n "$b" ] && echo "电池温度: $((b / 10)) °C"
 command -v adb >/dev/null && adb devices 2>/dev/null | grep -q "device$" && \

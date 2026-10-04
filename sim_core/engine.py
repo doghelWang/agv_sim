@@ -403,7 +403,7 @@ class SimCore:
                           "freq_hz": l.freq_hz, "z": l.mz, "model": l.cfg.get("vendor_model")} for l in self.lidars3d],
             "kinematics": self.kin.telemetry(),
             "engine": ({"name": "mujoco", "version": MUJOCO_VERSION, "ngeom": self.mj.m.ngeom, "compile_ms": round(self.mj.compile_ms, 2),
-                        "mj_step_ms": round(self.mj.step_ms, 4), "ray_threads": self.mj.threads,
+                        "mj_step_ms": round(self.mj.step_ms, 4), "ray_threads": self.mj.threads, "gpu_cast": self.mj.gpu.info(),
                         "rays_total": self.mj.ray_count, "ray_ms_total": round(self.mj.ray_ms, 1)}
                        if self.mj else {"name": "kinematic", "note": "未安装 mujoco，兜底模式"}),
             "cameras": [{"name": c.name, "type": c.kind, "res": f"{c.W}x{c.H}", "fps": c.fps, "ms": round(c.last_ms, 2),

@@ -270,7 +270,30 @@ Nav2 规划，空闲 60 s / 导航中 (quick_nav_check)：
 | ToF 224×172 | 10.6 ms | **5.6 ms** |
 | 仅射线求交 (76,800 条) | 22.6 ms | **5.6 ms** |
 
-树莓派 / RK3588 / 手机上的数据待复测。
+手机实测 (Galaxy Z Flip 5，SM8550，Termux 在前台，2 线程)：仅射线求交 76,800 条 `mj_multiRay` 15.0 ms → `sc_cast_prims` **4.8 ms**。
+树莓派 / RK3588 上的数据待复测。
+
+### 6.8 GPU 整帧相机 (手机 Adreno，2026-10-04)
+
+仿真进程在 proot (glibc) 里加载不了厂商的 OpenCL 驱动，所以 GPU 部分放在一个独立的小服务 `gpucastd`
+(`sim_core/native/gpucast/`，Termux 原生编译，只监听 127.0.0.1:8068)，仿真进程启动后自动探测，在线就用，不在线照常走 CPU。
+两种用法：`cast` 只做求交 (深度 / ToF / 3D 激光)；`render` 整帧 RGB 相机 —— 像素方向、求交、着色、噪声都在 GPU 上，只回传 8 位图像。
+单目 RGB 相机默认走 `render`。对比 `tests/test_gpucast.py`：求交与 C 内核相差 0.1 µm 量级 (GPU 用 float)；整帧图像与 CPU 版
+逐像素差不超过 2 个灰度级 (地面贴图以 8 位上传)。
+
+| Flip 5 (Adreno 740)，一帧，Termux 在前台 | CPU (方向 + C 求交 + C 着色) | GPU 整帧 |
+|---|---|---|
+| 320×240 | 7~10 ms | **1.1 ms** |
+| 640×480 | 65~110 ms | **2.8 ms** |
+| 1280×720 | 136 ms | **5.3 ms** |
+| 运行中的实例里 640×480 相机一帧 (`/api/v1/sim` 的 cameras[].ms) | 55~60 ms | **12 ms** |
+
+只把求交放到 GPU (`cast`) 收益有限：640×480 时求交 16.7 → 9.7 ms，但 CPU 上的方向生成 (约 40 ms) 和带噪声的着色 (约 34 ms) 才是大头，
+所以整帧一起搬才有意义。实例里的 12 ms 比单测的 2.8 ms 高，是因为 10 帧/秒的负载下 GPU 不会升到高频。
+
+三星手机上的一个坑：Termux 不在前台时 (例如外屏显示别的应用)，系统把它的全部进程放进 `moderate` cpuset，只能用 3 个小核 (0-2)，
+此时 C 求交 76,800 条从 4.8 ms 变成 40~150 ms。`bash ~/status_agv.sh` 会显示当前可用的核；`am start -n com.termux/.app.TermuxActivity`
+把 Termux 切回前台即恢复 8 核。GPU 不受这个限制。
 
 ## 7. 复现
 

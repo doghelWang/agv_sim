@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>节点状态面板</title>
+<!-- 小屏状态面板 (折叠屏外屏 748×720 等)：节点 / 实例 / 实时率 / 温度 / 激光俯视图。只读，数据全部来自平台已有接口。
+     打开: http://<平台>/cover.html   可选参数 ?inst=i01 指定实例，?period=2 刷新周期 (秒) -->
+<style>
+  :root { --bg:#05080c; --card:#0e151d; --line:#1d2a38; --fg:#e8eef5; --dim:#7f90a3; --ok:#3ddc84; --warn:#ffb020; --bad:#ff5a52; --acc:#4da3ff; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,"Noto Sans CJK SC",sans-serif; overflow:hidden; }
+  body { display:flex; flex-direction:column; padding:3vmin 3vmin 4vmin; gap:2vmin; }
+  header { display:flex; align-items:baseline; justify-content:space-between; gap:2vmin; }
+  header .name { font-size:5.2vmin; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  header .addr { font-size:3.3vmin; color:var(--acc); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .dot { display:inline-block; width:2.6vmin; height:2.6vmin; border-radius:50%; background:var(--dim); margin-right:1.4vmin; vertical-align:middle; }
+  .dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
+  .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:1.8vmin; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:2vmin; padding:1.6vmin 1.8vmin; min-width:0; }
+  .tile .k { font-size:2.7vmin; color:var(--dim); white-space:nowrap; }
+  .tile .v { font-size:6.4vmin; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.15; white-space:nowrap; }
+  .tile .v small { font-size:2.8vmin; font-weight:500; color:var(--dim); margin-left:.5vmin; }
+  .ok-t { color:var(--ok); } .warn-t { color:var(--warn); } .bad-t { color:var(--bad); }
+  main { flex:1; min-height:0; display:flex; gap:2vmin; }
+  .map { flex:1.15; min-width:0; background:var(--card); border:1px solid var(--line); border-radius:2vmin; position:relative; }
+  .map canvas { position:absolute; inset:0; width:100%; height:100%; }
+  .side { flex:1; min-width:0; display:flex; flex-direction:column; gap:1.6vmin; }
+  .row { flex:1; min-height:0; display:flex; flex-direction:column; justify-content:center; background:var(--card); border:1px solid var(--line); border-radius:2vmin; padding:0 1.8vmin; }
+  .row .k { font-size:2.6vmin; color:var(--dim); }
+  .row .v { font-size:3.7vmin; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  footer { display:flex; justify-content:space-between; font-size:2.6vmin; color:var(--dim); font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+<header>
+  <div class="name"><span class="dot" id="dot"></span><span id="node">—</span></div>
+  <div class="addr" id="addr">—</div>
+</header>
+<div class="tiles">
+  <div class="tile"><div class="k">实时率</div><div class="v" id="rtf">—</div></div>
+  <div class="tile"><div class="k">CPU</div><div class="v" id="cpu">—</div></div>
+  <div class="tile"><div class="k">温度</div><div class="v" id="temp">—</div></div>
+  <div class="tile"><div class="k">内存</div><div class="v" id="mem">—</div></div>
+</div>
+<main>
+  <div class="map"><canvas id="cv"></canvas></div>
+  <div class="side">
+    <div class="row"><div class="k">实例</div><div class="v" id="inst">—</div></div>
+    <div class="row"><div class="k">导航</div><div class="v" id="nav">—</div></div>
+    <div class="row"><div class="k">位姿 (m, °)</div><div class="v" id="pose">—</div></div>
+    <div class="row"><div class="k">仿真步 / 激光 (ms)</div><div class="v" id="ms">—</div></div>
+    <div class="row"><div class="k">版本</div><div class="v" id="ver">—</div></div>
+  </div>
+</main>
+<footer><span id="scene">—</span><span id="clock">—</span></footer>
+<script>
+const Q = new URLSearchParams(location.search);
+const PERIOD = Math.max(1, parseFloat(Q.get("period") || "2")) * 1000;
+const $ = id => document.getElementById(id);
+const STATUS = { running: "运行中", deploying: "部署中", degraded: "降级", error: "异常", stopped: "已停止" };
+const NAV = { ARRIVED: "已到达", NAVIGATING: "导航中", IDLE: "空闲", FAILED: "失败", CANCELED: "已取消", PLANNING: "规划中" };
+async function j(url) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), 4000);
+  try { const r = await fetch(url, { signal: c.signal, cache: "no-store" }); if (!r.ok) throw new Error(r.status); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+function set(id, text, cls) { const e = $(id); e.textContent = text; e.className = "v" + (cls ? " " + cls : ""); }
+function num(id, v, unit, digits, cls) { const e = $(id); e.className = "v" + (cls ? " " + cls : ""); e.innerHTML = (v == null || isNaN(v) ? "—" : Number(v).toFixed(digits)) + (unit ? "<small>" + unit + "</small>" : ""); }
+function draw(t) {
+  const cv = $("cv"), r = cv.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (cv.width !== Math.round(r.width * dpr)) { cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); }
+  const g = cv.getContext("2d"), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  if (!t) return;
+  const ranges = t.scan_ranges || [], n = ranges.length, rmax = 12, s = Math.min(W, H) / 2 / rmax * 0.94, cx = W / 2, cy = H / 2;
+  const yaw = t.yaw || 0;                          // 弧度 (不归一化)
+  g.strokeStyle = "#1d2a38"; g.lineWidth = dpr;
+  for (const rr of [4, 8, 12]) { g.beginPath(); g.arc(cx, cy, rr * s, 0, 6.2832); g.stroke(); }
+  g.fillStyle = "#4da3ff";
+  const amin = t.scan_angle_min !== undefined ? t.scan_angle_min : -Math.PI;
+  const ainc = t.scan_angle_inc !== undefined ? t.scan_angle_inc : 2 * Math.PI / Math.max(1, n);
+  for (let i = 0; i < n; i++) {                      // 激光点 (世界朝向: 上 = +Y)
+    const d = ranges[i]; if (!(d > 0.05) || d > rmax) continue;
+    const a = yaw + amin + i * ainc;
+    g.fillRect(cx + Math.cos(a) * d * s - dpr, cy - Math.sin(a) * d * s - dpr, 2 * dpr, 2 * dpr);
+  }
+  const fp = (t.robot_spec || {}).footprint || [[0.6, 0.4], [0.6, -0.4], [-0.6, -0.4], [-0.6, 0.4]];
+  g.beginPath();
+  fp.forEach((p, i) => { const x = cx + (p[0] * Math.cos(yaw) - p[1] * Math.sin(yaw)) * s, y = cy - (p[0] * Math.sin(yaw) + p[1] * Math.cos(yaw)) * s; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.closePath(); g.fillStyle = "rgba(61,220,132,.25)"; g.fill(); g.strokeStyle = "#3ddc84"; g.lineWidth = 2 * dpr; g.stroke();
+  g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(yaw) * 1.6 * s, cy - Math.sin(yaw) * 1.6 * s); g.stroke();
+}
+async function tick() {
+  $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  let node = null, inst = null, tel = null;
+  try {
+    const [ns, is] = await Promise.all([j("/api/hub/nodes"), j("/api/hub/instances")]);
+    node = (ns.nodes || []).find(n => n.online) || (ns.nodes || [])[0];
+    const all = is.instances || [], want = Q.get("inst");
+    inst = (want && all.find(i => i.id === want)) || all.find(i => i.status === "running") || all[0];
+  } catch (e) { $("dot").className = "dot bad"; $("node").textContent = "平台无响应"; draw(null); return; }
+  if (node) {
+    $("node").textContent = node.name + (node.model ? " · " + node.model.replace(/\s*\(.*\)/, "") : "");
+    $("addr").textContent = ((node.ips || [])[0] || node.lan_host || location.hostname) + ":" + (location.port || 80);
+    num("cpu", node.cpu_percent, "%", 0, node.cpu_percent > 85 ? "bad-t" : "");
+    num("temp", node.temp_c, "°C", 0, node.temp_c >= 70 ? "bad-t" : node.temp_c >= 55 ? "warn-t" : "");
+    num("mem", node.mem_percent, "%", 0, node.mem_percent > 85 ? "warn-t" : "");
+    const img = (node.images || [])[0]; set("ver", img ? img.version : "—");
+  }
+  if (inst) {
+    const st = inst.status;
+    set("inst", inst.id + " · " + (STATUS[st] || st), st === "running" ? "ok-t" : st === "error" ? "bad-t" : "warn-t");
+    $("scene").textContent = (inst.model_name || "") + " @ " + (inst.scene_id || "");
+    if (st === "running" || st === "degraded") { try { tel = await j("/inst/" + inst.id + "/api/telemetry"); } catch (e) { tel = null; } }
+  } else { set("inst", "没有实例", "warn-t"); $("scene").textContent = ""; }
+  const ss = tel && tel.sim_status;
+  if (ss) {
+    num("rtf", ss.rtf, "×", 2, ss.rtf < 0.9 ? "bad-t" : ss.rtf < 0.97 ? "warn-t" : "ok-t");
+    set("nav", (NAV[tel.nav_status] || tel.nav_status || "—") + (tel.nav_dist_rem > 0.01 ? "  剩 " + tel.nav_dist_rem.toFixed(1) + " m" : "") + (tel.is_paused ? " (暂停)" : ""));
+    set("pose", tel.x.toFixed(2) + ", " + tel.y.toFixed(2) + ", " + (Math.atan2(Math.sin(tel.yaw), Math.cos(tel.yaw)) * 180 / Math.PI).toFixed(0));
+    set("ms", (ss.step_ms != null ? ss.step_ms.toFixed(2) : "—") + " / " + (ss.lidar_ms != null ? ss.lidar_ms.toFixed(1) : "—"));
+  } else { num("rtf", null, "×", 2); set("nav", "—"); set("pose", "—"); set("ms", "—"); }
+  draw(tel);
+  const ok = node && node.online && inst && inst.status === "running" && ss && ss.rtf >= 0.9;
+  $("dot").className = "dot " + (ok ? "ok" : node && node.online ? "warn" : "bad");
+}
+tick(); setInterval(tick, PERIOD);
+</script>
+</body>
+</html>

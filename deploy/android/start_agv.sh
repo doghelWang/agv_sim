@@ -5,6 +5,7 @@
 #   2. 资源平台 agv-hub :AGV_HUB_PORT (只有未配置 HUB_API，即手机自己当平台时)
 #   3. 节点代理 agv-agent :8070 (process 运行时)，接入本机平台或 HUB_API 指定的主平台
 #   4. AGV_AUTOSTART=1 时自动拉起一个实例 (deploy/android/autostart.py)
+#   另: 有 ~/gpucastd 时先启动 GPU 射线求交服务 :8068 (sim_core/native/gpucast)
 # 其它情况下实例 (仿真/执行进程) 由平台部署，不在这里启动。配置见 ~/.agv.env (agv_common.sh)
 # ============================================================================
 . ~/agv_common.sh
@@ -13,6 +14,16 @@ termux-wake-lock 2>/dev/null || true
 [ -x ~/.agv_prestart.sh ] && ~/.agv_prestart.sh          # 可选: 自定义前置 (代理等)
 
 [ -d "$AGV_CODE" ] || { echo "[错误] 没有找到 $AGV_CODE，请先运行 install.sh"; exit 1; }
+
+# ---- 0. GPU 射线求交服务 (可选): ~/gpucastd 存在就启动 (update_from_git.sh 用 Termux 的 cc 编译)。
+#         仿真进程启动后自动探测 127.0.0.1:8068，相机/深度这类大批量射线交给 GPU；没有 GPU 或启动失败时仿真照常用 CPU。
+#         厂商 OpenCL 库要放在 LD_LIBRARY_PATH 里才允许加载；AGV_GPU_CAST=0 关闭
+if [ "${AGV_GPU_CAST:-1}" != 0 ] && [ -x ~/gpucastd ] && ! pgrep -f "^([^ ]*/)?gpucastd 8068" >/dev/null; then
+    LD_LIBRARY_PATH=/vendor/lib64 nohup ~/gpucastd 8068 > ~/gpucastd.log 2>&1 < /dev/null &
+    sleep 0.5
+    pgrep -f "^([^ ]*/)?gpucastd 8068" >/dev/null && echo "[info] GPU 射线求交服务 :8068 已启动 ($(sed -n 's/.*设备 \(.*\)，监听.*/\1/p' ~/gpucastd.log))" \
+        || echo "[info] GPU 射线求交服务没有启动 (见 ~/gpucastd.log)，仿真使用 CPU 求交"
+fi
 
 # ---- 1. proot 派生服务
 if [ "${AGV_SPAWNER_OFF:-0}" != 1 ] && ! http_ok http://127.0.0.1:8069/health; then
