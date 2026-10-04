@@ -101,7 +101,7 @@ tail -f ~/autostart.log                  # 1~3 分钟后打印访问地址，也
 ```
 
 - 自动拉起的逻辑 (`deploy/android/autostart.py`)：本机实例已在运行就不动；否则重启本机最近的一个实例 (保留它的地图)；一个都没有就新部署 (`AGV_AUTOSTART_SCENE`，默认九宫格)。`AGV_AUTOSTART_INSTANCE=i03` 可指定实例。
-- 规划器自动设为自研导引 (`AGV_AUTOSTART_PLANNER=dijkstra`)：执行进程在手机上时 Nav2 跟线偏差 200~300 mm，自研约 50 mm。
+- 规划器自动设为 Nav2 (`AGV_AUTOSTART_PLANNER=nav2`，插件路线模式：拐点圆弧过弯、进站精定位；Flip 5 实测停车误差 < 5 mm，见 NAVIGATION.md 第 8 节)。`AGV_AUTOSTART_PLANNER=dijkstra` 改回自研导引。
 - 访问：手机浏览器打开 `http://127.0.0.1:8082` (资源平台)，实例列表里点「工作台」(地址 `/inst/<实例>/`)；其它设备连手机热点或同一 WiFi 后用 `http://<手机IP>:8082`。
   单手机模式下实例的仿真、执行、Web 网关端口 (8100~8103 等) 都只监听本机，工作台由平台反向代理，局域网只开放平台端口 8082 (和节点代理 8070)；「经典调度台」只能在手机本机浏览器打开。装了 Termux:API 时会弹一条通知。
 - 开机自启需要 Termux:Boot (打开过一次)；手机重启后幽灵进程设置仍有效。

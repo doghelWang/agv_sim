@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")"
 JAR=$PREFIX/share/java/android.jar
 rm -rf obj bin; mkdir -p obj bin
-ecj -d obj -cp "$JAR" src/com/agvsim/cover/MainActivity.java
+ecj -d obj -cp "$JAR" src/com/agvsim/cover/*.java
 d8 --output bin --lib "$JAR" $(find obj -name '*.class')
 aapt package -f -M AndroidManifest.xml -I /system/framework/framework-res.apk -F bin/unsigned.apk
 (cd bin && aapt add unsigned.apk classes.dex >/dev/null)

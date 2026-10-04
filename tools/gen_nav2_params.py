@@ -108,6 +108,13 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
     # map→odom，proot 下这条等待路径会让 planner_server 的 TF 监听卡死。线路跟随 (FollowPath) 不用全局规划，
     # 动态障碍由局部代价地图 (odom 坐标系) 负责。NAV2_GLOBAL_OBSTACLES=1/0 强制开/关。
     _go = os.environ.get("NAV2_GLOBAL_OBSTACLES", "0" if os.path.exists("/system/build.prop") else "1") == "1"
+    # 局部代价地图的障碍层: Android (proot) 上同样默认关闭。它在 controller_server 进程里用 tf2 MessageFilter 等 odom→base 的 TF，
+    # 手机发热降频后扫描与 TF 的到达顺序偶尔颠倒，走到等待路径，controller_server 的 TF 监听整体卡死 (Flip 5 实测约 8 个任务一次):
+    # 控制器拿着几分钟前的位姿继续控制 —— 直线冲过终点、原地转个不停 ("Transform data too old when converting from map to odom")。
+    # 关闭后 Nav2 自己不再看障碍，避障/停车由执行进程安全层 (防护区，过滤 Nav2 输出的 cmd_vel) 负责，
+    # 原地转向的扫掠检查由 RouteFollow 用实测激光点完成。NAV2_LOCAL_OBSTACLES=1/0 强制开/关。
+    _lo = os.environ.get("NAV2_LOCAL_OBSTACLES", "0" if os.path.exists("/system/build.prop") else "1") == "1"
+    local_plugins = '["obstacle_layer", "inflation_layer"]' if _lo else '["inflation_layer"]'
     ctrl_hz = 20.0 if os.path.exists("/system/build.prop") else 30.0
     # RPP 查 map→odom 时最多等待 (s)；0.1 在树莓派上不够 (slam_toolbox 的 map→odom 偶尔落后 0.1~0.4 s → 线路跟随中断)
     rpp_tf_tol = float(os.environ.get("NAV2_TF_TOLERANCE", "0.3"))
@@ -388,7 +395,7 @@ local_costmap:
       transform_tolerance: 0.3
       footprint: "{_fmt_fp(fp)}"
       footprint_padding: {pad_local}
-      plugins: ["obstacle_layer", "inflation_layer"]
+      plugins: {local_plugins}
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true

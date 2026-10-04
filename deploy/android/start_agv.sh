@@ -11,6 +11,8 @@
 . ~/agv_common.sh
 echo "=== AMR 仿真节点启动 ($(getprop ro.product.model 2>/dev/null)) ==="
 termux-wake-lock 2>/dev/null || true
+# Termux 切到前台: 三星系统把不在前台的 Termux 限制到 3 个小核 (cpuset moderate)，在小核上启动时 Nav2 的 TF 监听容易卡死
+am start -n com.termux/.app.TermuxActivity >/dev/null 2>&1 || true
 [ -x ~/.agv_prestart.sh ] && ~/.agv_prestart.sh          # 可选: 自定义前置 (代理等)
 
 [ -d "$AGV_CODE" ] || { echo "[错误] 没有找到 $AGV_CODE，请先运行 install.sh"; exit 1; }
@@ -64,6 +66,12 @@ if [ "${AGV_AUTOSTART:-0}" = 1 ]; then
     setsid nohup python3 "$AGV_CODE/deploy/android/autostart.py" --hub "$HUB" --node "${AGENT_NAME:-phone}" \
         > ~/autostart.log 2>&1 < /dev/null &
     echo "[info] 自动拉起实例中 (约 2~5 分钟)，进度: tail -f ~/autostart.log，完成后地址写在 ~/agv_url.txt"
+fi
+
+# 外屏状态面板 (deploy/android/cover_app，装了才启动): 悬浮在 Termux 上面显示，屏幕常亮；AGV_COVER_PANEL=0 不启动
+if [ "${AGV_COVER_PANEL:-1}" = 1 ] && pm path com.agvsim.cover >/dev/null 2>&1; then
+    # 三星不允许从外屏上的应用打开别的应用页面，所以发广播让面板应用自己打开悬浮窗
+    am broadcast -n com.agvsim.cover/.StartReceiver >/dev/null 2>&1 && echo "[info] 外屏状态面板已打开 (长按面板关闭)"
 fi
 
 echo "==================================================="

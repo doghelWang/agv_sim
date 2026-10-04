@@ -42,10 +42,14 @@ def _setup(context, *args, **kwargs):
     st = [os.path.join(HERE, "slam_toolbox.yaml"), common]
     # map→odom 的时间戳 = 最近处理的那帧扫描时刻 + transform_timeout。slam_toolbox 处理扫描偶尔卡顿 (树莓派实测
     # 最多落后 0.37 s)，预留不够时 Nav2 控制器查 map 系位姿会"外推到未来"失败，连续失败 → FollowPath ABORTED
-    # ("Nav2 线路跟随中断")。Android (proot) 扫描匹配滞后更大，预留 0.8 s；其它平台 0.5 s。
+    # ("Nav2 线路跟随中断")。其它平台 0.5 s。Android (proot) 预留 2.0 s: 手机发热降频后 (Flip 5 大核降到一半频率) 实测 slam_toolbox
+    # 的 map→odom 最多落后 1.5 s，0.8 s 时 8 个任务里 FollowPath 被中断 18 次 (后退、重新对准，看起来就是原地绕圈)。
+    # map→odom 只在里程计漂移时才变化，2 s 内的变化可以忽略。
     android = os.path.exists("/system/build.prop")
-    st.append({"transform_timeout": float(os.environ.get("SLAM_TRANSFORM_TIMEOUT", "0.8" if android else "0.5"))})
+    st.append({"transform_timeout": float(os.environ.get("SLAM_TRANSFORM_TIMEOUT", "2.0" if android else "0.5"))})
     if android:
+        # 栅格地图 2 s → 10 s 重建一次: 建图模式下每次重建都要遍历全部关键帧，跑得越久越慢，重建期间扫描匹配停顿
+        st.append({"map_update_interval": float(os.environ.get("SLAM_MAP_INTERVAL", "10.0"))})
         # map→odom 50 Hz → 20 Hz：/tf 要扇出给十来个节点，proot 下每条都是被追踪的系统调用
         st.append({"transform_publish_period": float(os.environ.get("SLAM_TF_PERIOD", "0.05"))})
     if mode == "localization":

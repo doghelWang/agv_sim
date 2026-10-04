@@ -91,8 +91,8 @@ def main():
     ap.add_argument("--instance", default=os.environ.get("AGV_AUTOSTART_INSTANCE", ""))
     ap.add_argument("--scene", default=os.environ.get("AGV_AUTOSTART_SCENE", "grid_9_square"))
     ap.add_argument("--model", default=os.environ.get("AGV_AUTOSTART_MODEL", ""))
-    ap.add_argument("--planner", default=os.environ.get("AGV_AUTOSTART_PLANNER", "dijkstra"),
-                    help="实例起来后设置的规划器: dijkstra (自研，手机上精度更好) / nav2 / 空 = 不设置")
+    ap.add_argument("--planner", default=os.environ.get("AGV_AUTOSTART_PLANNER", "nav2"),
+                    help="实例起来后设置的规划器: nav2 (插件路线模式: 圆弧过弯 + 精定位停车) / dijkstra (自研导引) / 空 = 不设置")
     ap.add_argument("--timeout", type=float, default=900)
     a = ap.parse_args()
     HUB = a.hub.rstrip("/")
@@ -140,7 +140,7 @@ def main():
     ip = wlan_ip()
     port = web_port(i)
     nav_port = (i.get("ports") or {}).get("nav_api")
-    if a.planner and nav_port:   # 执行进程在手机上时 Nav2 跟线偏差 200~300 mm，自研导引约 50 mm (PERFORMANCE.md 第 4 节)
+    if a.planner and nav_port:   # 默认 Nav2 (插件路线模式，Flip 5 实测停车误差 < 5 mm)；AGV_AUTOSTART_PLANNER=dijkstra 用自研导引
         ok = wait(lambda: api_url(f"http://127.0.0.1:{nav_port}/api/v1/nav/planner", {"type": a.planner}) == a.planner, 180, 5)
         log("规划器", a.planner, "已设置" if ok else "设置失败 (可在工作台里手动选)")
     hub_port = HUB.rsplit(":", 1)[-1]

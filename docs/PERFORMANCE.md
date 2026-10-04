@@ -291,9 +291,10 @@ Nav2 规划，空闲 60 s / 导航中 (quick_nav_check)：
 只把求交放到 GPU (`cast`) 收益有限：640×480 时求交 16.7 → 9.7 ms，但 CPU 上的方向生成 (约 40 ms) 和带噪声的着色 (约 34 ms) 才是大头，
 所以整帧一起搬才有意义。实例里的 12 ms 比单测的 2.8 ms 高，是因为 10 帧/秒的负载下 GPU 不会升到高频。
 
-三星手机上的一个坑：Termux 不在前台时 (例如外屏显示别的应用)，系统把它的全部进程放进 `moderate` cpuset，只能用 3 个小核 (0-2)，
-此时 C 求交 76,800 条从 4.8 ms 变成 40~150 ms。`bash ~/status_agv.sh` 会显示当前可用的核；`am start -n com.termux/.app.TermuxActivity`
-把 Termux 切回前台即恢复 8 核。GPU 不受这个限制。
+三星手机上的一个坑：Termux 不在前台时 (外屏显示别的应用，或息屏进入 Doze)，系统把它的全部进程放进 `moderate` cpuset，只能用 3 个小核 (0-2)，
+此时 C 求交 76,800 条从 4.8 ms 变成 40~150 ms，整机负载升到 10 以上；在这种状态下启动实例，Nav2 的 TF 监听还会卡死 (NAVIGATION.md 第 8 节)。
+绑定服务 (BIND_IMPORTANT)、前台服务、电池不受限都不能把它移出 `moderate`，只有 Termux 是真正的前台应用才行。
+所以外屏面板做成悬浮窗盖在 Termux 上面，并让屏幕常亮 (deploy/android/README.md)；`bash ~/status_agv.sh` 会显示当前可用的核。GPU 不受这个限制。
 
 ## 7. 复现
 

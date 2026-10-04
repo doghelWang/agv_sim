@@ -121,7 +121,7 @@ async function tick() {
   } catch (e) { $("dot").className = "dot bad"; $("node").textContent = "平台无响应"; draw(null); return; }
   if (node) {
     $("node").textContent = node.name + (node.model ? " · " + node.model.replace(/\s*\(.*\)/, "") : "");
-    $("addr").textContent = ((node.ips || [])[0] || node.lan_host || location.hostname) + ":" + (location.port || 80);
+    $("addr").textContent = ((node.ips || []).concat([node.lan_host]).find(a => /^(192\.168|10)\./.test(a || "")) || node.lan_host || (node.ips || [])[0] || location.hostname) + ":" + (location.port || 80);
     num("cpu", node.cpu_percent, "%", 0, node.cpu_percent > 85 ? "bad-t" : "");
     num("temp", node.temp_c, "°C", 0, node.temp_c >= 70 ? "bad-t" : node.temp_c >= 55 ? "warn-t" : "");
     num("mem", node.mem_percent, "%", 0, node.mem_percent > 85 ? "warn-t" : "");
