@@ -191,7 +191,8 @@ class CppBridge:
         self._send(MAGIC + bytes([T_ROUTE]) + body.encode("utf-8"))
 
     def send_cancel(self) -> None:
-        self._send(MAGIC + bytes([T_CANCEL]))
+        # 末尾补 1 字节: 旧版 agv_ros_bridge 把恰好 5 字节的消息当成空帧丢掉 (取消从未到达 Nav2)
+        self._send(MAGIC + bytes([T_CANCEL, 0]))
 
     def send_config(self, cfg: dict) -> None:
         import json
@@ -203,7 +204,7 @@ class CppBridge:
         self._send(MAGIC + bytes([T_GUIDE]) + json.dumps(msg, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
     def send_guide_cancel(self) -> None:
-        self._send(MAGIC + bytes([T_GUIDE_CANCEL]))
+        self._send(MAGIC + bytes([T_GUIDE_CANCEL, 0]))            # 同上: 补 1 字节
 
     def send_mode(self, mode: dict, force: bool = False) -> None:
         import json

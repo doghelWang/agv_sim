@@ -36,6 +36,11 @@ adb shell am start --display 1 -n com.agvsim.cover/.MainActivity    # Z Flip 外
   (只有 3 个小核，绑定服务、前台服务、电池不受限都不管用)；在小核上启动实例时 Nav2 的 TF 监听容易卡死 (表现为 Nav2 任务不动或冲过终点)。
   没有悬浮窗权限时退回普通全屏页面，此时 Termux 被限核。
 - **屏幕常亮** (低亮度 0.2)：息屏后系统进入 Doze，同样限核，局域网也连不上。`--ez keep_on false` 关闭常亮，`--ef brightness 0.5` 调亮度。
-- 长按面板关闭悬浮窗；在 Termux 里 `am broadcast -n com.agvsim.cover/.StartReceiver` 重新打开 (三星不允许从外屏上的应用打开别的应用页面，所以 Termux 里不能用 `am start`)。`AGV_COVER_PANEL=0` 时 `start_agv.sh` 不自动打开。
+- **让出屏幕 (听音乐、用别的应用)**：长按面板 → 面板收起、回到外屏桌面，右下角留一个"↩ 面板"小按钮；这时可以打开音乐等应用。
+  点小按钮立刻回到面板，不点的话 3 分钟后自动回来 (`--ei yield_s 600` 改时长)；音乐应用在后台继续播放。长按小按钮才是彻底关闭悬浮窗。
+  注意让出期间 Termux 不在前台、只有 3 个小核，实时率会掉，正在跑的 Nav2 任务可能停下等定位 —— 选好歌就回来。
+- **前台看守** `~/keep_front.sh` (`start_agv.sh` 启动，`stop_agv.sh` 结束，`AGV_KEEP_FRONT=0` 关闭)：每 10 秒检查一次，Termux 连续 30 秒不在前台
+  (按了 HOME、别的应用弹到前面) 就让面板把自己和 Termux 调回前台；"让出屏幕"期间不打扰。记录在 `~/agv_front.log`。
+- 悬浮窗被关掉后，在 Termux 里 `am broadcast -n com.agvsim.cover/.StartReceiver` 重新打开 (三星不允许从外屏上的应用打开别的应用页面，所以 Termux 里不能用 `am start`)。`AGV_COVER_PANEL=0` 时 `start_agv.sh` 不自动打开。
 - `bash ~/status_agv.sh` 显示当前可用的 CPU 核，`0-7` 才是正常状态。
 - 手机开着 VPN 时，局域网里的其它设备可能连不上手机的 8022 / 8082 端口；用 `adb forward tcp:8022 tcp:8022` 走 USB，或关掉 VPN。

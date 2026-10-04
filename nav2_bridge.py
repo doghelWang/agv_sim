@@ -248,6 +248,17 @@ class Nav2Bridge:
             return self._active
         return self.client.server_is_ready()
 
+    def restart_stack(self) -> bool:
+        """Nav2 内部卡死 (控制器不出指令、连取消都不应答) 时整套重启；就绪状态清零，由看门狗重新确认激活"""
+        sup = self.supervisor
+        args = getattr(sup, "last_args", None)
+        if not args or not sup.enabled:
+            return False
+        self._route_active = False
+        self.goal_handle = None
+        self._active = False
+        return bool(sup.start(*args))
+
     def status(self) -> dict:
         return {"msgs": self.available, "server_ready": self.ready(), "process": self.supervisor.running(),
                 "active": getattr(self, "_active", None), "autostart": self.supervisor.enabled, "chassis": self.supervisor.chassis,
@@ -313,6 +324,15 @@ class Nav2Bridge:
     def send_route(self, route, x, y, yaw, mission_id, on_result, on_feedback=None, segs=None) -> str:
         """拓扑路线导航: route = [(x, y), ...] (含起点与终点)，segs = 场景静态线段 (末段精定位)。
         有 C++ 桥接时整个交给 agv_ros_bridge (发布路线/线段、NavigateToPose、限频回馈)；否则由本进程 rclpy 完成"""
+        # 上一个目标还在执行就来了新目标: 行为树只规划一次，Nav2 "抢占" 后仍沿旧路径走到旧终点，再把新目标报成"成功"
+        # (车停在旧目标处，任务却显示到达)。所以先取消旧目标，等取消落地 (0.8 s) 再发新的；
+        # 取消与下发只隔几毫秒 (任务流重新开始) 时，新目标会被接受但控制器不出指令、任务一直停在"导航中"，同样靠这段等待避开。
+        if getattr(self, "_route_active", False):
+            self.cancel(quiet=True)
+        gap = 0.8 - (time.time() - getattr(self, "_cancel_t", 0.0))
+        if gap > 0:
+            time.sleep(gap)
+        self._route_active = True
         self.mission_id = mission_id
         self.on_result = on_result
         self.on_feedback = on_feedback
@@ -321,7 +341,10 @@ class Nav2Bridge:
         if cpp is not None:
             cpp.on_nav = self._on_cpp_nav
             self._route_via_cpp = True
-            cpp.send_route(mission_id, route, (x, y, yaw), bt, segs)
+            # 每次下发带一个新编号 (任务号 × 1000 + 序号): 同一任务重新下发后，旧目标迟到的结果/回馈按编号丢弃
+            self._seq = getattr(self, "_seq", 0) + 1
+            self._token = int(mission_id) * 1000 + self._seq % 1000
+            cpp.send_route(self._token, route, (x, y, yaw), bt, segs)
             return ""
         self._route_via_cpp = False
         io = self._py_route_io()
@@ -373,11 +396,11 @@ class Nav2Bridge:
             if cb:
                 cb(float(m.get("d", 0.0)))
         elif k == "fb":
-            if self.on_feedback and m.get("mid") == self.mission_id:
+            if self.on_feedback and m.get("mid") == getattr(self, "_token", None):
                 self.on_feedback(self.mission_id, float(m.get("dist", 0.0)), float(m.get("t", 0)), int(m.get("rec", 0)))
         elif k == "result":
-            if self.on_result:
-                self.on_result(m.get("mid"), m.get("result", "ABORTED"))
+            if m.get("mid") == getattr(self, "_token", None):
+                self._result(self.mission_id, m.get("result", "ABORTED"))
         elif k == "event":
             cb = self.on_plugin_event
             if cb and isinstance(m.get("e"), dict):
@@ -531,10 +554,26 @@ class Nav2Bridge:
             st = fut.result().status
         except Exception:
             st = 6
-        if self.on_result:
-            self.on_result(mid, self.RESULT_TEXT.get(st, f"STATUS_{st}"))
+        self._result(mid, self.RESULT_TEXT.get(st, f"STATUS_{st}"))
 
-    def cancel(self):
+    def _result(self, mid, result):
+        """目标结束。被新目标顶掉 (cancel(quiet=True)) 的旧目标的 CANCELED 不上报: 同一任务重新下发时它会把任务标成已取消"""
+        q = getattr(self, "_quiet_cancel", None)
+        if q and result == "CANCELED" and mid == q[0] and time.time() - q[1] < 5.0:
+            self._quiet_cancel = None
+            return
+        if mid == self.mission_id:
+            self._route_active = False
+        if self.on_result:
+            self.on_result(mid, result)
+
+    def cancel(self, quiet=False):
+        self._cancel_t = time.time()
+        if quiet and getattr(self, "_route_active", False) and not getattr(self, "_route_via_cpp", False):
+            self._quiet_cancel = (self.mission_id, self._cancel_t)
+        self._route_active = False
+        if quiet:
+            self._token = None                 # C++ 桥接: 被顶掉的旧目标的结果/回馈不再上报
         cpp = self._cpp()
         if cpp is not None and self._route_via_cpp:
             cpp.send_cancel()

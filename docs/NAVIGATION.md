@@ -356,4 +356,26 @@ M1 上执行侧整体约 0.8~1.1 核、仿真约 0.2 核，内存合计约 0.5 G
 - Android 上 Nav2 自己不再看障碍 (两个代价地图都没有障碍层)：遇到障碍时由执行进程安全层停车，Nav2 等到"无进展"后走恢复流程。`NAV2_LOCAL_OBSTACLES=1` 可以打开，但会带回原因 3。
 - slam_toolbox 的定位模式 (保存地图后只定位) 在这台手机上不可用：切换后两个任务内 map→odom 停止更新 (进程还在)。目前保持"边建图边定位"。
 - 里程计朝向漂移约 3°/任务 (单舵轮原地转向)，全靠 slam 修正；slam 停更 1 s 以上执行进程会停车等待 (`LOC_STALE`)。
-- 没有自动检测 Nav2 内部 TF 卡死的看门狗。
+- Nav2 内部 TF 卡死仍可能出现，现在由停滞看门狗兜底 (8.5 节)，不再需要手工重启实例。
+
+### 8.5 运行日志里的失败任务：原因与处理 (2026-10-04，实例 i01 运行日志)
+
+把执行进程日志 (`~/.agv-agent/logs/agv-nav-i01.log`) 和事件流里所有失败/卡住的任务逐个对到原因，共五类：
+
+| # | 现象 | 根因 | 处理 |
+|---|---|---|---|
+| 1 | 任务显示"到达"，车却停在**上一个**目标处 (`NAV2_SUCCEEDED … 目标误差 706 cm`)；取消后车还在按旧路径转；任务流"重新开始"后任务一直"导航中"、车不动 | **取消从未到达 Nav2**：执行进程发给 C++ 桥接的取消消息只有 5 字节 (无正文)，`agv_ros_bridge` 的接收循环用 `n <= 5` 把它当空帧丢了。旧目标没被取消，新目标成了"抢占"；路线行为树只规划一次，于是继续沿旧路径走到旧终点，再把**新**目标报成成功 | `rx_loop` 改为 `n < 5`；Python 侧取消消息补 1 字节 (旧版桥接不用重编也能收到)；`send_route` 发现上一个目标还在执行时先取消、等 0.8 s 再发；每次下发带新编号，旧目标迟到的结果按编号丢弃 |
+| 2 | 任务一下发就 `ABORTED`，日志 `Timed out while waiting for action server to acknowledge goal request for compute_path_to_pose / follow_path / wait / adjust_pose` (17 次) | 行为树等动作服务器应答只给 20 ms (Nav2 默认 `default_server_timeout`)。Termux 不在前台 (被限到 3 个小核) 或启动 Nav2 的头几十秒，应答超过 20 ms | Android 上 `bt_loop_duration` 20 ms、`default_server_timeout` 200 ms (`NAV2_BT_LOOP_MS` / `NAV2_BT_SERVER_TIMEOUT_MS`)；前台看守 `keep_front.sh` 每 10 s 检查，连续 30 s 不在前台就把面板和 Termux 调回前台 (记录在 `~/agv_front.log`) |
+| 3 | `LOC_STALE` 停车 → `NAV2_RETRY 后退 0.20 m` → 之后不动 | 同样是 Termux 离开前台 (按了 HOME、外屏打开别的应用)：slam_toolbox 落到小核上，map→odom 停更 | 同上 (前台看守)；需要用外屏做别的事时用面板的"让出屏幕"(到时间自动回来，见 `deploy/android/README.md`)，让出期间不建议跑任务 |
+| 4 | 任务"导航中"但车一动不动，`Failed to get result for follow_path in node halt!`，`controller_server … missed deadline to stop` | controller_server 卡死 (8.2 的原因 3，小核上更容易出现)，连取消都不应答 | 停滞看门狗 (执行进程，独立线程)：导航中 30 s 没有移动、没有恢复动作、防护区也没挡 → 第 1 次取消后从当前位置重新下发；重新下发后仍不动或立刻被 Nav2 中止 → **重启整套 Nav2** 后再下发；仍不行才报失败 (`NAV2_STALL` 事件；`NAV2_STALL_S` 调时间) |
+| 5 | Nav2 重启 (看门狗、换车型) 后一直"未就绪"，150 s 后又被重启，循环 | `agv_ros_bridge` 查询 lifecycle_manager `is_active` 时，请求发出后 Nav2 被重启、应答永远不来，"等待应答"标志不复位，之后不再查询 | 请求 6 s 无应答就放弃重发 |
+
+另外，手机一直处在发热降频状态 (大核 1170~1480 MHz，满频 2803；负载 6~12；工作台页面开着时 web_gateway 占用明显)，上面 2~4 都因此更容易出现；加散热或关掉不看的工作台页面有帮助。
+
+验证 (Flip 5，降频状态)：行驶中换目标 5 次连发 → 最终目标 2~6 mm 到位；行驶中取消后立刻下发新目标 → 43 s 到达，偏差 4 mm；
+冻结 controller_server 进程模拟卡死 → 30 s 后重新下发、被中止后重启 Nav2、再下发，任务 89 s 到达 (偏差 3 mm)；
+四工位一圈 4/4，32~34 s/任务，停车误差 3~5 mm，碰撞 0。
+
+仍然存在：实例启动时 Nav2 偶尔卡在激活 (TF 监听卡死，本轮 6 次启动遇到 2 次，都在手机刚满载编译完、最热的时候)，
+要等 150 s 的启动看门狗重启一次才起来；Nav2 重启时如果某个节点进程对 SIGINT 无反应，可能留下孤儿进程 (重启实例可清掉)。
+

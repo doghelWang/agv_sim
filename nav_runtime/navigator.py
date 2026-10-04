@@ -48,7 +48,7 @@ class _NoNav2:
     def send_goal(self, *a, **k):
         return "Nav2 不可用: 执行进程未运行 ROS 2 / Nav2"
 
-    def cancel(self):
+    def cancel(self, quiet=False):
         pass
 
     def load_map(self, *a):
@@ -1656,7 +1656,72 @@ class Navigator:
             self.telemetry["path_labels"] = labels[:n_pts]
             self.telemetry["path_index"] = 1 if n_pts >= 2 else 0
 
+        stall = {"t": time.time(), "pose": None, "rec": -1, "rec_now": 0, "done": False}
+
+        def stall_recover(mid, n, why):
+            """n = 此前已处理的次数。0: 取消后从当前位置重新下发；1: Nav2 自己卡死 (控制器连取消都不应答)，整套重启后再下发；2: 放弃"""
+            if n < 2:
+                # 第 1 次: 取消后重新下发；第 2 次: Nav2 自己卡死了 (控制器连取消都不应答)，整套重启后再下发
+                hard = n == 1 and hasattr(self.nav2, "restart_stack")
+                self.event_hub.emit("navigation", "NAV2_STALL", "warning", f"Nav2 任务 #{mid} 停滞，{'重启 Nav2 后' if hard else ''}重新下发 ({n + 1}/2)",
+                                    f"{why}；"
+                                    + ("重新下发后仍不动，重启 Nav2" if hard else "取消后从当前位置重新下发"), {"mission_id": mid})
+
+                def resend():
+                    self.nav2.cancel(quiet=True)
+                    time.sleep(1.0)
+                    if hard and self.nav2.restart_stack():
+                        t_end = time.time() + float(os.environ.get("NAV2_RESTART_WAIT", "120"))
+                        time.sleep(5.0)
+                        while time.time() < t_end and not self.nav2.agv_ready() and self.current_mission_id == mid:
+                            time.sleep(0.5)
+                        time.sleep(2.0)
+                    with self.lock:
+                        ok = self.current_mission_id == mid
+                        cx, cy = self.telemetry["x"], self.telemetry["y"]
+                    if ok:
+                        self._send_nav2_goal(mid, cx, cy, x, y, yaw, matched_station, stations, _waited=True)
+                threading.Thread(target=resend, daemon=True, name=f"nav2-stall-{mid}").start()
+            else:
+                self.event_hub.emit("navigation", "NAV2_STALL", "danger", f"Nav2 任务 #{mid} 停滞", "重新下发、重启 Nav2 后仍不动，放弃；请重启实例", {"mission_id": mid})
+                self.nav2.cancel()
+                on_result(mid, "ABORTED", _final=True)
+
+        def stall_watch(mid=mission_id):
+            # 停滞看门狗 (独立线程，不依赖 Nav2 回馈 —— Nav2 卡死时回馈也会停): 任务在"导航中"，但车 30 s 没动、没有在恢复、
+            # 防护区也没挡 —— Nav2 内部卡住了。第 1 次取消后从当前位置重新下发；第 2 次整套重启 Nav2 再下发；再不行才放弃。
+            while self.running and not stall["done"]:
+                time.sleep(2.0)
+                with self.lock:
+                    if self.current_mission_id != mid:
+                        return
+                    px, py, pyaw = self.telemetry["x"], self.telemetry["y"], self.telemetry["yaw"]
+                    waiting = self.telemetry["nav_status"] != "NAVIGATING" or self.telemetry.get("is_paused")
+                if stall["done"]:
+                    return
+                try:
+                    zone = (self.safety_state().get("obstacle") or {}).get("zone", "clear")
+                except Exception:
+                    zone = "clear"
+                now = time.time()
+                p0 = stall["pose"]
+                recoveries = stall["rec_now"]
+                moved = p0 is None or math.hypot(px - p0[0], py - p0[1]) > 0.02 or abs(math.atan2(math.sin(pyaw - p0[2]), math.cos(pyaw - p0[2]))) > 0.035
+                if moved or recoveries != stall["rec"] or waiting or zone not in ("clear", None):
+                    stall.update(t=now, pose=(px, py, pyaw), rec=recoveries)
+                    continue
+                if now - stall["t"] <= float(os.environ.get("NAV2_STALL_S", "30")):
+                    continue
+                stall["done"] = True                         # 本线程到此为止 (重新下发后是新的看门狗)
+                if not hasattr(self, "_nav2_stall_n"):
+                    self._nav2_stall_n = {}
+                n = self._nav2_stall_n.get(mid, 0)
+                self._nav2_stall_n[mid] = n + 1
+                stall_recover(mid, n, f"导航中但 30 s 没有移动 (位置 {px:.2f}, {py:.2f})，没有障碍也没有恢复动作")
+                return
+
         def on_fb(mid, dist, t_sec, recoveries, poses_remaining=None):
+            stall["rec_now"] = recoveries
             with self.lock:
                 if self.current_mission_id == mid:
                     if poses_remaining is not None and n_pts >= 2:
@@ -1666,11 +1731,18 @@ class Navigator:
                     if self.telemetry["nav_status"] in ("PLANNING", "OBSTACLE_WAIT"):
                         self.telemetry["nav_status"] = "NAVIGATING"
 
-        def on_result(mid, result):
+        def on_result(mid, result, _final=False):
             status = {"SUCCEEDED": "ARRIVED", "CANCELED": "CANCELED"}.get(result, "FAILED")
             with self.lock:
                 if self.current_mission_id != mid:
                     return
+            stall["done"] = True
+            if result == "ABORTED" and not _final and getattr(self, "_nav2_stall_n", {}).get(mid, 0) == 1 and hasattr(self.nav2, "restart_stack"):
+                # 停滞后重新下发的目标立刻被 Nav2 拒绝执行 (控制器已卡死，行为树连目标都交不出去): 不算任务失败，重启 Nav2 再试
+                self._nav2_stall_n[mid] = 2
+                stall_recover(mid, 1, "停滞后重新下发的目标被 Nav2 中止 (控制器无应答)")
+                return
+            with self.lock:
                 self.telemetry["nav_status"] = status
                 if status == "ARRIVED":
                     self.telemetry["nav_dist_rem"] = 0.0
@@ -1736,6 +1808,7 @@ class Navigator:
             with self.lock:
                 self.telemetry["nav_status"] = "NAVIGATING"
             self.push_core(force_mode=True)
+            threading.Thread(target=stall_watch, daemon=True, name=f"nav2-stall-watch-{mission_id}").start()
             self.event_hub.emit("navigation", "MISSION_DISPATCH", "info", f"Nav2 导航任务 #{mission_id}",
                                 f"拓扑路线 {len(pts) - 1} 个路段 → ({x:.2f}, {y:.2f}, {math.degrees(yaw):.0f}°)，Nav2 插件: "
                                 "AgvRoute 规划 (圆弧过弯/拐点转向) + RouteFollow 跟随 (停车精度) + adjust_pose 恢复", {"route_points": len(pts)})

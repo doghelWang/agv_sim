@@ -8,24 +8,33 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.view.Display;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.WebView;
+import android.widget.TextView;
 
-/** 悬浮窗面板: 全屏盖在指定屏幕上，不抢焦点 (下面的 Termux 仍是前台应用)。长按面板关闭。
+/** 悬浮窗面板: 全屏盖在指定屏幕上，不抢焦点 (下面的 Termux 仍是前台应用)。
  *  打开: 应用图标 / adb am start，或在 Termux 里 am broadcast -n com.agvsim.cover/.StartReceiver
- *  (可带 --es url … --ez keep_on false --ef brightness 0.5 --ei display 1) */
+ *  (可带 --es url … --ez keep_on false --ef brightness 0.5 --ei display 1 --ei yield_s 180)
+ *  长按面板 = 临时让出屏幕: 面板收成右下角一个小按钮并回到桌面，可以打开音乐等别的应用；点小按钮或过 yield_s 秒 (默认 180)
+ *  自动回来 (Termux 回到前台，面板盖上；音乐在后台继续播)。让出期间 Termux 只有小核可用。长按小按钮 = 关闭面板。 */
 public class OverlayService extends Service {
     private WindowManager wm;
     private WebView web;
+    private View chip;
+    private Intent lastReq = new Intent();
+    private Display lastDisplay;
+    private long yieldUntil;             // 让出屏幕期间 (elapsedRealtime, ms) 忽略外部的打开请求 (启动脚本的前台看守每 30 秒会发一次)
     private final Handler h = new Handler();
 
     @Override public IBinder onBind(Intent i) { return null; }
@@ -36,9 +45,12 @@ public class OverlayService extends Service {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         nm.createNotificationChannel(new NotificationChannel("panel", "状态面板", NotificationManager.IMPORTANCE_MIN));
         startForeground(1, new Notification.Builder(this, "panel").setContentTitle("AMR 仿真面板")
-                .setContentText("悬浮显示中，长按面板关闭").setSmallIcon(android.R.drawable.ic_menu_view).build());
+                .setContentText("悬浮显示中；长按面板临时让出屏幕").setSmallIcon(android.R.drawable.ic_menu_view).build());
+        if (SystemClock.elapsedRealtime() < yieldUntil && !in.getBooleanExtra("force", false)) return START_STICKY;
+        yieldUntil = 0;
         remove();
         h.removeCallbacksAndMessages(null);
+        lastReq = in;
         final Intent req = in;
         final boolean keep = in.getBooleanExtra("keep_on", true);
         DisplayManager dm0 = (DisplayManager) getSystemService(DISPLAY_SERVICE);
@@ -99,8 +111,9 @@ public class OverlayService extends Service {
         if (keepOn) lp.screenBrightness = in.getFloatExtra("brightness", 0.2f);
         if (Build.VERSION.SDK_INT >= 28) lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         final GestureDetector gd = new GestureDetector(c, new GestureDetector.SimpleOnGestureListener() {
-            @Override public void onLongPress(MotionEvent e) { stopSelf(); }
+            @Override public void onLongPress(MotionEvent e) { yieldScreen(); }
         });
+        lastDisplay = d;
         web.setOnTouchListener(new View.OnTouchListener() {
             public boolean onTouch(View v, MotionEvent e) { gd.onTouchEvent(e); return true; }
         });
@@ -119,8 +132,44 @@ public class OverlayService extends Service {
         }
     }
 
+    /** 临时让出屏幕: 面板换成一个小按钮，回到桌面；到时间或点小按钮后恢复 */
+    private void yieldScreen() {
+        final Context c = web != null ? web.getContext() : this;
+        int sec = Math.max(10, lastReq.getIntExtra("yield_s", 180));
+        if (web != null) { try { wm.removeView(web); } catch (Exception e) {} web.destroy(); web = null; }
+        yieldUntil = SystemClock.elapsedRealtime() + sec * 1000L;
+        TextView t = new TextView(c);
+        t.setText("\u21A9 面板");
+        t.setTextColor(0xFFE8EEF5); t.setTextSize(15); t.setPadding(28, 16, 28, 16);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xCC0E151D); bg.setCornerRadius(40); bg.setStroke(2, 0xFF4DA3FF);
+        t.setBackground(bg);
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON, PixelFormat.TRANSLUCENT);
+        lp.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.RIGHT; lp.x = 16; lp.y = 90;
+        t.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { restore(); } });
+        t.setOnLongClickListener(new View.OnLongClickListener() { public boolean onLongClick(View v) { stopSelf(); return true; } });
+        try { wm.addView(t, lp); chip = t; } catch (Exception e) { chip = null; }
+        Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            if (lastDisplay != null) startActivity(home, ActivityOptions.makeBasic().setLaunchDisplayId(lastDisplay.getDisplayId()).toBundle());
+            else startActivity(home);
+        } catch (Exception e) { /* 回不了桌面也没关系: 面板已经收起，用户自己切 */ }
+        h.removeCallbacksAndMessages(null);
+        h.postDelayed(new Runnable() { public void run() { restore(); } }, sec * 1000L);
+    }
+
+    private void restore() {
+        yieldUntil = 0;
+        h.removeCallbacksAndMessages(null);
+        remove();
+        show(lastReq);
+    }
+
     private void remove() {
         if (web != null) { try { wm.removeView(web); } catch (Exception e) {} web.destroy(); web = null; }
+        if (chip != null) { try { wm.removeView(chip); } catch (Exception e) {} chip = null; }
     }
 
     @Override public void onDestroy() { h.removeCallbacksAndMessages(null); remove(); super.onDestroy(); }

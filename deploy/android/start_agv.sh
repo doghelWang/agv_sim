@@ -22,6 +22,13 @@ if [ "${AGV_COVER_PANEL:-1}" = 1 ] && pm path com.agvsim.cover >/dev/null 2>&1; 
 else
     am start -n com.termux/.app.TermuxActivity >/dev/null 2>&1 || true
 fi
+# 前台看守 (keep_front.sh): 离开前台约 30 秒后自动把面板和 Termux 调回前台。AGV_KEEP_FRONT=0 关闭 (要在手机上长时间用别的应用时)
+if [ "${AGV_KEEP_FRONT:-1}" = 1 ] && [ "${AGV_COVER_PANEL:-1}" = 1 ] && [ -f ~/keep_front.sh ] && pm path com.agvsim.cover >/dev/null 2>&1 \
+        && ! kill -0 "$(cat ~/.agv_front.pid 2>/dev/null)" 2>/dev/null; then
+    nohup bash ~/keep_front.sh >/dev/null 2>&1 < /dev/null &
+    echo $! > ~/.agv_front.pid
+    echo "[info] 前台看守已启动 (离开前台约 30 秒后自动调回；AGV_KEEP_FRONT=0 关闭)"
+fi
 echo "[info] 可用 CPU 核: $(grep Cpus_allowed_list /proc/self/status | awk '{print $2}') (cpuset $(cat /proc/self/cpuset 2>/dev/null))"
 [ -x ~/.agv_prestart.sh ] && ~/.agv_prestart.sh          # 可选: 自定义前置 (代理等)
 

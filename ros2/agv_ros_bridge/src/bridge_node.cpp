@@ -303,7 +303,7 @@ class AgvRosBridge : public rclcpp::Node {
     std::vector<uint8_t> buf(1 << 20);
     while (!stop_ && rclcpp::ok()) {
       ssize_t n = recv(in_fd_, buf.data(), buf.size(), 0);
-      if (n <= 5) continue;
+      if (n < 5) continue;                              // 取消类消息只有 5 字节 (无正文): 不能用 <= 5，否则取消被丢掉
       if (std::memcmp(buf.data(), MAGIC, 4) != 0) continue;
       Reader r{buf.data() + 5, buf.data() + n};
       try {
@@ -1040,8 +1040,12 @@ class AgvRosBridge : public rclcpp::Node {
   // ================================================================ 其余 ROS 接口 (核心模式)
   // Nav2 生命周期 (lifecycle_manager is_active，2 s 一次) 与 ROS 图 → Python
   void poll_ros() {
+    // 请求发出后 lifecycle_manager 退出 (Nav2 重启) 时应答永远不来: 等 6 s 仍无应答就放弃这次请求重新发，
+    // 否则 Nav2 重启后再也查不到"已激活"，执行进程一直认为 Nav2 未就绪
+    if (active_pending_ && now_s() - active_sent_ > 6.0) active_pending_ = false;
     if (active_cli_->service_is_ready() && !active_pending_) {
       active_pending_ = true;
+      active_sent_ = now_s();
       active_cli_->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>(),
                                       [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture f) {
                                         active_pending_ = false;
@@ -1506,6 +1510,7 @@ class AgvRosBridge : public rclcpp::Node {
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::TimerBase::SharedPtr ros_timer_;
   std::atomic<bool> nav2_active_{false}, active_pending_{false};
+  std::atomic<double> active_sent_{0.0};
   uint32_t map_rev_ = 0;
   // ---- 自研导引
   std::unique_ptr<guide::Guidance> guide_;
