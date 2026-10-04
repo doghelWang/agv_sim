@@ -130,6 +130,46 @@ def parse_cpus(spec):
     return out or None
 
 
+# ---------------------------------------------------------------- 精简 proot 参数
+# proot-distro login 固定带 --kernel-release (伪造内核版本号) 和 --change-id=0:0 (伪装成 root)。它们各自加载一个 proot 扩展，
+# 把一批本来不用管的系统调用也拦下来 (每次拦截 = 两次进程切换，手机小核上 0.2~1 ms):
+#   --kernel-release → kompat 扩展: futex、epoll_pwait、pselect6、fcntl、eventfd2、pipe2 …  (事件循环、线程唤醒每次都被拦)
+#   --change-id      → fake_id0 扩展: getuid 一族、fstat/stat 的返回、chown/chmod …
+# 运行期的仿真/执行/ROS 进程用不到这两个伪装 (内核本身够新；不装软件，不需要 root 身份)，去掉后实测 (Flip 5，小核):
+#   epoll_wait 192 → 7 µs，线程唤醒往返 1266 → 300 µs，getuid 231 → 1 µs，stat 1112 → 640 µs。
+# AGV_PROOT_DROP 是要去掉的参数前缀 (逗号分隔)，设为空串即恢复 proot-distro 原样。装软件、交互登录仍用 proot-distro login。
+_DROP = [x for x in os.environ.get("AGV_PROOT_DROP", "--kernel-release,--change-id").split(",") if x]
+_tmpl = {"argv": None, "t": 0.0}
+_MARK = "__AGV_SCRIPT__"
+
+
+def lean_cmd(script):
+    """返回去掉 _DROP 参数的 proot 命令 (list)；拿不到 proot-distro 的命令模板时返回 None (调用方退回 proot-distro login)"""
+    if not _DROP:
+        return None
+    if _tmpl["argv"] is None and time.time() - _tmpl["t"] > 60:
+        _tmpl["t"] = time.time()
+        try:
+            out = subprocess.run(["proot-distro", "login", DISTRO, "--get-proot-cmd", "--", "bash", _MARK],
+                                 capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL).stdout
+            i = out.find("env \\\n")            # 前面有一行说明文字
+            argv = shlex.split(out[i:].replace("\\\n", " ").replace("\\\r\n", " ")) if i >= 0 else []
+            if "--rootfs" in " ".join(argv) and any(_MARK in a for a in argv) and any(a.endswith("/proot") for a in argv):
+                _tmpl["argv"] = argv
+            else:
+                log(f"[警告] 无法解析 proot-distro --get-proot-cmd 的输出，沿用 proot-distro login")
+        except Exception as e:  # noqa
+            log(f"[警告] proot-distro --get-proot-cmd 失败 ({e})，沿用 proot-distro login")
+    if _tmpl["argv"] is None:
+        return None
+    out = []
+    for a in _tmpl["argv"]:
+        if any(a == d or a.startswith(d + "=") for d in _DROP):
+            continue
+        out.append(a.replace(_MARK, shlex.quote(script)) if _MARK in a else a)
+    return out
+
+
 def spawn(req):
     name = req["name"]
     argv = [str(a) for a in req["argv"]]
@@ -159,7 +199,7 @@ def spawn(req):
                 os.sched_setaffinity(0, cpus)
             except OSError:
                 pass        # 例如 Termux 在后台 cgroup 里没有大核: 不绑定
-    p = subprocess.Popen(["proot-distro", "login", DISTRO, "--", "bash", script],
+    p = subprocess.Popen(lean_cmd(script) or ["proot-distro", "login", DISTRO, "--", "bash", script],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True, preexec_fn=pre)
     with lock:

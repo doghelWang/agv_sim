@@ -336,6 +336,47 @@ Nav2 规划，空闲 60 s / 导航中 (quick_nav_check)：
   而单进程会把 TF 卡死的影响扩大到全部节点)。心跳周期不要调小 (只会增加流量)。
 - 仍然偏高的：web_gateway 29% + 追踪 20% (忙时 10 Hz 拉快照 + 外屏面板轮询)；slam_toolbox 约 30%。
 
+### 6.10 proot 到底拦了哪些系统调用；小核问题 (Flip 5，2026-10-04)
+
+**哪些调用被拦** (同一个微基准，µs/次，手机在小核上；"原生"= Termux 里直接运行)：
+
+| 调用 | 原生 | proot-distro 默认 | 去掉 `--kernel-release`、`--change-id` |
+|---|---|---|---|
+| `epoll_wait` | 4 | 192 | **5** |
+| 线程唤醒往返 (futex) | 413 | 1266 | **300~440** |
+| `getuid` | 2 | 231 | **1** |
+| `stat` | 43 | 1112 | 640 |
+| UDP 收发一对 | 57 | 469 | 390~600 (仍被拦) |
+| Unix 报文收发一对 | 17 | 521 | 330~540 (仍被拦) |
+| pipe 读写、`clock_gettime` | — | 与原生相同 | 与原生相同 |
+
+原因在 proot 的参数：`--kernel-release` (伪造内核版本) 会加载 kompat 扩展，它把 **futex、epoll_pwait、pselect6、fcntl、eventfd2、pipe2** 都列入拦截
+(本意是在很老的内核上模拟新调用，这台手机内核 5.15 根本用不上)；`--change-id=0:0` (伪装 root) 加载 fake_id0 扩展，拦 getuid 一族并在
+每个 stat/open 返回时再拦一次。运行期进程两者都不需要，`proot_spawner.py` 现在自己拼 proot 命令并去掉这两个参数
+(`AGV_PROOT_DROP`，设为空串恢复原样；装软件、交互登录仍用 `proot-distro login`)。
+
+效果 (前台，四工位一圈，接 6.9 的最后一行)：proot 追踪 CPU 68% → **38%**，合计 212% → **167%**；bt_navigator / controller_server 各自的追踪开销
+5% → 1.5%。任务 4/4，DDS 往返不变 (中位 2 ms)。
+
+还被拦的是 socket 收发 (`sendto/recvfrom/sendmsg/recvmsg`)：Termux 版 proot 为了伪造 netlink 应答 (Android 不让应用查网卡) 把它们放在核心
+拦截表里，命令行关不掉。要去掉得自己编一个 proot 并给 ROS 进程垫一个 `getifaddrs` —— 目前剩余的追踪开销里 ROS 进程合计只有约 10%，暂不做。
+
+**为什么 Termux 会掉到小核** (adb 只读查看)：
+
+| cpuset | 核 | 谁在里面 |
+|---|---|---|
+| top-app | 0-7 | 当前前台应用 |
+| foreground | 0-6 | 其它带前台服务的应用 (外屏面板、sing-box、系统界面…)，调度组 2 |
+| moderate | **0-2** | 整机只有 Termux 及其子进程，调度组 6 (三星自有) |
+
+也就是说，同样是"前台服务、不在前台"，别的应用能用 7 个核，三星只把 Termux 单独降到 3 个小核 (判定依据未查明)。另外系统设置
+`restricted_device_performance=1`，即"性能配置文件"处于"轻量"档，降频和这条规则都可能与它有关，需要在手机设置里改回"标准"后复测。
+
+**小核上的实际表现** (按 HOME 键让 Termux 离开前台，精简 proot 之后)：四工位 **1/4** 到达。仿真本身仍是实时 (rtf 1.0)，CPU 也没用满
+(合计 143% / 300%)，垮掉的是 Nav2：controller_server 的 TF 监听停更 (`Extrapolation Error … into the past`，请求时间戳固定不变)，
+随后控制器不出指令、取消无应答、Nav2 重启后激活不了。DDS 往返 p99 23~30 ms，最大 0.8~1.9 s。
+结论：精简 proot 让前台更省，但**救不了小核**；小核上必须先解决 TF 监听停更 (现在可以用 HOME 键稳定复现)，否则只能保证不掉到小核。
+
 ## 7. 复现
 
 ```bash
