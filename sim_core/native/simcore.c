@@ -668,3 +668,174 @@ void sc_cam_shade(const double *o, const double *dirs, const double *dist, const
         }
     }
 }
+
+
+/* ====================================================================== 相机/3D 射线求交 (不经 MuJoCo)
+ * sc_cast_prims: 单原点多射线对 group 0 几何体 (有向长方体 + 圆柱) 求交，外加解析地面 z=0 与屋顶；pthread 多线程。
+ * 语义与 MuJoCoBackend.cast (mj_multiRay + numpy 后处理) 一致，结果逐射线相同；场景几何体少 (几十个) 时比 BVH 遍历快数倍。
+ * prims 每个 18 个 double: [0..2] 中心  [3..11] 旋转矩阵 (行主序，局部→世界)  [12..14] 半尺寸 (圆柱: r, r, 半高)
+ *                          [15] 类型 (0 长方体, 1 圆柱)  [16] 几何体编号  [17] 包围球半径
+ */
+#include <pthread.h>
+#define SC_PRIM_N 18
+#define SC_CAST_MAX_THREADS 16
+
+/* ------------------------------------------------------------------ 求交 */
+/* ol3: 射线原点在几何体局部系下的坐标 (同一原点的所有射线共用，由调用方预先算好) */
+static inline int hit_box(const double *p, const double *ol3, const double *d, double *t_out, double *n_out) {
+    const double *R = p + 3, *h = p + 12;
+    double tn = -1e300, tf = 1e300;
+    int an = -1; double sn = 0.0;
+    for (int a = 0; a < 3; a++) {
+        /* 局部轴 a = R 的第 a 列 */
+        double ax = R[a], ay = R[3 + a], az = R[6 + a];
+        double ol = ol3[a];
+        double dl = d[0] * ax + d[1] * ay + d[2] * az;
+        if (fabs(dl) < 1e-12) {
+            if (fabs(ol) > h[a]) return 0;
+            continue;
+        }
+        double t1 = (-h[a] - ol) / dl, t2 = (h[a] - ol) / dl, s = -1.0;
+        if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; s = 1.0; }
+        if (t1 > tn) { tn = t1; an = a; sn = s; }
+        if (t2 < tf) tf = t2;
+        if (tn > tf) return 0;
+    }
+    if (tf < 0.0) return 0;
+    double t = tn;
+    if (tn < 0.0) {            /* 原点在盒内: 取出射点 */
+        t = tf;
+        an = -1;
+        double best = 1e300;
+        for (int a = 0; a < 3; a++) {
+            double ax = R[a], ay = R[3 + a], az = R[6 + a];
+            double ol = ol3[a], dl = d[0] * ax + d[1] * ay + d[2] * az;
+            double pl = ol + dl * t, e = fabs(fabs(pl) - h[a]);
+            if (e < best) { best = e; an = a; sn = pl > 0 ? 1.0 : -1.0; }
+        }
+    }
+    *t_out = t;
+    if (n_out && an >= 0) { n_out[0] = sn * R[an]; n_out[1] = sn * R[3 + an]; n_out[2] = sn * R[6 + an]; }
+    return 1;
+}
+
+static inline int hit_cyl(const double *p, const double *ol, const double *d, double *t_out, double *n_out) {
+    const double *R = p + 3;
+    double r = p[12], hz = p[14];
+    double dl[3];
+    for (int a = 0; a < 3; a++) dl[a] = d[0] * R[a] + d[1] * R[3 + a] + d[2] * R[6 + a];
+    double best = 1e300, nl[3] = {0, 0, 0};
+    double A = dl[0] * dl[0] + dl[1] * dl[1], B = ol[0] * dl[0] + ol[1] * dl[1], C = ol[0] * ol[0] + ol[1] * ol[1] - r * r;
+    if (A > 1e-18) {
+        double disc = B * B - A * C;
+        if (disc >= 0.0) {
+            double sq = sqrt(disc);
+            for (int k = 0; k < 2; k++) {
+                double t = (k == 0 ? (-B - sq) : (-B + sq)) / A;
+                if (t < 0.0 || t >= best) continue;
+                double z = ol[2] + dl[2] * t;
+                if (fabs(z) > hz) continue;
+                best = t; nl[0] = (ol[0] + dl[0] * t) / r; nl[1] = (ol[1] + dl[1] * t) / r; nl[2] = 0.0;
+            }
+        }
+    }
+    if (fabs(dl[2]) > 1e-12) {
+        for (int k = 0; k < 2; k++) {
+            double zc = k == 0 ? -hz : hz, t = (zc - ol[2]) / dl[2];
+            if (t < 0.0 || t >= best) continue;
+            double x = ol[0] + dl[0] * t, y = ol[1] + dl[1] * t;
+            if (x * x + y * y > r * r) continue;
+            best = t; nl[0] = 0.0; nl[1] = 0.0; nl[2] = k == 0 ? -1.0 : 1.0;
+        }
+    }
+    if (best >= 1e299) return 0;
+    *t_out = best;
+    if (n_out) for (int a = 0; a < 3; a++) n_out[a] = R[3 * a] * nl[0] + R[3 * a + 1] * nl[1] + R[3 * a + 2] * nl[2];
+    return 1;
+}
+
+/* ------------------------------------------------------------------ sc_cast */
+typedef struct {
+    const double *o, *dirs, *prims, *ol;      /* ol: np×4 = 局部系原点 xyz + 原点到中心距离平方 */
+    int n0, n1, np;
+    double max_range, ceil_h;
+    int floor_gid, ceil_gid;
+    double *dist; int32_t *gid; double *nrm;
+} cast_job;
+
+static void *cast_worker(void *arg) {
+    cast_job *j = (cast_job *)arg;
+    const double *o = j->o;
+    for (int i = j->n0; i < j->n1; i++) {
+        const double *d = j->dirs + 3 * i;
+        double best = j->max_range, n[3] = {0, 0, 0}, nb[3] = {0, 0, 0};
+        int g = -1;
+        for (int k = 0; k < j->np; k++) {
+            const double *p = j->prims + SC_PRIM_N * k;
+            const double *ol = j->ol + 4 * k;
+            /* 包围球粗筛 */
+            double b = (p[0] - o[0]) * d[0] + (p[1] - o[1]) * d[1] + (p[2] - o[2]) * d[2], r = p[17];
+            if (b + r < 0.0 || b - r > best) continue;
+            if (ol[3] - b * b > r * r) continue;
+            double t;
+            int ok = p[15] < 0.5 ? hit_box(p, ol, d, &t, nb) : hit_cyl(p, ol, d, &t, nb);
+            if (ok && t < best) { best = t; g = (int)p[16]; n[0] = nb[0]; n[1] = nb[1]; n[2] = nb[2]; }
+        }
+        double dist = g >= 0 ? best : INFINITY;
+        /* 解析平面: 地面 z=0 / 屋顶 (与 Python 版一致: 先比较再按量程截断) */
+        double dz = d[2], oz = o[2];
+        if (dz < -1e-9) { double tf = -oz / dz; if (tf < dist) { dist = tf; g = j->floor_gid; n[0] = 0; n[1] = 0; n[2] = 1; } }
+        if (dz > 1e-9) { double tc = (j->ceil_h - oz) / dz; if (tc < dist) { dist = tc; g = j->ceil_gid; n[0] = 0; n[1] = 0; n[2] = -1; } }
+        if (dist > j->max_range) dist = INFINITY;
+        j->dist[i] = dist;
+        j->gid[i] = g;
+        if (j->nrm) { j->nrm[3 * i] = n[0]; j->nrm[3 * i + 1] = n[1]; j->nrm[3 * i + 2] = n[2]; }
+    }
+    return NULL;
+}
+
+static void sc_run_jobs(void *(*fn)(void *), void *jobs, size_t sz, int nt) {
+    pthread_t th[SC_CAST_MAX_THREADS];
+    int started[SC_CAST_MAX_THREADS] = {0};
+    for (int t = 1; t < nt; t++) started[t] = pthread_create(&th[t], NULL, fn, (char *)jobs + sz * t) == 0;
+    fn(jobs);
+    for (int t = 1; t < nt; t++) {
+        if (started[t]) pthread_join(th[t], NULL);
+        else fn((char *)jobs + sz * t);
+    }
+}
+
+int sc_cast_prims(const double *origin, const double *dirs, int n, double max_range, const double *prims, int np,
+            double ceil_h, int floor_gid, int ceil_gid, double *dist, int32_t *gid, double *nrm, int threads) {
+    if (n <= 0) return 0;
+    int nt = threads < 1 ? 1 : (threads > SC_CAST_MAX_THREADS ? SC_CAST_MAX_THREADS : threads);
+    if (n < 1024) nt = 1;
+    /* 原点变换到每个几何体的局部系 (一次)，并剔除整体超出量程的几何体 */
+    double *ol = (double *)malloc(sizeof(double) * 4 * (np > 0 ? np : 1));
+    double *pr = (double *)malloc(sizeof(double) * SC_PRIM_N * (np > 0 ? np : 1));
+    if (!ol || !pr) { free(ol); free(pr); return -1; }
+    int m = 0;
+    for (int k = 0; k < np; k++) {
+        const double *p = prims + SC_PRIM_N * k, *R = p + 3;
+        double oc[3] = {origin[0] - p[0], origin[1] - p[1], origin[2] - p[2]};
+        double c2 = oc[0] * oc[0] + oc[1] * oc[1] + oc[2] * oc[2];
+        if (sqrt(c2) - p[17] > max_range) continue;
+        memcpy(pr + SC_PRIM_N * m, p, sizeof(double) * SC_PRIM_N);
+        for (int a = 0; a < 3; a++) ol[4 * m + a] = oc[0] * R[a] + oc[1] * R[3 + a] + oc[2] * R[6 + a];
+        ol[4 * m + 3] = c2;
+        m++;
+    }
+    prims = pr; np = m;
+    cast_job jobs[SC_CAST_MAX_THREADS];
+    for (int t = 0; t < nt; t++) {
+        cast_job *j = &jobs[t];
+        j->ol = ol;
+        j->o = origin; j->dirs = dirs; j->prims = prims; j->np = np; j->max_range = max_range; j->ceil_h = ceil_h;
+        j->floor_gid = floor_gid; j->ceil_gid = ceil_gid; j->dist = dist; j->gid = gid; j->nrm = nrm;
+        j->n0 = (int)((long long)n * t / nt); j->n1 = (int)((long long)n * (t + 1) / nt);
+    }
+    sc_run_jobs(cast_worker, jobs, sizeof(cast_job), nt);
+    free(ol); free(pr);
+    return n;
+}
+

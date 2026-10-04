@@ -257,6 +257,21 @@ Nav2 规划，空闲 60 s / 导航中 (quick_nav_check)：
 以前只要车型带 3D 激光，2D 激光也整体退回 Python (融合要叠加 3D 切片)；现在全部在 C 线程，Python 只读双缓冲。
 仿真进程剩余的 Python 主要是 HTTP/JSON 应答 (网关快照约 1 ms/次)，属于协议对接，按约定保留在 Python。
 
+### 6.7 相机射线求交 C 化 (2026-10-03)
+
+相机 (单目 / 双目 / ToF) 每帧的 76,800 条射线原来经 `mj_multiRay` (BVH 遍历)，改为 C 内核直接对 group 0 的长方体/圆柱求交
+(`sc_cast_prims`：包围球粗筛 + 局部系 slab 求交 + 解析地面/屋顶，pthread 多线程，线程数 = `SIM_RAY_THREADS`)。
+结果与 `mj_multiRay` 逐射线一致 (`tests/test_cast_native.py`：距离、几何体编号、法向)；`SIM_NATIVE_CAST=0` 退回原实现。
+
+| x86 开发机 (2 线程)，一帧 | mj_multiRay | sc_cast_prims |
+|---|---|---|
+| 单目 320×240 | 24.6 ms | **11.0 ms** |
+| 双目 424×240 (两次投射 + 深度) | 73.4 ms | **36.4 ms** |
+| ToF 224×172 | 10.6 ms | **5.6 ms** |
+| 仅射线求交 (76,800 条) | 22.6 ms | **5.6 ms** |
+
+树莓派 / RK3588 / 手机上的数据待复测。
+
 ## 7. 复现
 
 ```bash

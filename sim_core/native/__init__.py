@@ -112,6 +112,9 @@ def _load():
         f.argtypes, f.restype = args, res
     lib.sc_cam_shade.argtypes = [_P, _P, _P, _P, _P, _I, _P, _I, _I, _P, _I, _I, _D, _D, _D, _D, _P, _P]
     lib.sc_cam_shade.restype = None
+    if hasattr(lib, "sc_cast_prims"):      # 旧版本的库没有这个函数 → 调用方退回 mj_multiRay
+        lib.sc_cast_prims.argtypes = [_P, _P, _I, _D, _P, _I, _D, _I, _I, _P, _P, _P, _I]
+        lib.sc_cast_prims.restype = _I
     lib.sc_rng_seed.argtypes = [_P, ctypes.c_uint64]
     lib.sc_rng_seed.restype = None
     lib.sc_merge_add.argtypes = [_P, _I, _P, _I, _D, _D, _D, _D, _D, _D]

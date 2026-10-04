@@ -35,6 +35,9 @@ except Exception:  # pragma: no cover
 from . import native as _native
 from .world import CEILING_HEIGHT
 
+# 相机/3D 射线求交走 C 内核的长方体/圆柱求交 (sc_cast_prims)；SIM_NATIVE_CAST=0 退回 mj_multiRay
+NATIVE_CAST = os.environ.get("SIM_NATIVE_CAST", "1").strip() not in ("0", "false", "off", "no")
+
 # 几何类别 → 颜色 (相机着色)
 CAT_COLORS = {
     "floor": (0.78, 0.78, 0.76), "wall": (0.82, 0.83, 0.86), "shelf": (0.20, 0.32, 0.55),
@@ -341,13 +344,52 @@ class MuJoCoBackend:
     # 只对 group 0 (墙/货架/障碍物) 做 BVH 求交；地面/屋顶为解析平面，地面贴片 (工位/二维码/车道线) 按坐标查表着色
     GEOMGROUP = np.array([1, 0, 0, 0, 0, 0], np.uint8)
 
+    def _cast_prims(self):
+        """group 0 几何体 (长方体/圆柱) → sc_cast_prims 用的数组 [N,18]；随模型/障碍物版本缓存。有其它类型几何体时返回 None"""
+        with self.lock:
+            ver, m, d = self._ray_ver, self.m, self.d_ray
+            c = getattr(self, "_prims_cache", None)
+            if c is not None and c[0] == ver and c[1] is m:
+                return c[2]
+            rows = []
+            for g in range(m.ngeom):
+                if m.geom_group[g] != 0:
+                    continue
+                t, sz = int(m.geom_type[g]), m.geom_size[g]
+                if t == int(mujoco.mjtGeom.mjGEOM_BOX):
+                    h, kind, rad = (sz[0], sz[1], sz[2]), 0.0, float(np.linalg.norm(sz[:3]))
+                elif t == int(mujoco.mjtGeom.mjGEOM_CYLINDER):
+                    h, kind, rad = (sz[0], sz[0], sz[1]), 1.0, float(math.hypot(sz[0], sz[1]))
+                else:
+                    rows = None
+                    break
+                rows.append([*d.geom_xpos[g], *d.geom_xmat[g], *h, kind, float(g), rad * 1.0001 + 1e-6])
+            arr = None if rows is None else np.ascontiguousarray(np.asarray(rows, np.float64).reshape(-1, 18))
+            self._prims_cache = (ver, m, arr)
+            return arr
+
     def cast(self, origin, dirs: np.ndarray, max_range: float, want_normal: bool = False):
         """单原点多射线 → (dist[inf=无回波], geomid[-1], normal[N,3]|None)；dirs 需为单位向量"""
         t0 = time.perf_counter()
-        pnt = np.asarray(origin, np.float64)
+        pnt = np.ascontiguousarray(origin, np.float64)
         n = len(dirs)
         if n == 0:
             return np.zeros(0), np.zeros(0, np.int32), None
+        lib = _native.lib
+        if NATIVE_CAST and lib is not None and hasattr(lib, "sc_cast_prims"):
+            # C 内核直接对长方体/圆柱求交 (结果与 mj_multiRay 相同，几何体少时快数倍)；SIM_NATIVE_CAST=0 关闭
+            prims = self._cast_prims()
+            if prims is not None:
+                d = np.ascontiguousarray(dirs, np.float64)
+                dist = np.empty(n, np.float64)
+                gid = np.empty(n, np.int32)
+                nrm = np.empty((n, 3), np.float64) if want_normal else None
+                lib.sc_cast_prims(pnt.ctypes.data, d.ctypes.data, n, float(max_range), prims.ctypes.data, len(prims),
+                                  float(CEILING_HEIGHT), int(self.floor_geom), int(self.ceiling_geom), dist.ctypes.data,
+                                  gid.ctypes.data, None if nrm is None else nrm.ctypes.data, int(self.threads))
+                self.ray_count += n
+                self.ray_ms += (time.perf_counter() - t0) * 1000.0
+                return dist, gid, nrm
         with self.lock:                 # 只在取模型引用时加锁 (障碍物变更会整体替换模型)
             md = (self.m, self.d_ray)
             floor_g, ceil_g = self.floor_geom, self.ceiling_geom
