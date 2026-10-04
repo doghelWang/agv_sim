@@ -36,8 +36,8 @@
 - **散热**：持续满载时 Pixel 4 会降频 (大核 2.4~2.8 GHz → 1.6 GHz)。建议背夹风扇、去掉手机壳、不要边充电边满载。`bash ~/status_agv.sh` 可看各核频率与热状态。
 - `stop_agv.sh` 会结束该 proot 容器 (默认 ubuntu) 的**全部** proot 会话，包括你自己开的 `proot-distro login` 终端。需要在容器里手动调试时，另建一个容器 (`proot-distro install -n dev ubuntu:22.04`)。
 - 不要在 proot 容器里直接运行 `pip`：会报 `Cannot find path to android app folder`。要用 `env -u ANDROID_DATA -u ANDROID_ROOT python3 -m pip …`。
-- 不要在 proot 里设置 `ROS_LOCALHOST_ONLY=1`：Android 回环网卡不支持组播，ROS 节点会互相发现不全。执行进程在 Android 上已自动改用 `deploy/android/fastdds_localhost.xml`。
-- 容器里自己跑 ROS 命令 (`ros2 topic echo` 等) 时，要和实例使用相同的 `ROS_DOMAIN_ID` (平台按实例分配，见实例详情) 和同一份 DDS 配置 (`FASTRTPS_DEFAULT_PROFILES_FILE=/opt/agv/deploy/android/fastdds_localhost.xml`)，否则看不到任何话题。
+- 不要在 proot 里设置 `ROS_LOCALHOST_ONLY=1`：Android 回环网卡不支持组播，ROS 节点会互相发现不全。执行进程在 Android 上已自动改用 `deploy/android/fastdds_ds.xml` (发现服务器)。
+- 容器里自己跑 ROS 命令 (`ros2 topic echo` 等) 时，要和实例使用相同的 `ROS_DOMAIN_ID` (平台按实例分配，见实例详情) 和同一份 DDS 配置 (`FASTRTPS_DEFAULT_PROFILES_FILE=/opt/agv/deploy/android/fastdds_ds.xml` 加 `ROS_DISCOVERY_SERVER=127.0.0.1:<11811 + ROS_DOMAIN_ID>`；执行进程日志开头会打印这几个值)，否则看不到任何话题。发现服务器模式下普通客户端只看到与自己匹配的端点，`ros2 topic list` 可能不全。
 - 2026-09-27 之前安装的手机，容器里是 Ubuntu 自带的参考 BLAS (numpy 矩阵运算慢约 20 倍)，补装一次：
   `proot-distro login ubuntu -- apt-get install -y libopenblas0-pthread` (新安装的已包含)。
 - 首次从旧版本升级 `update_from_git.sh` 时可能报一次 `unexpected EOF` (脚本在运行中覆盖了自己)，再执行一次即可；之后的版本已避免。

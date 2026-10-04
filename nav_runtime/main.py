@@ -225,7 +225,20 @@ def main():
     time.sleep(1.0)
 
     ros = None
+    dds_server = None
     use_ros = os.environ.get("NAV_USE_ROS", "1") == "1"
+    if use_ros and os.environ.get("AGV_DDS_SERVER_PORT") and os.environ.get("ROS_DISCOVERY_SERVER"):
+        # Fast DDS 发现服务器 (Android: nav_entrypoint.sh 设置)，本实例所有 ROS 进程只和它做发现。
+        # 它自己不能带 ROS_DISCOVERY_SERVER (否则把自己当成客户端) 和实例的传输配置
+        try:
+            from common import spawn
+            e = {k: v for k, v in os.environ.items() if k not in ("ROS_DISCOVERY_SERVER", "FASTRTPS_DEFAULT_PROFILES_FILE")}
+            dds_server = spawn.popen("dds_discovery", ["/opt/ros/humble/bin/fast-discovery-server", "-i", "0", "-l", "127.0.0.1",
+                                                       "-p", os.environ["AGV_DDS_SERVER_PORT"]], env=e)
+            log(f"[nav_runtime] DDS 发现服务器 127.0.0.1:{os.environ['AGV_DDS_SERVER_PORT']}")
+            time.sleep(1.0)
+        except Exception as e:  # noqa
+            log(f"[nav_runtime] DDS 发现服务器启动失败: {e}")
     if use_ros:
         try:
             from nav2_bridge import Nav2Bridge
@@ -302,6 +315,12 @@ def main():
         if ros:
             nav.nav2.supervisor.stop()
             ros.shutdown()
+        if dds_server is not None:
+            try:
+                from common import spawn
+                spawn.killpg(dds_server, signal.SIGTERM)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

@@ -65,21 +65,29 @@ def _setup(context, *args, **kwargs):
                           arguments=args))
         loc_nodes.append("amcl")
 
-    nav_nodes = ["controller_server", "smoother_server", "planner_server", "behavior_server",
-                 "bt_navigator", "waypoint_follower", "velocity_smoother"]
+    # smoother_server / waypoint_follower: 本项目的行为树和接口都不用 (路线由 AgvRoute 生成，任务由执行进程逐个下发)。
+    # Android 上默认不启动 —— 每个节点是一个独立 proot 会话 + 一个 DDS 参与者；NAV2_EXTRA_SERVERS=1/0 强制开/关
+    extra = os.environ.get("NAV2_EXTRA_SERVERS", "0" if os.path.exists("/system/build.prop") else "1") == "1"
+    nav_nodes = ["controller_server"] + (["smoother_server"] if extra else []) + ["planner_server", "behavior_server", "bt_navigator"] \
+        + (["waypoint_follower"] if extra else []) + ["velocity_smoother"]
     nodes += [
         Node(package="nav2_controller", executable="controller_server", output="screen",
              parameters=[params, common], remappings=[("cmd_vel", "cmd_vel_nav")], arguments=args),
-        Node(package="nav2_smoother", executable="smoother_server", name="smoother_server", output="screen",
-             parameters=[params, common], arguments=args),
         Node(package="nav2_planner", executable="planner_server", name="planner_server", output="screen",
              parameters=[params, common], arguments=args),
         Node(package="nav2_behaviors", executable="behavior_server", name="behavior_server", output="screen",
              parameters=[params, common], arguments=args),
         Node(package="nav2_bt_navigator", executable="bt_navigator", name="bt_navigator", output="screen",
              parameters=[params, common], arguments=args),
-        Node(package="nav2_waypoint_follower", executable="waypoint_follower", name="waypoint_follower", output="screen",
-             parameters=[params, common], arguments=args),
+    ]
+    if extra:
+        nodes += [
+            Node(package="nav2_smoother", executable="smoother_server", name="smoother_server", output="screen",
+                 parameters=[params, common], arguments=args),
+            Node(package="nav2_waypoint_follower", executable="waypoint_follower", name="waypoint_follower", output="screen",
+                 parameters=[params, common], arguments=args),
+        ]
+    nodes += [
         Node(package="nav2_velocity_smoother", executable="velocity_smoother", name="velocity_smoother", output="screen",
              parameters=[params, common], remappings=[("cmd_vel", "cmd_vel_nav"), ("cmd_vel_smoothed", "cmd_vel")],
              arguments=args),

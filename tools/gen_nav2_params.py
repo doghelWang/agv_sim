@@ -115,12 +115,13 @@ def render(spec: dict, chassis_type: str, use_sim_time: bool = False) -> str:
     # 原地转向的扫掠检查由 RouteFollow 用实测激光点完成。NAV2_LOCAL_OBSTACLES=1/0 强制开/关。
     _lo = os.environ.get("NAV2_LOCAL_OBSTACLES", "0" if os.path.exists("/system/build.prop") else "1") == "1"
     local_plugins = '["obstacle_layer", "inflation_layer"]' if _lo else '["inflation_layer"]'
-    # 行为树: Android 上 tick 100 Hz → 50 Hz，等动作/服务应答的超时 20 ms → 200 ms。Termux 被限制到小核时 (cpuset moderate，
+    # 行为树: Android 上 tick 100 Hz → 50 Hz，等动作/服务应答的超时 20 ms → 1000 ms (200 ms 时仍偶发超时:
+    # proot 下一次 DDS 往返本身就要几毫秒到几十毫秒，被限到小核或降频时会到几百毫秒)。Termux 被限制到小核时 (cpuset moderate，
     # 负载 6 以上) controller/planner 20 ms 内应答不了，行为树报 "Timed out while waiting for action server to acknowledge goal
     # request"，任务一下发就 ABORTED (不是路线或定位的问题)。
     _android = os.path.exists("/system/build.prop")
     bt_loop_ms = int(os.environ.get("NAV2_BT_LOOP_MS", "20" if _android else "10"))
-    bt_srv_timeout_ms = int(os.environ.get("NAV2_BT_SERVER_TIMEOUT_MS", "200" if _android else "20"))
+    bt_srv_timeout_ms = int(os.environ.get("NAV2_BT_SERVER_TIMEOUT_MS", "1000" if _android else "20"))
     ctrl_hz = 20.0 if os.path.exists("/system/build.prop") else 30.0
     # RPP 查 map→odom 时最多等待 (s)；0.1 在树莓派上不够 (slam_toolbox 的 map→odom 偶尔落后 0.1~0.4 s → 线路跟随中断)
     rpp_tf_tol = float(os.environ.get("NAV2_TF_TOLERANCE", "0.3"))

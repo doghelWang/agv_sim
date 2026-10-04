@@ -140,7 +140,12 @@ class SystemPerformanceMonitor:
             pass
         time.sleep(0.5)
 
+        # 采样周期: 每轮要读几百个 /proc 文件 (全部可见进程的 stat + 被跟踪进程的 status/statm)。proot 下每次路径类系统调用
+        # 约 2 ms (ptrace)，原先两轮之间只睡 0.1 s，等于连轴转 —— 实测网关自身 52% + 它的 proot 追踪进程 46%，约占掉一个核，
+        # 是整套系统里最大的 ptrace 开销 (比全部 DDS 通信的总和还多)。改为固定周期: 默认 1 s，Android 2 s。
+        period = float(os.environ.get("GW_MONITOR_PERIOD_S", "2.0" if os.path.exists("/system/build.prop") else "1.0"))
         while self.running:
+            t_loop = time.time()
             try:
                 cpu_tot = round(psutil.cpu_percent(None), 1)
                 per_core = [round(c, 1) for c in psutil.cpu_percent(None, percpu=True)]
@@ -252,7 +257,7 @@ class SystemPerformanceMonitor:
             except Exception:
                 pass
 
-            time.sleep(0.1)
+            time.sleep(max(0.1, period - (time.time() - t_loop)))
 
     def set_bullet_metrics(self, metrics: dict):
         with self.lock:
@@ -609,7 +614,9 @@ class Gateway:
             with self.lock:
                 busy = self.telemetry.get("nav_status") in ("NAVIGATING", "PLANNING", "OBSTACLE_WAIT", "DOCKING")
             idle = float(os.environ.get("GW_IDLE_POLL_S", "1.0"))
-            period = 0.05 if busy or time.time() - self.last_client < 3.0 else idle
+            # Android (proot): 每次轮询是一次 HTTP 往返 + 一份快照 JSON，系统调用都要过 ptrace → 忙时 10 Hz (GW_BUSY_POLL_S)
+            fast = float(os.environ.get("GW_BUSY_POLL_S", "0.1" if os.path.exists("/system/build.prop") else "0.05"))
+            period = fast if busy or time.time() - self.last_client < 3.0 else idle
             time.sleep(max(0.0, period - (time.time() - t0)))
 
     def _nav_loop(self):

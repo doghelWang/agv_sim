@@ -216,7 +216,9 @@ agv-agent  agent/server.py  :8070 (每台计算节点一份)      ← 镜像 agv
 | `deploy/android/proot_setup.sh` | proot 容器内安装运行环境 (清华/官方源可选，处理 proot 下 pip 的 Android 误判) |
 | `deploy/android/agv_common.sh`、`start_agv.sh`、`stop_agv.sh`、`status_agv.sh`、`update_from_git.sh`、`termux-boot-01-start-agv.sh` | 手机上的启停、状态、从 git 更新、开机自启 (Termux 侧) |
 | `deploy/android/proot_spawner.py` | proot 派生服务 (:8069，Termux 原生 Python)：每个重负载进程独立 proot 会话，解除单 ptrace 追踪线程瓶颈 |
+| `deploy/android/fastdds_ds.xml` | Android 默认 DDS 配置：只走 127.0.0.1，发现走实例的 Fast DDS 发现服务器 |
 | `deploy/android/fastdds_localhost.xml`、`cyclonedds_localhost.xml` | Android 回环不支持组播：只走 127.0.0.1、单播发现 120 个参与者 |
+| `deploy/android/bench_nav.py`、`tools/dds_probe.py` | 手机上的导航通信基准：任务 + DDS 往返延迟 + 各进程 CPU |
 | `tests/test_sim_core.py` | 离线单测 (解析、URDF、运动学、碰撞、激光、Nav2 参数、MuJoCo、相机、补全) |
 | `tests/test_rest_e2e.py` | 三进程 REST 端到端 (需先启动三进程) |
 | `tests/test_platform_e2e.py` | 平台端到端：hub + 两个进程运行时节点，分离部署、任务流、注入避障、记录归档 |

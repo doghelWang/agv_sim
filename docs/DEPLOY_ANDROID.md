@@ -139,7 +139,8 @@ AGV_SPAWNER_OFF=1 bash ~/start_agv.sh   # 关闭 (回到单会话，只用于排
 ```
 
 同理，Android 的回环网卡不支持组播，`ROS_LOCALHOST_ONLY=1` 下十几个 ROS 进程发现不全；执行进程在 Android 上自动改用
-`deploy/android/fastdds_localhost.xml` (只走 127.0.0.1，单播发现 120 个参与者)。其它 Android 专用调整 (都在代码里自动生效)：
+`deploy/android/fastdds_ds.xml` (只走 127.0.0.1；发现走实例自己的 Fast DDS 发现服务器，端口 11811 + `ROS_DOMAIN_ID`，由执行进程启动；
+`AGV_DDS_DISCOVERY=peers` 退回 `fastdds_localhost.xml` 的 120 端口单播探测)。其它 Android 专用调整 (都在代码里自动生效)：
 不启 EKF (执行进程直接发布里程计 TF)、全局代价地图不加障碍层、slam_toolbox 的 map→odom 外推 0.8 s、Nav2 控制 20 Hz、关闭 bond 心跳。
 
 **绑核**：大小核手机上，派生服务在 proot 外面用 `sched_setaffinity` 把仿真进程连同它的 proot 追踪进程绑到大核 (骁龙 855 为 4-7)，

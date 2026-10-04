@@ -296,6 +296,46 @@ Nav2 规划，空闲 60 s / 导航中 (quick_nav_check)：
 绑定服务 (BIND_IMPORTANT)、前台服务、电池不受限都不能把它移出 `moderate`，只有 Termux 是真正的前台应用才行。
 所以外屏面板做成悬浮窗盖在 Termux 上面，并让屏幕常亮 (deploy/android/README.md)；`bash ~/status_agv.sh` 会显示当前可用的核。GPU 不受这个限制。
 
+### 6.9 手机 proot 下的通信开销：实测与处理 (Flip 5，2026-10-04)
+
+起因：Nav2 行为树偶发 `Timed out while waiting for action server to acknowledge goal request`，怀疑 proot + Fast DDS 回环通信太慢。
+先量再改，工具：`python3 ~/bench_nav.py i01` (`deploy/android/bench_nav.py`，Termux 里运行)——跑一圈四工位任务，同时用
+`tools/dds_probe.py` 以 10 Hz 调各 Nav2 服务器的 `get_state` (与动作握手同一条路：跨进程 DDS 请求/应答)，并统计各进程 CPU。
+
+系统调用成本 (proot 用 ptrace 拦截，seccomp 过滤已开)，手机被限在小核、负载 9 时：
+
+| 调用 | Termux 原生 | proot 内 | 倍数 |
+|---|---|---|---|
+| UDP 回环收发一对 | 146 µs | 1078 µs | 7 |
+| `stat` (路径类) | 55 µs | 2190 µs | 40 |
+
+**路径类调用比网络收发贵得多**，所以最大的开销不在 DDS：按 proot 追踪进程分摊 CPU (前台、任务执行中，单核 %)：
+
+| 被追踪进程 | 追踪开销 | 进程自身 | 说明 |
+|---|---|---|---|
+| web_gateway | 46 | 52 | 资源监视线程每轮读几百个 `/proc` 文件，两轮之间只睡 0.1 s |
+| 全部 ROS 进程合计 (桥接、bt_navigator、controller、slam…) | ≈ 28 | — | DDS 通信 |
+| 其余 | ≈ 20 | — | 仿真、节点代理等 |
+
+处理与效果 (同一台手机，前台，降频状态；每行在上一行基础上叠加)：
+
+| 改动 | proot 追踪 CPU | web_gateway | DDS 往返 中位 / p99 / 最大 (ms) | Nav2 就绪 |
+|---|---|---|---|---|
+| 基线 | 95 | 52 | 2.0 / 7~8 / 152 | 50~100 s |
+| 发现服务器 + 不启动 smoother_server、waypoint_follower + 行为树应答超时 1 s | 90 | 52 | 2.2 / 6~8 / 46 | 约 30 s |
+| 网关监视线程改为固定周期 (Android 2 s)，忙时快照轮询 20 → 10 Hz | **68** | **29** | 2.3 / 6~8 / **15** | 约 30 s |
+
+四工位任务每轮都是 4/4 到达、33~35 s、停车 4~7 mm，应答超时 0 次。
+
+结论：
+- 前台时一次 DDS 往返只有 2 ms，行为树 200 ms 超时本身够用；出问题是在 **Termux 被限到小核** 时 (7 倍的系统调用成本 + 3 个小核 + 负载 9)，
+  所以超时放宽到 1 s 兜底 (`NAV2_BT_SERVER_TIMEOUT_MS`)，根本手段仍是保持前台 (`keep_front.sh`)。
+- 发现服务器 (`deploy/android/fastdds_ds.xml`，执行进程启动 `fast-discovery-server`，端口 11811 + `ROS_DOMAIN_ID`) 对稳态 CPU 影响很小 (约 5%)，
+  主要收益是启动：Nav2 就绪时间减半，新节点 1 s 内完成发现。`AGV_DDS_DISCOVERY=peers` 退回 120 端口探测。
+- 没做的：共享内存传输 (跨 proot 会话的锁未验证，且大数据量话题不多)、Nav2 组件化 (ROS 进程的追踪开销合计只有约 0.3 个核，收益有限，
+  而单进程会把 TF 卡死的影响扩大到全部节点)。心跳周期不要调小 (只会增加流量)。
+- 仍然偏高的：web_gateway 29% + 追踪 20% (忙时 10 Hz 拉快照 + 外屏面板轮询)；slam_toolbox 约 30%。
+
 ## 7. 复现
 
 ```bash

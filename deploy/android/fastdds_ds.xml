@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Android (Termux + proot) 用的 Fast DDS 配置 —— 发现服务器模式 (默认)。与 fastdds_localhost.xml 的区别只在"发现":
+    fastdds_localhost.xml: 每个参与者每 3 s 向 127.0.0.1 上 120 个端口各发一个探测包 (回环不支持组播，只能盲发)，
+                           12~14 个 ROS 进程 ≈ 500 个包/秒；proot 下每个 sendto 约 0.7 ms (ptrace)，持续占掉约 1/3 个核；
+                           端点信息也是全量两两交换。
+    本文件:               所有参与者只连实例自己的发现服务器 (环境变量 ROS_DISCOVERY_SERVER=127.0.0.1:<端口>，
+                           执行进程启动 fast-discovery-server)，只收到与自己匹配的端点。
+  传输仍只用 127.0.0.1 的 UDP (不用共享内存: 跨 proot 会话的进程间锁未验证)。
+  用法: nav_entrypoint.sh 在 Android 上自动设置；AGV_DDS_DISCOVERY=peers 退回 fastdds_localhost.xml。
+  自己跑 ros2 命令调试时要带上同样的 ROS_DOMAIN_ID / ROS_DISCOVERY_SERVER / FASTRTPS_DEFAULT_PROFILES_FILE。
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>agv_udp_lo</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList><address>127.0.0.1</address></interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="agv_android_ds" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>agv_udp_lo</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

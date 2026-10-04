@@ -20,6 +20,12 @@ if [ -f /system/build.prop ] && [ -z "$FASTRTPS_DEFAULT_PROFILES_FILE$CYCLONEDDS
     D="${AGV_HOME:-/opt/agv}/deploy/android"
     if [ "${AGV_ANDROID_RMW:-fastrtps}" = cyclonedds ] && [ -f /opt/ros/humble/lib/librmw_cyclonedds_cpp.so ]; then
         export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI="file://$D/cyclonedds_localhost.xml"
+    elif [ "${AGV_DDS_DISCOVERY:-server}" = server ] && [ -x /opt/ros/humble/bin/fast-discovery-server ]; then
+        # 发现服务器 (默认): 每个实例一个，端口 11811 + ROS_DOMAIN_ID；执行进程 (nav_runtime.main) 负责启动/停止它。
+        # 代替"向 120 个端口盲发探测包" (见 fastdds_ds.xml 开头的说明)；AGV_DDS_DISCOVERY=peers 退回旧方式
+        export AGV_DDS_SERVER_PORT="${AGV_DDS_SERVER_PORT:-$((11811 + ${ROS_DOMAIN_ID:-0}))}"
+        export ROS_DISCOVERY_SERVER="127.0.0.1:$AGV_DDS_SERVER_PORT"
+        export FASTRTPS_DEFAULT_PROFILES_FILE="$D/fastdds_ds.xml"
     else
         export FASTRTPS_DEFAULT_PROFILES_FILE="$D/fastdds_localhost.xml"
     fi
@@ -28,7 +34,7 @@ else
 fi
 echo "=========================================================="
 echo " agv-nav ${INSTANCE_ID:+实例 $INSTANCE_ID }执行进程 :${NAV_API_PORT:-8091}   仿真进程 SIM_API=$SIM_API"
-echo " ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}  ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY  RMW=${RMW_IMPLEMENTATION:-默认}${FASTRTPS_DEFAULT_PROFILES_FILE:+  DDS 配置 $FASTRTPS_DEFAULT_PROFILES_FILE}${CYCLONEDDS_URI:+  DDS 配置 $CYCLONEDDS_URI}  NAV_USE_ROS=${NAV_USE_ROS:-1}  NAV2_AUTOSTART=${NAV2_AUTOSTART:-1}"
+echo " ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}  ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY  RMW=${RMW_IMPLEMENTATION:-默认}${FASTRTPS_DEFAULT_PROFILES_FILE:+  DDS 配置 $FASTRTPS_DEFAULT_PROFILES_FILE}${CYCLONEDDS_URI:+  DDS 配置 $CYCLONEDDS_URI}${ROS_DISCOVERY_SERVER:+  发现服务器 $ROS_DISCOVERY_SERVER}  NAV_USE_ROS=${NAV_USE_ROS:-1}  NAV2_AUTOSTART=${NAV2_AUTOSTART:-1}"
 echo "=========================================================="
 until $PY -c "import urllib.request,sys; urllib.request.urlopen('$SIM_API/api/v1/health', timeout=2)" >/dev/null 2>&1; do
     echo "[agv-nav] 等待仿真进程 $SIM_API ..."; sleep 2
