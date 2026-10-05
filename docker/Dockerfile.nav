@@ -60,7 +60,9 @@ RUN bash planning/native/build.sh gcc || echo "[警告] libagvnav 编译失败�
 ARG BUILD_JOBS=
 RUN cd ros2 && J=${BUILD_JOBS:-$(awk -v n=$(nproc) '/MemAvailable/{j=int($2/1800000); if(j<1)j=1; if(j>n)j=n; print j}' /proc/meminfo)} \
     && echo "[构建] ros2 编译并行度 $J" \
-    && (bash -c ". /opt/ros/humble/setup.bash && MAKEFLAGS=-j$J colcon build --parallel-workers 1 --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release" \
+    && (bash -c ". /opt/ros/humble/setup.bash && MAKEFLAGS=-j$J colcon build --packages-select tf2 --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF" \
+        || { echo "[警告] ros2/tf2 (0.25.24，修 tf2 死锁) 编译失败，使用系统自带的 tf2"; touch tf2/COLCON_IGNORE; rm -rf install build; }) \
+    && (bash -c ". /opt/ros/humble/setup.bash && MAKEFLAGS=-j$J colcon build --parallel-workers 1 --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF" \
         || echo "[警告] agv_ros_bridge 编译失败，执行进程将使用 Python 发布") && rm -rf build log
 RUN mkdir -p maps /data/slam_maps
 

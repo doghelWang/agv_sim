@@ -45,10 +45,16 @@ if command -v gcc >/dev/null || apt-get install -y -q gcc libc6-dev >/dev/null 2
 fi
 # 执行侧 C++ 发布端 (ros2/agv_ros_bridge)：源码有变化才重编 (colcon，手机上约几分钟)；编译失败执行进程自动用 Python 发布
 if command -v colcon >/dev/null && [ -f /opt/ros/humble/setup.bash ]; then
-  H=\$(cat /opt/agv/ros2/agv_ros_bridge/src/*.cpp /opt/agv/ros2/agv_ros_bridge/CMakeLists.txt /opt/agv/ros2/agv_ros_bridge/package.xml | md5sum | cut -c1-12)
+  # ros2/tf2: 上游 geometry2 0.25.24 的 tf2 (修掉 waitForTransform 与 testTransformableRequests 的 ABBA 死锁，
+  # apt 源还是 0.25.23)，装进同一个 overlay 盖住 /opt/ros 的 libtf2.so；编不过就跳过 (退回系统自带的)
+  H=\$(cat /opt/agv/ros2/agv_ros_bridge/src/*.cpp /opt/agv/ros2/agv_ros_bridge/CMakeLists.txt /opt/agv/ros2/agv_ros_bridge/package.xml \
+       /opt/agv/ros2/agv_nav2_plugins/src/*.cpp /opt/agv/ros2/agv_nav2_plugins/CMakeLists.txt /opt/agv/ros2/tf2/package.xml 2>/dev/null | md5sum | cut -c1-12)
   if [ \"\$H\" != \"\$(cat /opt/agv/ros2/.built 2>/dev/null)\" ] || [ ! -x /opt/agv/ros2/install/agv_ros_bridge/lib/agv_ros_bridge/agv_ros_bridge ]; then
     echo '编译 agv_ros_bridge (C++) ...'
-    (cd /opt/agv/ros2 && . /opt/ros/humble/setup.bash && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release > /tmp/agv_ros_bridge_build.log 2>&1 \
+    (cd /opt/agv/ros2 && . /opt/ros/humble/setup.bash && rm -f tf2/COLCON_IGNORE \
+      && { colcon build --packages-select tf2 --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF > /tmp/agv_tf2_build.log 2>&1 \
+           || { echo '[警告] tf2 0.25.24 编译失败 (见 /tmp/agv_tf2_build.log)，使用系统自带的 tf2'; touch tf2/COLCON_IGNORE; rm -rf install/tf2 build/tf2; }; } \
+      && colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF > /tmp/agv_ros_bridge_build.log 2>&1 \
       && echo \$H > .built && echo 'agv_ros_bridge 已编译') || echo '[警告] agv_ros_bridge 编译失败 (见 /tmp/agv_ros_bridge_build.log)，执行进程使用 Python 发布'
   fi
 fi
@@ -56,7 +62,7 @@ echo '已同步到 /opt/agv'
 " || exit 1
 # Termux 侧脚本 (启动/停止/状态/更新/派生服务/开机自启) 随仓库更新
 R="$AGV_ROOTFS/opt/agv/deploy/android"
-for f in agv_common.sh start_agv.sh stop_agv.sh status_agv.sh update_from_git.sh proot_spawner.py keep_front.sh bench_nav.py; do
+for f in agv_common.sh start_agv.sh stop_agv.sh status_agv.sh update_from_git.sh proot_spawner.py keep_front.sh bench_nav.py nav_profile.py prof_stat.py wobble.py wobble_stat.py; do
     cp "$R/$f" ~/"$f" && chmod +x ~/"$f"
 done
 # GPU 射线求交服务: 在 Termux 里 (不是容器里) 编译，要用系统的 C 库才能加载厂商 OpenCL 驱动；没有 cc 就跳过 (pkg install clang)

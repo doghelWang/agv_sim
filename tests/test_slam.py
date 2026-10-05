@@ -101,6 +101,23 @@ def test_odom_only_drifts():
     assert e[:, 0].max() > 0.005
 
 
+def test_auto_freeze_unfreeze():
+    """地图收敛自动冻结 (Android 默认开): 冻结条件与解冻条件"""
+    s = SlamLocalizer(map_dir=tempfile.mkdtemp(), log=lambda *a: None)
+    s._fz_on, s._fz_travel, s.scenario = True, 5.0, "t"
+    s.gm.ensure(-2, -2, 2, 2)
+    s.gm.L[:] = 1.0
+    s._fz_ins = 4; s._auto_freeze()                 # 第一次统计: 记下基准，不冻结
+    assert s.mode == "slam" and s._fz_known > 0
+    s._fz_dist = 6.0; s._fz_ins = 4; s._auto_freeze()   # 行驶 6 m 没有新增 → 保存并冻结
+    assert s.mode == "localization" and s._fz_auto and s.has_saved("t")
+    s._auto_unfreeze(0.0, {"inliers": 0.4}); s._auto_unfreeze(2.0, {"inliers": 0.5})
+    s._auto_unfreeze(2.5, {"inliers": 0.9}); s._auto_unfreeze(3.0, {"inliers": 0.4}); s._auto_unfreeze(5.9, {"inliers": 0.4})
+    assert s.mode == "localization"                 # 中间恢复过，重新计时
+    s._auto_unfreeze(6.1, {"inliers": 0.4})
+    assert s.mode == "slam" and not s._fz_auto
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

@@ -163,7 +163,11 @@ quick_nav_check 两次均 3/3 到达、无 NAV2_RETRY：横向偏差最大 37.7 
 | `BASE_REGISTRY` | 不用 (Docker Hub) | 基础镜像 (python、ros) 的镜像站，如 `docker.m.daocloud.io`、`mirror.gcr.io` |
 | `SIM_CAMERA_RENDER` | `ray` | 相机成像；`gl` 需要 EGL |
 | `NAV_USE_ROS` | 1 | 0 = 执行进程不启 ROS，只用内置 SLAM + 自研导引 |
-| `LOC_ENGINE` | auto | `builtin` 强制内置 SLAM |
+| `LOC_ENGINE` | auto (Android: builtin) | `builtin` 强制内置 SLAM；Android 上写 `auto` 换回 slam_toolbox |
+| `SLAM_AUTO_FREEZE` | 0 (Android: 1) | 内置引擎：地图收敛后自动保存并转纯定位，进入未建图区域自动回到建图 |
+| `SLAM_FREEZE_TRAVEL` | 25 | 连续行驶多少米地图没有新增才算收敛 |
+| `SLAM_MIN_TRAVEL` / `SLAM_MIN_HEADING` / `SLAM_SEARCH_DIM` | 0.3 / 0.2 / 0.3 (仅 Android) | slam_toolbox 关键帧间隔与精匹配搜索窗 |
+| `~/.agv-agent/nav.env` | — | 设备级覆盖文件，每行 `KEY=VALUE`，实例重启后生效 |
 | `ROS_DOMAIN_ID` | 平台按实例分配 | |
 
 ## 7. 故障处理

@@ -52,6 +52,13 @@ def _setup(context, *args, **kwargs):
         st.append({"map_update_interval": float(os.environ.get("SLAM_MAP_INTERVAL", "10.0"))})
         # map→odom 50 Hz → 20 Hz：/tf 要扇出给十来个节点，proot 下每条都是被追踪的系统调用
         st.append({"transform_publish_period": float(os.environ.get("SLAM_TF_PERIOD", "0.05"))})
+        # 关键帧间隔 0.1 m / 0.1 rad → 0.3 m / 0.2 rad，精匹配搜索窗 0.5 → 0.3 m。
+        # slam_toolbox 是整套系统里最大的 CPU 消耗: 直行时每 10 cm 一个关键帧 (1.2 m/s 时每秒 12 次精匹配)，Flip 5 大核上
+        # 占到 180% (近两个大核)；小核只有大核 1/5 的速度，根本处理不完，map→odom 落后 2 s 以上，线路跟随被中断。
+        # 位姿图的节点数也随之减到 1/3 (建图模式下跑得越久图越大)。停车精度不靠它 (RouteFollow 末段用场景几何精定位)。
+        st.append({"minimum_travel_distance": float(os.environ.get("SLAM_MIN_TRAVEL", "0.3")),
+                   "minimum_travel_heading": float(os.environ.get("SLAM_MIN_HEADING", "0.2")),
+                   "correlation_search_space_dimension": float(os.environ.get("SLAM_SEARCH_DIM", "0.3"))})
     if mode == "localization":
         sx, sy, syaw = (float(LaunchConfiguration(k).perform(context)) for k in ("start_x", "start_y", "start_yaw"))
         st.append({"mode": "localization", "map_file_name": LaunchConfiguration("map_file").perform(context),

@@ -11,6 +11,18 @@ PY="${PYTHON:-python3}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}" OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 SIM_API="${SIM_API:-http://127.0.0.1:8090}"
 export SIM_API
+# 设备级覆盖: ~/.agv-agent/nav.env (每行 KEY=VALUE)，给执行进程及其拉起的定位/Nav2 进程加环境变量，
+# 例如 LOC_ENGINE=builtin、NAV2_BT_LOOP_MS=50、SLAM_MIN_TRAVEL=0.3。实例重启后生效。
+if [ -f "$HOME/.agv-agent/nav.env" ]; then
+    set -a; . "$HOME/.agv-agent/nav.env"; set +a
+    echo "[agv-nav] 设备级覆盖 ~/.agv-agent/nav.env: $(grep -v '^#' "$HOME/.agv-agent/nav.env" | tr '\n' ' ')"
+fi
+if [ -f /system/build.prop ]; then
+    # Android: 定位默认用内置引擎 (nav_runtime/slam.py)。slam_toolbox 在手机小核上是最大的 CPU 消耗 (调参后仍 ~30%，
+    # 直行时峰值过百)，定位横向噪声 ±50 mm (车身跟着左右摆)；内置引擎地图收敛后自动转定位模式，执行进程 18% CPU、
+    # 定位误差 RMS 1 mm (Flip 5 实测，docs/PERFORMANCE.md 6.11)。LOC_ENGINE=auto 换回 slam_toolbox。
+    export LOC_ENGINE="${LOC_ENGINE:-builtin}"
+fi
 if [ -f /system/build.prop ] && [ -z "$FASTRTPS_DEFAULT_PROFILES_FILE$CYCLONEDDS_URI" ]; then
     # Android (proot): 回环网卡不支持组播，ROS_LOCALHOST_ONLY=1 时 10+ 个 ROS 进程互相发现不全；
     # 改用 DDS 配置文件: 只走 127.0.0.1，单播发现覆盖 120 个参与者 (deploy/android/*_localhost.xml)

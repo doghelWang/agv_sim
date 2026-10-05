@@ -377,6 +377,20 @@ class SlamLocalizer:
         self.events = []
         self.on_event = None
         self._proc = threading.Lock()          # 激光帧串行处理
+        _hz = float(os.environ.get("SLAM_BUILTIN_HZ", "0"))
+        self._min_dt = (1.0 / _hz - 1e-3) if _hz > 0 else 0.0
+        self._last_proc_t = -1e9
+        # 地图收敛后自动冻结 (内置引擎): 建图模式下每插入一帧都要重建距离场 (手机上一次 0.3~0.7 s，执行进程因此
+        # 常驻 70% CPU)；地图不再长大以后这些都是白算。连续行驶 SLAM_FREEZE_TRAVEL 米而已知栅格数增长不到 0.5%
+        # → 保存地图、转定位模式 (只匹配，Flip 5 小核上执行进程 72% → 18%)。之后若匹配内点率持续偏低
+        # (开进了没建过图的区域) → 自动回到建图模式。SLAM_AUTO_FREEZE=0 关闭；默认只在 Android 上开。
+        self._fz_on = os.environ.get("SLAM_AUTO_FREEZE", "1" if os.path.exists("/system/build.prop") else "0") == "1"
+        self._fz_travel = float(os.environ.get("SLAM_FREEZE_TRAVEL", "25"))
+        self._fz_dist = 0.0                    # 上次地图明显长大以来行驶的距离
+        self._fz_known = 0                     # 当时的已知栅格数
+        self._fz_ins = 0
+        self._fz_low_t = None                  # 定位模式下内点率开始偏低的时刻
+        self._fz_auto = False                  # 当前的定位模式是自动冻结来的 (只有这种才自动解冻)
         # 外部定位引擎 (ROS 2: robot_localization EKF + slam_toolbox，见 ros_slam.py)；None = 内置
         self.ext = None
         self.whist = deque(maxlen=600)         # (墙钟时间, odom 位姿)：对齐 ROS TF 时间戳
@@ -488,6 +502,7 @@ class SlamLocalizer:
                     self.mode = "slam"
                     return "当前场景没有已保存的地图，保持 slam (边建图边定位)"
             self.mode = mode
+            self._fz_auto, self._fz_dist, self._fz_known = False, 0.0, 0     # 手动选的模式不自动切换
             if mode in ("odom", "ground_truth"):
                 return None
             self._rebuild_fields_async(force=True)
@@ -510,6 +525,7 @@ class SlamLocalizer:
             elif self.want_mode in ("slam", "localization"):
                 if self._load(sid):
                     self.mode = "localization"
+                    self._fz_auto, self._fz_low_t = self._fz_on and self.want_mode == "slam", None
                     self._emit("info", f"加载已保存的 SLAM 地图 [{sid}]，进入定位模式")
                 else:
                     self.mode = "slam"
@@ -529,6 +545,7 @@ class SlamLocalizer:
             self.gm = GridMap(self.res)
             self.fields = None
             self._last_ins = None
+            self._fz_auto, self._fz_dist, self._fz_known = False, 0.0, 0
             if self.mode == "localization":
                 self.mode = self.want_mode = "slam"
         self._emit("info", "SLAM 地图已清空，重新建图")
@@ -634,6 +651,11 @@ class SlamLocalizer:
     def on_points(self, t, px, py, hit=None, sx=None, sy=None):
         if self.ext is not None:               # 外部定位栈 (slam_toolbox) 处理激光
             return
+        # 限频 (SLAM_BUILTIN_HZ，0 = 不限): 激光 40~50 Hz 时逐帧匹配占掉大半个核，手机 (Android) 默认 15 Hz；
+        # 两帧之间的位姿由里程计外推，15 Hz 时 1.2 m/s 下两次修正间隔 8 cm
+        if self._min_dt > 0.0 and 0.0 <= t - self._last_proc_t < self._min_dt:
+            return
+        self._last_proc_t = t
         with self._proc:
             self._on_points(t, px, py, hit, sx, sy)
 
@@ -661,6 +683,7 @@ class SlamLocalizer:
                 dist, dth = math.hypot(d[0], d[1]), abs(d[2])
                 q_xy = (0.02 * dist) ** 2 + (0.002) ** 2 * (dist > 1e-4)
                 q_th = (0.02 * dth + 0.003 * dist) ** 2
+                self._fz_dist += dist
                 self.P = self.P + np.diag([q_xy, q_xy, q_th]) + np.diag([1e-7, 1e-7, 1e-8])
             self._last_scan_od = od
             fields = self.fields
@@ -688,6 +711,8 @@ class SlamLocalizer:
                     self.stats["rejects"] += 1
                 self.stats["last_info"] = {k: round(v, 4) if isinstance(v, float) else v for k, v in info.items()}
                 self.stats["last_info"]["accepted"] = ok
+            if mode == "localization" and self._fz_auto:
+                self._auto_unfreeze(t, info)
             self._hz_n += 1
             if time.time() - self._hz_t > 2.0:
                 self.stats["hz"] = round(self._hz_n / (time.time() - self._hz_t), 1)
@@ -704,6 +729,47 @@ class SlamLocalizer:
                     self._last_ins, self._last_ins_t = pose, t
                 self.stats["insert_ms"] = round((time.perf_counter() - t0) * 1000, 1)
                 self._rebuild_fields_async(sync=fields is None)
+                if self._fz_on and self.ext is None:
+                    self._auto_freeze()
+
+    def _auto_freeze(self):
+        """建图模式: 地图收敛 (行驶 _fz_travel 米，已知栅格数增长 < 0.5%) → 保存并转定位模式"""
+        self._fz_ins += 1
+        if self._fz_ins % 5:
+            return
+        with self.lock:
+            known = int(np.count_nonzero(np.abs(self.gm.L) > 0.5))
+        self.stats["known"], self.stats["still_m"] = known, round(self._fz_dist, 1)
+        if known > self._fz_known * 1.005 + 50:
+            self._fz_known, self._fz_dist = known, 0.0
+            return
+        if self._fz_dist < self._fz_travel:
+            return
+        try:
+            self.save()
+        except Exception as e:  # noqa
+            self._emit("warn", f"SLAM 地图自动保存失败，继续建图: {e}")
+            self._fz_dist = 0.0
+            return
+        with self.lock:
+            self.mode = "localization"
+            self._fz_auto, self._fz_low_t = True, None
+        self._emit("info", f"SLAM 地图已收敛 (行驶 {self._fz_dist:.0f} m 没有新增区域)，自动保存并转为定位模式",
+                   "开进未建图区域时会自动回到建图模式；SLAM_AUTO_FREEZE=0 关闭")
+
+    def _auto_unfreeze(self, t, info):
+        """自动冻结后的定位模式: 内点率连续 3 s 低于 0.6 (正常 > 0.95) → 开进了没建过图的区域，回到建图模式"""
+        if not info or info.get("inliers", 1.0) >= 0.6:
+            self._fz_low_t = None
+            return
+        if self._fz_low_t is None:
+            self._fz_low_t = t
+        elif t - self._fz_low_t > 3.0:
+            with self.lock:
+                self.mode = "slam"
+                self._fz_auto, self._fz_low_t = False, None
+                self._fz_dist, self._fz_known = 0.0, 0
+            self._emit("info", "定位匹配内点率持续偏低 (进入未建图区域)，自动回到建图模式")
 
     def _rebuild_fields_async(self, sync=False, force=False):
         if self._field_busy and not sync:
@@ -806,7 +872,7 @@ class SlamLocalizer:
             e = list(self.err_hist)
             st = {
                 "mode": self.mode, "want_mode": self.want_mode, "scenario": self.scenario, "inited": self.inited,
-                "engine": self.engine, "ext": self.ext.status() if self.ext is not None else None,
+                "engine": self.engine, "auto_frozen": self._fz_auto and self.mode == "localization", "ext": self.ext.status() if self.ext is not None else None,
                 "pose": {"x": round(self.pose[0], 4), "y": round(self.pose[1], 4), "yaw": round(self.pose[2], 5)},
                 "map_to_odom": {"x": round(self.M[0], 4), "y": round(self.M[1], 4), "yaw": round(self.M[2], 5)},
                 "odom": {"x": round(self.odom[0], 4), "y": round(self.odom[1], 4), "yaw": round(self.odom[2], 5)},
@@ -835,7 +901,7 @@ class SlamLocalizer:
     def brief(self):
         """遥测用的简要定位状态 (50 Hz 路径上调用，保持轻量)"""
         cov = self.P
-        d = {"mode": self.mode, "engine": self.engine, "std_xy_mm": round(1000 * math.sqrt(max(cov[0, 0], cov[1, 1])), 1),
+        d = {"mode": self.mode, "engine": self.engine, "auto_frozen": self._fz_auto and self.mode == "localization", "std_xy_mm": round(1000 * math.sqrt(max(cov[0, 0], cov[1, 1])), 1),
              "std_yaw_deg": round(math.degrees(math.sqrt(max(cov[2, 2], 0.0))), 3),
              "score": self.stats["last_info"].get("score"), "accepted": self.stats["last_info"].get("accepted"),
              "map_rev": self.ext.map_rev if self.engine == "slam_toolbox" else self.gm.rev}
