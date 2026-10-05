@@ -194,6 +194,12 @@ class AgvRosBridge : public rclcpp::Node {
  public:
   AgvRosBridge(const std::string &in_path, const std::string &out_path, bool core)
       : Node("nav_runtime_bridge_cpp"), in_path_(in_path), out_path_(out_path), core_(core) {
+    {
+      const bool android = access("/system/build.prop", F_OK) == 0;
+      const char *od = std::getenv("BRIDGE_ODOM_DIV"), *jd = std::getenv("BRIDGE_JOINT_DIV");
+      odom_div_ = std::max(1, od ? std::atoi(od) : (android ? 2 : 1));
+      joint_div_ = std::max(1, jd ? std::atoi(jd) : 2);      // 相对已发布的状态帧: 25 Hz (Android 12.5 Hz)
+    }
     const char *cl = std::getenv("AGV_COSTMAP_SCAN_CLAMP");
     clamp_ = !(cl && std::string(cl) != "1");
     const char *mg = std::getenv("AGV_COSTMAP_SCAN_MARGIN");
@@ -343,6 +349,9 @@ class AgvRosBridge : public rclcpp::Node {
   void publish_state(double t, const double *o, const double *tr, const double *m2o, const double *im, uint8_t flags,
                      std::vector<std::string> names, std::vector<double> jp, std::vector<double> jv, std::vector<double> je) {
     if (flags & F_HAS_T) track_offset(t);
+    // 状态帧 50 Hz；/odom、/tf、/imu 每 odom_div_ 帧发一次 (BRIDGE_ODOM_DIV，Android 默认 2 = 25 Hz)。
+    // /tf 要扇出给每个带 TF 监听的节点 (Nav2 有 8 个左右)，proot 下每条都是被拦截的收发调用，车不动时也在烧。
+    if (++n_frame_ % odom_div_ != 0) return;
     auto stamp = sim_stamp((flags & F_HAS_T) ? t : NAN);
 
     nav_msgs::msg::Odometry od;
@@ -417,7 +426,7 @@ class AgvRosBridge : public rclcpp::Node {
       odom_stamp_ = to_sec(stamp);
       has_odom_stamp_ = true;
     }
-    if (++n_state_ % 2 == 0) {
+    if (++n_state_ % joint_div_ == 0) {
       sensor_msgs::msg::JointState js;
       js.header.stamp = stamp;
       js.name = std::move(names);
@@ -1455,6 +1464,8 @@ class AgvRosBridge : public rclcpp::Node {
   rclcpp::QoS sensor_qos_{5};
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_, gt_pub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr js_pub_;
+  int odom_div_{1}, joint_div_{2};
+  uint64_t n_frame_{0};
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr> lidar_pubs_;

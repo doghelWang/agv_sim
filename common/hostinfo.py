@@ -36,7 +36,17 @@ def _prop(name) -> Optional[str]:
     return None
 
 
+_model_cache: List[str] = []
+
+
 def model() -> str:
+    """机型不会变，只取一次 (Android 上要读几个 build.prop，proot 下每次约 20 ms)"""
+    if not _model_cache:
+        _model_cache.append(_model())
+    return _model_cache[0]
+
+
+def _model() -> str:
     if os.environ.get("AGV_DEVICE_MODEL"):
         return os.environ["AGV_DEVICE_MODEL"]
     t = _read("/proc/device-tree/model")
@@ -70,22 +80,47 @@ def core_groups() -> Dict[str, List[int]]:
     return out
 
 
+_temp = {"zones": None, "t": 0.0, "v": None}
+
+
 def temp_c() -> Optional[float]:
+    """CPU/SoC 温度。手机上有 80 多个 thermal_zone，每次全扫要读 160 个文件 (Flip 5 proot 下一次 0.5 s，
+    网关每 2 s、agent 每 5 s 各调一次)：温区类型不会变，第一次扫完记下用得上的温区，之后只读这些；结果缓存
+    AGV_TEMP_TTL_S 秒 (Android 默认 10，其它 2)。"""
+    ttl = float(os.environ.get("AGV_TEMP_TTL_S", "10" if is_android() else "2"))
+    now = time.time()
+    if now - _temp["t"] < ttl:
+        return _temp["v"]
+    _temp["t"] = now
+    _temp["v"] = _temp_read()
+    return _temp["v"]
+
+
+def _temp_read() -> Optional[float]:
+    if _temp["zones"] is None:
+        zones = []
+        for i in range(0, 80):
+            typ = _read(f"/sys/class/thermal/thermal_zone{i}/type")
+            if typ is None:
+                if i > 10 and not zones:
+                    break
+                continue
+            typ = typ.strip().lower()
+            if (i == 0 and not is_android()) or any(k in typ for k in ("cpu", "soc", "tsens", "skin", "xo-therm", "cluster")):
+                zones.append(i)
+                if i == 0 and not is_android():
+                    break
+        _temp["zones"] = zones[:12]          # 同一类温区很多 (每个核一个)，取前 12 个的最大值足够
     best = None
-    for i in range(0, 80):
-        typ = (_read(f"/sys/class/thermal/thermal_zone{i}/type") or "").strip().lower()
+    for i in _temp["zones"]:
         v = _read(f"/sys/class/thermal/thermal_zone{i}/temp")
-        if v is None:
-            if i > 10 and best is None and typ == "":
-                break
-            continue
         try:
             t = int(v.strip()) / (1000.0 if abs(int(v.strip())) > 1000 else 1.0)
         except Exception:
             continue
         if i == 0 and not is_android():
             return round(t, 1)
-        if any(k in typ for k in ("cpu", "soc", "tsens", "skin", "xo-therm", "cluster")) and 0 < t < 130:
+        if 0 < t < 130:
             best = max(best or 0.0, t)
     if best is not None:
         return round(best, 1)

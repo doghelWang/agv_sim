@@ -257,7 +257,10 @@ class SystemPerformanceMonitor:
             except Exception:
                 pass
 
-            time.sleep(max(0.1, period - (time.time() - t_loop)))
+            # 没人在看 (GW_IDLE_AFTER_S 秒内没有任何页面/工具访问网关) → 采样放慢到 GW_MONITOR_IDLE_S
+            bn = bridge_node
+            idle = bn is not None and bn.is_idle()
+            time.sleep(max(0.1, (float(os.environ.get("GW_MONITOR_IDLE_S", "10.0")) if idle else period) - (time.time() - t_loop)))
 
     def set_bullet_metrics(self, metrics: dict):
         with self.lock:
@@ -592,6 +595,14 @@ class Gateway:
     def get_logger(self):
         return _Logger()
 
+    def is_idle(self):
+        """没有客户端在看、也没有任务在跑 → 各轮询放慢 (手机 proot 下每次 HTTP 往返都要过 ptrace，空闲时这些轮询
+        占掉网关的大部分 CPU)。GW_IDLE_AFTER_S=0 关闭"""
+        after = float(os.environ.get("GW_IDLE_AFTER_S", "15"))
+        if after <= 0 or time.time() - self.last_client < after:
+            return False
+        return self.telemetry.get("nav_status") not in ("NAVIGATING", "PLANNING", "OBSTACLE_WAIT", "DOCKING")
+
     # ------------------------------------------------------------------ 轮询
     def start(self):
         threading.Thread(target=self._sim_loop, daemon=True, name="gw-sim").start()
@@ -639,7 +650,7 @@ class Gateway:
             except Exception:
                 self.nav_online = False
                 time.sleep(1.0)
-            time.sleep(0.2)
+            time.sleep(1.0 if self.is_idle() else 0.2)
 
     def _slow_loop(self):
         cnt = 0
@@ -665,7 +676,7 @@ class Gateway:
             except Exception:
                 pass
             cnt += 1
-            time.sleep(0.5)
+            time.sleep(2.0 if self.is_idle() else 0.5)
 
     def _apply_model(self, spec):
         with self.lock:

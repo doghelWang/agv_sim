@@ -255,7 +255,11 @@ class Agent:
              "images": images, "containers": conts, "port_range": [self.port_lo, self.port_hi],
              "reservations": self.state.get("reservations", {}), "last_error": self.last_error, "time": time.time()}
         if full:
-            d["ports_in_use"] = self.sys.listening_ports(self.port_lo, self.port_hi)
+            # 占用端口只用于平台界面展示；逐个试绑一遍端口段在 Android proot 下约 0.4 s，心跳每 5 s 一次 → 缓存 60 s
+            c = getattr(self, "_ports_cache", None)
+            if c is None or time.time() - c[0] > float(os.environ.get("AGENT_PORTS_TTL_S", "60")):
+                c = self._ports_cache = (time.time(), self.sys.listening_ports(self.port_lo, self.port_hi))
+            d["ports_in_use"] = c[1]
         return d
 
     # ------------------------------------------------------------------ 注册与心跳

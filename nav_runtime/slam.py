@@ -380,6 +380,8 @@ class SlamLocalizer:
         _hz = float(os.environ.get("SLAM_BUILTIN_HZ", "0"))
         self._min_dt = (1.0 / _hz - 1e-3) if _hz > 0 else 0.0
         self._last_proc_t = -1e9
+        self._still_od, self._still_t = None, -1e9      # 上次匹配成功时的里程计位姿 (静止时跳过匹配用)
+        self._still_dt = float(os.environ.get("SLAM_STILL_PERIOD_S", "1.0"))    # 0 = 静止时也每帧匹配
         # 地图收敛后自动冻结 (内置引擎): 建图模式下每插入一帧都要重建距离场 (手机上一次 0.3~0.7 s，执行进程因此
         # 常驻 70% CPU)；地图不再长大以后这些都是白算。连续行驶 SLAM_FREEZE_TRAVEL 米而已知栅格数增长不到 0.5%
         # → 保存地图、转定位模式 (只匹配，Flip 5 小核上执行进程 72% → 18%)。之后若匹配内点率持续偏低
@@ -552,6 +554,7 @@ class SlamLocalizer:
 
     def set_initial_pose(self, x, y, yaw, std_xy=0.05, std_yaw=0.03):
         with self.lock:
+            self._still_od = None
             self.M = compose((x, y, yaw), inverse(self.odom))
             self.P = np.diag([std_xy ** 2, std_xy ** 2, std_yaw ** 2])
             self.pose = (x, y, _wrap(yaw))
@@ -676,6 +679,12 @@ class SlamLocalizer:
         hit = hit & ~self_pts & (r > 0.05)
         with self.lock:
             od = self._odom_at(t)
+            # 纯定位且车没动: 地图和位姿都不会变，每秒匹配一次保活即可 (不必每帧都算；手机上静止时省掉 9/10 的匹配)
+            if self.mode == "localization" and self.fields is not None and self._still_od is not None \
+                    and 0 <= t - self._still_t < self._still_dt \
+                    and abs(od[0] - self._still_od[0]) < 1e-3 and abs(od[1] - self._still_od[1]) < 1e-3 \
+                    and abs(_wrap(od[2] - self._still_od[2])) < 1e-3:
+                return
             pred = compose(self.M, od)
             # 里程计预测不确定度随运动增长
             if self._last_scan_od is not None:
@@ -701,6 +710,7 @@ class SlamLocalizer:
             self.stats["match_ms"] = round((time.perf_counter() - t0) * 1000, 2)
             ok = info["inliers"] > 0.35 and info["n"] > 30
             with self.lock:
+                self._still_od, self._still_t = (od if ok else None), t
                 if ok:
                     od_now = self._odom_at(t)
                     self.M = compose(pose, inverse(od_now))
