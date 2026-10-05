@@ -47,8 +47,15 @@ def init_defaults(data: str):
         if not os.path.exists(os.path.join(data, f)) and os.path.exists(src):
             shutil.copy(src, os.path.join(data, f))
     cm = os.path.join(d, "cmodel") if os.path.isdir(os.path.join(d, "cmodel")) else os.path.join(ROOT, "tests", "data")
-    if not os.path.isdir(os.path.join(data, "cmodel")) and os.path.isdir(cm):
-        shutil.copytree(cm, os.path.join(data, "cmodel"))
+    dst = os.path.join(data, "cmodel")
+    if os.path.isdir(cm) and not (os.path.isdir(dst) and os.listdir(dst)):
+        # 只拷内容，不用 copytree/copy2: 它们会连扩展属性一起拷，Android 上 (proot 不伪装 root 时) 写 security.selinux
+        # 被拒绝 (EACCES)，整个初始化抛异常 —— 新建实例因此拿不到平台下发的模型和场景，悄悄退回默认的九宫格
+        os.makedirs(dst, exist_ok=True)
+        for fn in os.listdir(cm):
+            sp = os.path.join(cm, fn)
+            if os.path.isfile(sp):
+                shutil.copyfile(sp, os.path.join(dst, fn))
 
 
 def pull_model(hub: str, data: str, mid: str, ver: str):
@@ -104,19 +111,31 @@ def pull_scene(hub: str, data: str, sid: str) -> str:
 def main():
     data = os.environ.get("AGV_DATA", "/data")
     os.makedirs(data, exist_ok=True)
-    init_defaults(data)
+    try:
+        init_defaults(data)
+    except Exception as e:
+        log(f"默认数据初始化失败 (继续): {e}")
     hub = (os.environ.get("HUB_API") or "").rstrip("/")
     exports = {"ROBOT_CONFIG": os.path.join(data, "robot_config.json")}
     if hub and os.environ.get("MODEL_ID"):
         try:
             pull_model(hub, data, os.environ["MODEL_ID"], os.environ.get("MODEL_VER", ""))
         except Exception as e:
-            log(f"从平台加载模型失败，使用本地模型: {e}")
+            # 平台指定了模型却拿不到: 不能悄悄换成本地默认模型去跑 (实例名写的是 A，跑的是 B)
+            log(f"[错误] 从平台加载模型 {os.environ['MODEL_ID']} 失败: {e}")
+            sys.exit(3)
     if hub and os.environ.get("SCENE_ID"):
+        sid = os.environ["SCENE_ID"]
         try:
-            exports["SIM_SCENE_FILE"] = pull_scene(hub, data, os.environ["SCENE_ID"])
+            exports["SIM_SCENE_FILE"] = pull_scene(hub, data, sid)
         except Exception as e:
-            log(f"从平台加载场景失败，使用内置场景: {e}")
+            from planning.dijkstra_planner import SCENARIO_DEFINITIONS
+            if sid in SCENARIO_DEFINITIONS:       # 内置场景: 本地就有同一份定义，按 ID 加载
+                log(f"从平台加载场景失败，使用本地内置的同名场景 {sid}: {e}")
+                exports["SIM_SCENARIO"] = sid
+            else:
+                log(f"[错误] 从平台加载场景 {sid} 失败: {e}")
+                sys.exit(3)
     for k, v in exports.items():
         print(f"export {k}='{v}'")
 

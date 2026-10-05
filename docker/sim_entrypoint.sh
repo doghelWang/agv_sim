@@ -10,7 +10,9 @@ DATA="${AGV_DATA:-/data}"
 export AGV_DATA="$DATA"
 mkdir -p "$DATA"
 # 1) 数据初始化 + 平台下发 (HUB_API + MODEL_ID / SCENE_ID)
-eval "$($PY -m sim_server.bootstrap)"
+# 失败就退出 (平台部署页会显示"仿真引擎就绪"失败和这里的日志)，不要带着默认模型/默认场景继续起来
+BOOT="$($PY -m sim_server.bootstrap)" || { echo "[agv-sim] 初始化失败 (见上面 [bootstrap] 的输出)，不启动仿真"; exit 1; }
+eval "$BOOT"
 # 2) 挂载目录里放了新 cmodel 时可设 CMODEL_FILE 重新解析 (人工补全自动叠加)
 if [ -n "$CMODEL_FILE" ] && [ -f "$CMODEL_FILE" ]; then
     echo "[agv-sim] 解析 $CMODEL_FILE"
