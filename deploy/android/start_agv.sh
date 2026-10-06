@@ -44,6 +44,9 @@ if [ "${AGV_GPU_CAST:-1}" != 0 ] && [ -x ~/gpucastd ] && ! pgrep -f "^([^ ]*/)?g
         || echo "[info] GPU 射线求交服务没有启动 (见 ~/gpucastd.log)，仿真使用 CPU 求交"
 fi
 
+# 上次没停干净留下的残留进程 (见 agv_common.sh: agv_orphans) 先清掉，否则它们占着的端口会让新实例的 Nav2 起不来
+O=$(agv_orphans); [ -n "$O" ] && { kill -9 $O 2>/dev/null; echo "[info] 清理上次残留的进程 $(echo $O | wc -w) 个"; }
+
 # ---- 1. proot 派生服务
 if [ "${AGV_SPAWNER_OFF:-0}" != 1 ] && ! http_ok http://127.0.0.1:8069/health; then
     SPAWNER_DISTRO="$AGV_DISTRO" nohup python3 ~/proot_spawner.py > ~/spawner.log 2>&1 < /dev/null &

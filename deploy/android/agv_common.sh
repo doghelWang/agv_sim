@@ -34,6 +34,24 @@ wlan_ip() {   # 本机局域网地址 (Android 13 上 ifconfig 常拿不到)
     python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('10.255.255.255', 1)); print(s.getsockname()[0])" 2>/dev/null \
         || ifconfig wlan0 2>/dev/null | awk '/inet /{print $2; exit}'
 }
+# proot 里运行的程序在宿主机上看，exe 都是 proot 的 loader。追踪进程 (proot) 被强杀后它们不会跟着退出，而是变成
+# "没人追踪"的残留进程: 之后每个被拦截的系统调用都返回 ENOSYS (日志里的 "Function not implemented")，既不干活也不退出，
+# 还占着端口 —— 残留的 DDS 发现服务器占住 118xx 端口，新实例的 ROS 节点互相发现不了，Nav2 永远起不来。
+#   agv_orphans      列出没人追踪的残留进程 (任何时候清掉都是安全的)
+#   agv_tracees      列出本容器 proot 正在追踪的进程 (停止时用)
+agv_orphans() {
+    for d in /proc/[0-9]*; do
+        case "$(readlink "$d/exe" 2>/dev/null)" in */proot/loader*) ;; *) continue;; esac
+        [ "$(awk '/^TracerPid/{print $2}' "$d/status" 2>/dev/null)" = 0 ] && echo "${d#/proc/}"
+    done
+}
+agv_tracees() {
+    for d in /proc/[0-9]*; do
+        case "$(readlink "$d/exe" 2>/dev/null)" in */proot/loader*) ;; *) continue;; esac
+        t=$(awk '/^TracerPid/{print $2}' "$d/status" 2>/dev/null)
+        [ -n "$t" ] && [ "$t" != 0 ] && tr '\0' ' ' < "/proc/$t/cmdline" 2>/dev/null | grep -qE "(containers/$AGV_DISTRO/|installed-rootfs/$AGV_DISTRO)" && echo "${d#/proc/}"
+    done
+}
 remote_hub() { [ -n "$HUB_API" ] && [ "${AGV_LOCAL_HUB:-0}" != 1 ]; }
 big_cores() {   # 大小核手机: 最高频率高于最低档的核 (如骁龙 855: 4-7)；同构 CPU 输出空
     python3 - <<'PY' 2>/dev/null

@@ -8,13 +8,12 @@ pkill -f "^([^ ]*/)?python3? [^ ]*proot_spawner.py" 2>/dev/null
 pkill -f "^([^ ]*/)?gpucastd 8068" 2>/dev/null
 kill "$(cat ~/.agv_front.pid 2>/dev/null)" 2>/dev/null; rm -f ~/.agv_front.pid
 sleep 0.5
+# 先结束 proot 里的程序，再结束追踪进程: 反过来 (直接强杀追踪进程) 程序不会跟着退出，会留下一批残留进程
+T=$(agv_tracees); [ -n "$T" ] && kill -9 $T 2>/dev/null
+sleep 0.3
 pkill -9 -f "^([^ ]*/)?proot .*(containers/$AGV_DISTRO/|installed-rootfs/$AGV_DISTRO)" 2>/dev/null
 sleep 1
-# 追踪进程被强杀时个别程序可能脱离 (父进程变成 1)：按工作目录在容器 rootfs 下的进程补杀
-for d in /proc/[0-9]*; do
-    c=$(readlink "$d/cwd" 2>/dev/null) || continue
-    case "$c" in "$AGV_ROOTFS"/*|"$AGV_ROOTFS") kill -9 "${d#/proc/}" 2>/dev/null;; esac
-done
+O=$(agv_orphans); [ -n "$O" ] && { kill -9 $O 2>/dev/null; echo "[info] 清理残留进程 $(echo $O | wc -w) 个"; }
 sleep 0.5
-left=$(ps -A -o args | grep -cE "^python3 -m (hub|agent|sim_server|nav_runtime)|^/opt/ros/humble/lib/")
+left=$(( $(agv_orphans | wc -l) + $(agv_tracees | wc -l) ))
 echo "[OK] 已停止 (剩余相关进程 $left)"

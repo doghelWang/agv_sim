@@ -83,6 +83,26 @@ def _signal_entry(e, sig):
     return True
 
 
+def sweep_orphans():
+    """清理"没人追踪"的残留进程: exe 是 proot 的 loader、TracerPid 为 0。追踪进程被 SIGKILL (或被系统杀掉) 时，
+    里面的程序不会跟着退出，之后每个被拦截的系统调用都返回 ENOSYS —— 不干活、不退出、还占着端口。返回清掉的个数"""
+    n = 0
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            if "/proot/loader" not in os.readlink(f"/proc/{d}/exe"):
+                continue
+            with open(f"/proc/{d}/status") as f:
+                tp = next((l.split()[1] for l in f if l.startswith("TracerPid")), "1")
+            if tp == "0":
+                os.kill(int(d), signal.SIGKILL)
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
 def signal_session(name, sig):
     e = procs.get(name)
     return bool(e) and _signal_entry(e, sig)
@@ -110,6 +130,9 @@ def stop_session(name, timeout=8.0):
                 e["p"].wait(timeout=3)
             except Exception:
                 pass
+    n = sweep_orphans()
+    if n:
+        log(f"清理残留进程 {n} 个 (停止 {name})")
 
 
 def parse_cpus(spec):
