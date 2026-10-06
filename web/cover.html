@@ -9,44 +9,49 @@
      退出 = 关闭面板应用 (只在面板应用里显示；之后点应用图标重新开启)。
      打开: http://<平台>/cover.html   可选参数 ?inst=i01 指定实例，?period=2 刷新周期 (秒) -->
 <style>
-  :root { --bg:#05080c; --card:#0e151d; --line:#1d2a38; --fg:#e8eef5; --dim:#7f90a3; --ok:#3ddc84; --warn:#ffb020; --bad:#ff5a52; --acc:#4da3ff; }
+  /* 尺寸全部按视口短边 (vmin) 走；每个文字块都写死行高，保证 748×654 的外屏可用区里不被裁切 */
+  :root { --bg:#05080c; --card:#0e151d; --line:#1d2a38; --fg:#e8eef5; --dim:#8a9bb0; --ok:#3ddc84; --warn:#ffb020; --bad:#ff5a52; --acc:#4da3ff; }
   * { box-sizing:border-box; }
-  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,"Noto Sans CJK SC",sans-serif; overflow:hidden; }
-  body { display:flex; flex-direction:column; padding:3vmin 3vmin 4vmin; gap:2vmin; }
-  header { display:flex; align-items:baseline; justify-content:space-between; gap:2vmin; }
-  header .name { font-size:5.2vmin; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  header .addr { font-size:3.3vmin; color:var(--acc); font-variant-numeric:tabular-nums; white-space:nowrap; }
-  .dot { display:inline-block; width:2.6vmin; height:2.6vmin; border-radius:50%; background:var(--dim); margin-right:1.4vmin; vertical-align:middle; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,"Noto Sans CJK SC",sans-serif; overflow:hidden;
+               -webkit-user-select:none; user-select:none; -webkit-text-size-adjust:none; }
+  body { display:flex; flex-direction:column; padding:2.4vmin 2.8vmin; gap:1.8vmin; }
+  header { flex:none; display:flex; align-items:center; justify-content:space-between; gap:3vmin; }
+  header > div { min-width:0; }
+  header .r { text-align:right; flex:none; }
+  .l1 { font-size:5vmin; line-height:6.2vmin; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .l2 { font-size:3vmin; line-height:4vmin; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-variant-numeric:tabular-nums; }
+  header .r .l1 { font-size:3.7vmin; font-weight:600; color:var(--acc); font-variant-numeric:tabular-nums; }
+  .dot { display:inline-block; width:2.6vmin; height:2.6vmin; border-radius:50%; background:var(--dim); margin-right:1.4vmin; vertical-align:0.1vmin; }
   .dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
-  .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:1.8vmin; }
-  .tile { background:var(--card); border:1px solid var(--line); border-radius:2vmin; padding:1.6vmin 1.8vmin; min-width:0; }
-  .tile .k { font-size:2.7vmin; color:var(--dim); white-space:nowrap; }
-  .tile .v { font-size:6.4vmin; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.15; white-space:nowrap; }
-  .tile .v small { font-size:2.8vmin; font-weight:500; color:var(--dim); margin-left:.5vmin; }
+  .tiles { flex:none; display:grid; grid-template-columns:repeat(4,1fr); gap:1.6vmin; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:2vmin; padding:1.2vmin 1.8vmin 1vmin; min-width:0; }
+  .k { font-size:3vmin; line-height:3.8vmin; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile .v { font-size:6.6vmin; line-height:7.6vmin; font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .tile .v small { font-size:3vmin; font-weight:500; color:var(--dim); margin-left:.6vmin; }
   .ok-t { color:var(--ok); } .warn-t { color:var(--warn); } .bad-t { color:var(--bad); }
-  main { flex:1; min-height:0; display:flex; gap:2vmin; }
-  .map { flex:1.15; min-width:0; background:var(--card); border:1px solid var(--line); border-radius:2vmin; position:relative; }
+  main { flex:1; min-height:0; display:flex; gap:1.8vmin; }
+  .map { flex:1.1; min-width:0; background:var(--card); border:1px solid var(--line); border-radius:2vmin; position:relative; overflow:hidden; }
   .map canvas { position:absolute; inset:0; width:100%; height:100%; }
-  .side { flex:1; min-width:0; display:flex; flex-direction:column; gap:1.6vmin; }
-  .row { flex:1; min-height:0; display:flex; flex-direction:column; justify-content:center; background:var(--card); border:1px solid var(--line); border-radius:2vmin; padding:0 1.8vmin; }
-  .row .k { font-size:2.6vmin; color:var(--dim); }
-  .row .v { font-size:3.7vmin; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .bar { display:flex; gap:1.8vmin; }
-  .btn { flex:1; min-width:0; height:10.5vmin; border-radius:2vmin; border:1px solid var(--acc); background:#10243a; color:var(--fg); font:600 3.9vmin system-ui,sans-serif;
+  .side { flex:1; min-width:0; display:flex; flex-direction:column; gap:1.4vmin; }
+  .row { flex:1; min-height:0; display:flex; flex-direction:column; justify-content:center; background:var(--card); border:1px solid var(--line); border-radius:2vmin; padding:0 1.8vmin; overflow:hidden; }
+  .row .v { font-size:4.3vmin; line-height:5.4vmin; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bar { flex:none; display:flex; gap:1.8vmin; }
+  .btn { flex:1; min-width:0; height:10.5vmin; border-radius:2vmin; border:1px solid var(--acc); background:#10243a; color:var(--fg); font:600 4vmin/5vmin system-ui,"Noto Sans CJK SC",sans-serif;
          white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 2vmin; -webkit-tap-highlight-color:transparent; }
   .btn:active { background:#1b3a5c; }
   .btn.run { border-color:var(--ok); background:#0f2a1c; color:var(--ok); }
   .btn.arm { border-color:var(--bad); background:#3a1512; color:var(--bad); }
   .btn.off { border-color:var(--line); background:var(--card); color:var(--dim); }
-  .btn.exit { flex:0 0 19vmin; border-color:var(--line); background:var(--card); color:var(--dim); }
-  body { -webkit-user-select:none; user-select:none; }
-  footer { display:flex; justify-content:space-between; font-size:2.6vmin; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .btn.exit { flex:0 0 20vmin; border-color:var(--line); background:var(--card); color:var(--dim); }
+  @media (max-aspect-ratio: 4/5) {        /* 竖屏 (普通手机全屏、主屏): 地图在上，信息在下 */
+    main { flex-direction:column; } .map { flex:1.3; } .side { flex:none; display:grid; grid-template-columns:1fr 1fr; } .row { padding:1.4vmin 1.8vmin; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <div class="name"><span class="dot" id="dot"></span><span id="node">—</span></div>
-  <div class="addr" id="addr">—</div>
+  <div><div class="l1"><span class="dot" id="dot"></span><span id="node">—</span></div><div class="l2" id="scene">—</div></div>
+  <div class="r"><div class="l1" id="addr">—</div><div class="l2"><span id="ver">—</span> · <span id="clock">—</span></div></div>
 </header>
 <div class="tiles">
   <div class="tile"><div class="k">实时率</div><div class="v" id="rtf">—</div></div>
@@ -61,14 +66,12 @@
     <div class="row"><div class="k">导航</div><div class="v" id="nav">—</div></div>
     <div class="row"><div class="k">位姿 (m, °)</div><div class="v" id="pose">—</div></div>
     <div class="row"><div class="k">仿真步 / 激光 (ms)</div><div class="v" id="ms">—</div></div>
-    <div class="row"><div class="k">版本</div><div class="v" id="ver">—</div></div>
   </div>
 </main>
 <div class="bar">
   <button class="btn off" id="task">下发任务</button>
   <button class="btn exit" id="exit" style="display:none">退出</button>
 </div>
-<footer><span id="scene">—</span><span id="clock">—</span></footer>
 <script>
 const Q = new URLSearchParams(location.search);
 const PERIOD = Math.max(1, parseFloat(Q.get("period") || "2")) * 1000;
@@ -145,7 +148,7 @@ function paintBtn() {
   if (Date.now() < B.msgUntil) { b.textContent = B.msg; b.className = "btn off"; return; }
   if (tf.status === "running") {
     const n = (tf.steps || []).length;
-    b.textContent = armed("stop") ? "再点一次终止任务" : "执行中 " + ((tf.flow || {}).name || (tf.flow || {}).id || "") + (n ? "  " + Math.min(n, (tf.step_index || 0) + 1) + "/" + n : "");
+    b.textContent = armed("stop") ? "再点一次终止任务" : "执行中" + (n ? " " + Math.min(n, (tf.step_index || 0) + 1) + "/" + n : "") + " · " + ((tf.flow || {}).name || (tf.flow || {}).id || "");
     b.className = "btn " + (armed("stop") ? "arm" : "run");
   } else if (!B.inst || B.inst.status !== "running") { b.textContent = "实例未运行"; b.className = "btn off"; }
   else if (!f) { b.textContent = B.flows ? "任务列表为空" : "读取任务列表…"; b.className = "btn off"; }
@@ -194,14 +197,14 @@ async function tick() {
     num("cpu", node.cpu_percent, "%", 0, node.cpu_percent > 85 ? "bad-t" : "");
     num("temp", node.temp_c, "°C", 0, node.temp_c >= 70 ? "bad-t" : node.temp_c >= 55 ? "warn-t" : "");
     num("mem", node.mem_percent, "%", 0, node.mem_percent > 85 ? "warn-t" : "");
-    const img = (node.images || [])[0]; set("ver", img ? img.version : "—");
+    const img = (node.images || [])[0]; $("ver").textContent = img ? img.version : "—";
   }
   if (inst) {
     const st = inst.status;
     set("inst", inst.id + " · " + (STATUS[st] || st), st === "running" ? "ok-t" : st === "error" ? "bad-t" : "warn-t");
-    $("scene").textContent = (inst.model_name || "") + " @ " + (inst.scene_id || "");
+    $("scene").textContent = [inst.model_name, inst.scene_id].filter(Boolean).join(" @ ") || "—";
     if (st === "running" || st === "degraded") { try { tel = await j("/inst/" + inst.id + "/api/telemetry"); } catch (e) { tel = null; } }
-  } else { set("inst", "没有实例", "warn-t"); $("scene").textContent = ""; }
+  } else { set("inst", "没有实例", "warn-t"); $("scene").textContent = "—"; }
   const ss = tel && tel.sim_status;
   if (ss) {
     num("rtf", ss.rtf, "×", 2, ss.rtf < 0.9 ? "bad-t" : ss.rtf < 0.97 ? "warn-t" : "ok-t");

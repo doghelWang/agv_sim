@@ -6,7 +6,7 @@
        adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow      (屏幕灭着时由面板点亮)
      没有这个权限时退回普通全屏页面 (面板在前台，Termux 会被限核)。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.agvsim.cover" android:versionCode="7" android:versionName="1.6">
+    package="com.agvsim.cover" android:versionCode="8" android:versionName="1.7">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />

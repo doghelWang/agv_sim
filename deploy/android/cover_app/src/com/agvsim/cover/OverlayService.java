@@ -120,10 +120,13 @@ public class OverlayService extends Service {
         if (keepOn) f |= WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON;
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, f, PixelFormat.OPAQUE);
-        if (d != null) {                         // 按屏幕实际像素铺满 (MATCH_PARENT 会留出导航栏/输入法区域)
-            android.graphics.Point sz = new android.graphics.Point();
-            d.getRealSize(sz);
-            lp.width = sz.x; lp.height = sz.y; lp.gravity = android.view.Gravity.TOP | android.view.Gravity.LEFT;
+        if (d != null) {                         // 按屏幕实际像素算 (MATCH_PARENT 在外屏上尺寸不稳定)，再让开屏幕缺口那一条:
+            android.graphics.Point sz = new android.graphics.Point();   // Z Flip 外屏右下角是摄像头缺口 (下面 66 px)，同一条的左半边是系统导航键，
+            d.getRealSize(sz);                                           // 盖上去的话面板的字被挡、系统按键也被面板垫底。
+            int[] in4 = cutoutInsets(d);
+            lp.x = in4[0]; lp.y = in4[1];
+            lp.width = sz.x - in4[0] - in4[2]; lp.height = sz.y - in4[1] - in4[3];
+            lp.gravity = android.view.Gravity.TOP | android.view.Gravity.LEFT;
         }
         if (keepOn) lp.screenBrightness = in.getFloatExtra("brightness", 0.2f);
         if (Build.VERSION.SDK_INT >= 28) lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
@@ -147,6 +150,19 @@ public class OverlayService extends Service {
                 } catch (Exception e) { /* 没装 Termux 或系统不允许: 面板照常显示 */ }
             }
         }
+    }
+
+    /** 屏幕缺口占掉的四边 {左, 上, 右, 下} (像素)。Display.getCutout 是 API 29，Termux 自带的 android.jar 较旧，用反射 */
+    private static int[] cutoutInsets(Display d) {
+        int[] r = new int[4];
+        try {
+            Object c = Display.class.getMethod("getCutout").invoke(d);
+            if (c != null) {
+                String[] m = { "getSafeInsetLeft", "getSafeInsetTop", "getSafeInsetRight", "getSafeInsetBottom" };
+                for (int i = 0; i < 4; i++) r[i] = Math.max(0, (Integer) c.getClass().getMethod(m[i]).invoke(c));
+            }
+        } catch (Exception e) { /* 取不到就铺满 */ }
+        return r;
     }
 
     /** 临时让出屏幕: 面板换成一个小按钮，回到桌面；到时间或点小按钮后恢复 */
