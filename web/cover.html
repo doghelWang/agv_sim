@@ -7,7 +7,7 @@
 <!-- 小屏状态面板 (折叠屏外屏 748×720 等)：节点 / 实例 / 实时率 / 温度 / 激光俯视图 + 规划路径。只读，数据全部来自平台已有接口。
      底部两个按钮: 下发任务 = 执行当前场景任务列表 (3-1 任务流) 里的第一个；执行中再点两下 = 终止。
      退出 = 关闭面板应用 (只在面板应用里显示；之后点应用图标重新开启)。
-     打开: http://<平台>/cover.html   可选参数 ?inst=i01 指定实例，?period=2 刷新周期 (秒) -->
+     打开: http://<平台>/cover.html   可选参数 ?inst=i01 指定实例，?period=0.5 刷新周期 (秒，位姿/导航/地图；节点 CPU、温度、实例列表固定每 2 秒) -->
 <style>
   /* 尺寸全部按视口短边 (vmin) 走；每个文字块都写死行高，保证 748×654 的外屏可用区里不被裁切 */
   :root { --bg:#05080c; --card:#0e151d; --line:#1d2a38; --fg:#e8eef5; --dim:#8a9bb0; --ok:#3ddc84; --warn:#ffb020; --bad:#ff5a52; --acc:#4da3ff; }
@@ -74,7 +74,8 @@
 </div>
 <script>
 const Q = new URLSearchParams(location.search);
-const PERIOD = Math.max(1, parseFloat(Q.get("period") || "2")) * 1000;
+const PERIOD = Math.max(0.25, parseFloat(Q.get("period") || "0.5")) * 1000, SLOW = 2000;
+const HUB = { at: 0, ns: null, is: null };
 const $ = id => document.getElementById(id);
 const STATUS = { running: "运行中", deploying: "部署中", degraded: "降级", error: "异常", stopped: "已停止" };
 const NAV = { ARRIVED: "已到达", NAVIGATING: "导航中", IDLE: "空闲", FAILED: "失败", CANCELED: "已取消", PLANNING: "规划中", OBSTACLE_WAIT: "避障等待", SAFETY_STOP: "安全停车", ABORTED: "已中止" };
@@ -186,11 +187,12 @@ async function tick() {
   $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
   let node = null, inst = null, tel = null;
   try {
-    const [ns, is] = await Promise.all([j("/api/hub/nodes"), j("/api/hub/instances")]);
+    if (!HUB.ns || Date.now() - HUB.at >= SLOW - 50) { [HUB.ns, HUB.is] = await Promise.all([j("/api/hub/nodes"), j("/api/hub/instances")]); HUB.at = Date.now(); }
+    const ns = HUB.ns, is = HUB.is;
     node = (ns.nodes || []).find(n => n.online) || (ns.nodes || [])[0];
     const all = is.instances || [], want = Q.get("inst");
     inst = (want && all.find(i => i.id === want)) || all.find(i => i.status === "running") || all[0];
-  } catch (e) { $("dot").className = "dot bad"; $("node").textContent = "平台无响应"; draw(null); return; }
+  } catch (e) { HUB.ns = null; $("dot").className = "dot bad"; $("node").textContent = "平台无响应"; draw(null); return; }
   if (node) {
     $("node").textContent = node.name + (node.model ? " · " + node.model.replace(/\s*\(.*\)/, "") : "");
     $("addr").textContent = ((node.ips || []).concat([node.lan_host]).find(a => /^(192\.168|10)\./.test(a || "")) || node.lan_host || (node.ips || [])[0] || location.hostname) + ":" + (location.port || 80);
@@ -218,7 +220,12 @@ async function tick() {
   const ok = node && node.online && inst && inst.status === "running" && ss && ss.rtf >= 0.9;
   $("dot").className = "dot " + (ok ? "ok" : node && node.online ? "warn" : "bad");
 }
-tick(); setInterval(tick, PERIOD);
+// 一轮做完再排下一轮 (平台慢的时候不会堆积请求)；页面不可见时不刷新
+(async function loop() {
+  const t0 = Date.now();
+  if (!document.hidden) { try { await tick(); } catch (e) {} }
+  setTimeout(loop, Math.max(50, PERIOD - (Date.now() - t0)));
+})();
 </script>
 </body>
 </html>
