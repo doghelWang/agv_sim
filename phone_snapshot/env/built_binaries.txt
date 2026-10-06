@@ -1,0 +1,6 @@
+27464 2026-10-04 /data/data/com.termux/files/home/gpucastd
+34888 2026-10-04 /opt/agv/planning/native/libagvnav.so
+3496720 2026-10-01 /opt/agv/ros2/install/agv_nav2_plugins/lib/libagv_nav2_plugins.so
+2941832 2026-10-05 /opt/agv/ros2/install/agv_ros_bridge/lib/agv_ros_bridge/agv_ros_bridge
+169344 2026-10-05 /opt/agv/ros2/install/tf2/lib/libtf2.so
+49488 2026-10-04 /opt/agv/sim_core/native/libsimcore.so

@@ -383,23 +383,3 @@ M1 上执行侧整体约 0.8~1.1 核、仿真约 0.2 核，内存合计约 0.5 G
 
 仍然存在：实例启动时 Nav2 偶尔卡在激活，要等启动看门狗 (Android 90 s) 重启一次才起来；Nav2 重启时如果某个节点进程对 SIGINT 无反应，可能留下孤儿进程 (重启实例可清掉)。
 
-### 8.6 slam_toolbox / Nav2 节点"活着但不干活"：tf2 的 ABBA 死锁 (2026-10-05)
-
-现象：任务流跑到第 35 个任务时 `LOC_STALE`，slam_toolbox 进程还在、CPU 为 0，map→odom 不再更新；之前偶发的
-"controller_server 收到目标后没有任何输出"里也有一部分是同一个问题。
-
-定位方法 (手机上没有 gdb)：读 `/proc/<pid>/task/<tid>/syscall` 得到每个线程停在哪个系统调用及其栈指针，再从 `/proc/<pid>/mem`
-扫栈上的返回地址，用 `nm -D -C` 对回符号。结果是两个线程互相等对方手里的锁：
-
-| 线程 | 调用链 | 已持有 | 在等 |
-|---|---|---|---|
-| 主线程 | `tf2_ros::MessageFilter` → `tf2_ros::Buffer::waitForTransform` → `BufferCore::addTransformableRequest` | `timer_to_request_map_mutex_` | `transformable_requests_mutex_` |
-| TF 监听线程 | `BufferCore::setTransform` → `testTransformableRequests` → 回调 | `transformable_requests_mutex_` | `timer_to_request_map_mutex_` |
-
-这是 Humble 的 tf2 0.25.23 里的已知缺陷，上游在 geometry2 **0.25.24** 修掉 (只改 `tf2/src/buffer_core.cpp`)，apt 源里还没有。
-所有用 `MessageFilter` 的节点 (slam_toolbox、代价地图的观测源) 都可能中招，负载越重、TF 越密越容易撞上；手机小核上一两个小时一次。
-
-处理：仓库里带上 0.25.24 的 tf2 源码 (`ros2/tf2`)，和 `agv_ros_bridge` 一起编进同一个 overlay (`ros2/install`)，盖住 `/opt/ros` 的
-`libtf2.so` (同一 Humble 小版本内 ABI 兼容，其它包不用重编)。`update_from_git.sh` 与 `Dockerfile.nav` 先单独编 tf2，编不过就跳过、
-退回系统自带版本。确认生效：`grep libtf2 /proc/<任一 ROS 进程>/maps` 应指向 `/opt/agv/ros2/install/tf2/lib/libtf2.so`。
-apt 源升到 0.25.24 以后可以删掉 `ros2/tf2`。

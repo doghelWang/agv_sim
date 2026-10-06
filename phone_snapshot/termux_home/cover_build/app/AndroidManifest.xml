@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 外屏状态面板: 显示本机平台的 /cover.html (折叠屏外屏用；普通手机也能装)。
+     默认用悬浮窗盖在 Termux 上面显示 —— Termux 仍是前台应用，仿真/导航进程才能用全部 CPU 核
+     (三星系统会把不在前台的 Termux 限制到 3 个小核)。悬浮窗权限用 adb 授权一次:
+       adb shell appops set com.agvsim.cover SYSTEM_ALERT_WINDOW allow
+       adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow      (屏幕灭着时由面板点亮)
+     没有这个权限时退回普通全屏页面 (面板在前台，Termux 会被限核)。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.agvsim.cover" android:versionCode="4" android:versionName="1.3">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 屏幕灭着时点亮 (开机自启 / 息屏后重新打开)。Android 13+ 还要: adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow -->
+    <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
+    <queries><package android:name="com.termux" /></queries>
+    <application android:label="AMR 仿真面板" android:hardwareAccelerated="true" android:usesCleartextTraffic="true">
+        <!-- 三星 Z Flip 外屏 (Flex Window) 允许显示 -->
+        <meta-data android:name="com.samsung.android.foldable.support.cover" android:value="true" />
+        <meta-data android:name="android.max_aspect" android:value="2.5" />
+        <activity android:name=".MainActivity" android:label="AMR 仿真面板" android:exported="true"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".OverlayService" android:exported="false" />
+        <!-- Termux 里: am broadcast -n com.agvsim.cover/.StartReceiver → 打开悬浮面板 -->
+        <receiver android:name=".StartReceiver" android:exported="true" />
+    </application>
+</manifest>

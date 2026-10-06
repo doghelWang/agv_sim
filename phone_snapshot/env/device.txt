@@ -1,0 +1,12 @@
+SM-F731B
+16
+BP2A.250605.031.A3.F731BXXU5FYI9
+Linux localhost 5.15.178-android13-8-31998796-abF731BXXU5FYI9 #1 SMP PREEMPT Tue Sep 16 15:10:29 UTC 2025 aarch64 Android
+ _____ _____              ___
+|  __ \  __ \_____  _____|   |_
+
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+NAME="Ubuntu"
+VERSION_ID="22.04"
+VERSION="22.04.5 LTS (Jammy Jellyfish)"
+ab6f3cf Android: cut idle overhead (gateway idle mode, cheap agent heartbeat, 25 Hz odom/TF, skip matching when still)
