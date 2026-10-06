@@ -27,7 +27,9 @@ import android.widget.TextView;
  *  打开: 应用图标 / adb am start，或在 Termux 里 am broadcast -n com.agvsim.cover/.StartReceiver
  *  (可带 --es url … --ez keep_on false --ef brightness 0.5 --ei display 1 --ei yield_s 180)
  *  长按面板 = 临时让出屏幕: 面板收成右下角一个小按钮并回到桌面，可以打开音乐等别的应用；点小按钮或过 yield_s 秒 (默认 180)
- *  自动回来 (Termux 回到前台，面板盖上；音乐在后台继续播)。让出期间 Termux 只有小核可用。长按小按钮 = 关闭面板。 */
+ *  自动回来 (Termux 回到前台，面板盖上；音乐在后台继续播)。让出期间 Termux 只有小核可用。长按小按钮 = 关闭面板。
+ *  面板页面上的按钮可以点 (下发任务 / 退出)。"退出" = 关掉面板并记住: 之后启动脚本和前台看守都不再把它打开，
+ *  直到用户点应用图标 (或 am broadcast … --ez force true) 重新开启。退出后 Termux 不再被保持在前台，会被系统限制到小核。 */
 public class OverlayService extends Service {
     private WindowManager wm;
     private WebView web;
@@ -42,6 +44,10 @@ public class OverlayService extends Service {
     @Override
     public int onStartCommand(Intent in, int flags, int id) {
         if (in == null) in = new Intent();
+        if (Panel.exited(this)) {                // 已退出 (系统自己重启服务时会走到这里): 不显示
+            if (!in.getBooleanExtra("force", false)) { stopSelf(); return START_NOT_STICKY; }
+            Panel.setExited(this, false);
+        }
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         nm.createNotificationChannel(new NotificationChannel("panel", "状态面板", NotificationManager.IMPORTANCE_MIN));
         startForeground(1, new Notification.Builder(this, "panel").setContentTitle("AMR 仿真面板")
@@ -96,7 +102,7 @@ public class OverlayService extends Service {
         }
         wm = (WindowManager) c.getSystemService(WINDOW_SERVICE);
         String u = in.getStringExtra("url");
-        web = Panel.create(c, (u != null && u.startsWith("http")) ? u : Panel.DEFAULT_URL, h);
+        web = Panel.create(c, (u != null && u.startsWith("http")) ? u : Panel.DEFAULT_URL, h, new Runnable() { public void run() { exitPanel(); } });
         int f = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
         boolean keepOn = in.getBooleanExtra("keep_on", true);
@@ -115,7 +121,7 @@ public class OverlayService extends Service {
         });
         lastDisplay = d;
         web.setOnTouchListener(new View.OnTouchListener() {
-            public boolean onTouch(View v, MotionEvent e) { gd.onTouchEvent(e); return true; }
+            public boolean onTouch(View v, MotionEvent e) { gd.onTouchEvent(e); return false; }   // 不吃掉: 页面上的按钮要能点
         });
         try { wm.addView(web, lp); } catch (Exception e) { web = null; stopSelf(); return; }
         // 把 Termux 调到同一块屏的前台 (面板不抢焦点，盖在它上面): Termux 是前台应用时仿真/导航进程才能用全部 CPU 核。
@@ -158,6 +164,15 @@ public class OverlayService extends Service {
         } catch (Exception e) { /* 回不了桌面也没关系: 面板已经收起，用户自己切 */ }
         h.removeCallbacksAndMessages(null);
         h.postDelayed(new Runnable() { public void run() { restore(); } }, sec * 1000L);
+    }
+
+    /** 页面上点了"退出": 关掉面板，记住已退出 */
+    private void exitPanel() {
+        Panel.setExited(this, true);
+        h.removeCallbacksAndMessages(null);
+        remove();
+        stopForeground(true);
+        stopSelf();
     }
 
     private void restore() {

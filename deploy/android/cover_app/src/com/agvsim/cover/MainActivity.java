@@ -24,6 +24,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         Intent in = getIntent();
+        Panel.setExited(this, false);            // 点应用图标 / am start = 重新开启
         String u = in.getStringExtra("url");
         String url = (u != null && u.startsWith("http")) ? u : Panel.DEFAULT_URL;
         boolean keepOn = in.getBooleanExtra("keep_on", true);
@@ -41,7 +42,7 @@ public class MainActivity extends Activity {
             return;
         }
         stopService(new Intent(this, OverlayService.class));
-        web = Panel.create(this, url, h);
+        web = Panel.create(this, url, h, new Runnable() { public void run() { Panel.setExited(MainActivity.this, true); finish(); } });
         setContentView(web);
         if (keepOn) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);

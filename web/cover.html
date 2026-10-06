@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>节点状态面板</title>
 <!-- 小屏状态面板 (折叠屏外屏 748×720 等)：节点 / 实例 / 实时率 / 温度 / 激光俯视图 + 规划路径。只读，数据全部来自平台已有接口。
+     底部两个按钮: 下发任务 = 执行当前场景任务列表 (3-1 任务流) 里的第一个；执行中再点两下 = 终止。
+     退出 = 关闭面板应用 (只在面板应用里显示；之后点应用图标重新开启)。
      打开: http://<平台>/cover.html   可选参数 ?inst=i01 指定实例，?period=2 刷新周期 (秒) -->
 <style>
   :root { --bg:#05080c; --card:#0e151d; --line:#1d2a38; --fg:#e8eef5; --dim:#7f90a3; --ok:#3ddc84; --warn:#ffb020; --bad:#ff5a52; --acc:#4da3ff; }
@@ -29,6 +31,15 @@
   .row { flex:1; min-height:0; display:flex; flex-direction:column; justify-content:center; background:var(--card); border:1px solid var(--line); border-radius:2vmin; padding:0 1.8vmin; }
   .row .k { font-size:2.6vmin; color:var(--dim); }
   .row .v { font-size:3.7vmin; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bar { display:flex; gap:1.8vmin; }
+  .btn { flex:1; min-width:0; height:10.5vmin; border-radius:2vmin; border:1px solid var(--acc); background:#10243a; color:var(--fg); font:600 3.9vmin system-ui,sans-serif;
+         white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 2vmin; -webkit-tap-highlight-color:transparent; }
+  .btn:active { background:#1b3a5c; }
+  .btn.run { border-color:var(--ok); background:#0f2a1c; color:var(--ok); }
+  .btn.arm { border-color:var(--bad); background:#3a1512; color:var(--bad); }
+  .btn.off { border-color:var(--line); background:var(--card); color:var(--dim); }
+  .btn.exit { flex:0 0 19vmin; border-color:var(--line); background:var(--card); color:var(--dim); }
+  body { -webkit-user-select:none; user-select:none; }
   footer { display:flex; justify-content:space-between; font-size:2.6vmin; color:var(--dim); font-variant-numeric:tabular-nums; }
 </style>
 </head>
@@ -53,6 +64,10 @@
     <div class="row"><div class="k">版本</div><div class="v" id="ver">—</div></div>
   </div>
 </main>
+<div class="bar">
+  <button class="btn off" id="task">下发任务</button>
+  <button class="btn exit" id="exit" style="display:none">退出</button>
+</div>
 <footer><span id="scene">—</span><span id="clock">—</span></footer>
 <script>
 const Q = new URLSearchParams(location.search);
@@ -110,6 +125,60 @@ function draw(t) {
   g.closePath(); g.fillStyle = "rgba(61,220,132,.25)"; g.fill(); g.strokeStyle = "#3ddc84"; g.lineWidth = 2 * dpr; g.stroke();
   g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(yaw) * 1.6 * s, cy - Math.sin(yaw) * 1.6 * s); g.stroke();
 }
+// ---- 底部按钮: 下发任务列表里的第一个任务 / 终止；退出面板
+const B = { inst: null, scene: null, flows: null, at: 0, tf: null, msg: "", msgUntil: 0, arm: "", armUntil: 0, busy: false };
+async function send(method, url, body) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), 10000);
+  try {
+    const r = await fetch(url, { method, signal: c.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((d.error && (d.error.message || d.error)) || d.message || d.detail || ("HTTP " + r.status));
+    return d;
+  } finally { clearTimeout(t); }
+}
+function say(text, sec) { B.msg = text; B.msgUntil = Date.now() + (sec || 4) * 1000; paintBtn(); }
+function armed(k) { return B.arm === k && Date.now() < B.armUntil; }
+function arm(k) { B.arm = k; B.armUntil = Date.now() + 3000; paintBtn(); setTimeout(paintBtn, 3100); }
+function paintBtn() {
+  const b = $("task"), x = $("exit"), tf = B.tf || {}, f = (B.flows || [])[0];
+  x.textContent = armed("exit") ? "确认退出" : "退出"; x.className = "btn exit" + (armed("exit") ? " arm" : "");
+  if (Date.now() < B.msgUntil) { b.textContent = B.msg; b.className = "btn off"; return; }
+  if (tf.status === "running") {
+    const n = (tf.steps || []).length;
+    b.textContent = armed("stop") ? "再点一次终止任务" : "执行中 " + ((tf.flow || {}).name || (tf.flow || {}).id || "") + (n ? "  " + Math.min(n, (tf.step_index || 0) + 1) + "/" + n : "");
+    b.className = "btn " + (armed("stop") ? "arm" : "run");
+  } else if (!B.inst || B.inst.status !== "running") { b.textContent = "实例未运行"; b.className = "btn off"; }
+  else if (!f) { b.textContent = B.flows ? "任务列表为空" : "读取任务列表…"; b.className = "btn off"; }
+  else { b.textContent = "▶ 下发 " + (f.name || f.id); b.className = "btn"; }
+}
+async function loadFlows(force) {
+  const sid = B.inst && B.inst.scene_id;
+  if (!sid) { B.flows = null; B.scene = null; return; }
+  if (!force && sid === B.scene && B.flows && Date.now() - B.at < 10000) return;
+  try { B.flows = (await j("/api/hub/scenes/" + encodeURIComponent(sid) + "/taskflows")).taskflows || []; B.scene = sid; B.at = Date.now(); }
+  catch (e) { if (sid !== B.scene) B.flows = null; }
+}
+$("task").onclick = async () => {
+  if (B.busy || !B.inst || B.inst.status !== "running") return;
+  const base = "/inst/" + B.inst.id + "/api/v2/taskflow/";
+  B.busy = true;
+  try {
+    if ((B.tf || {}).status === "running") {
+      if (!armed("stop")) { arm("stop"); return; }
+      B.arm = ""; await send("POST", base + "stop"); B.tf = { status: "stopped" }; say("任务已终止");
+    } else {
+      await loadFlows(true);                       // 下发前重新读一次列表，拿到的是最新的第一个
+      const f = (B.flows || [])[0];
+      if (!f) { say("任务列表为空"); return; }
+      B.tf = await send("POST", base + "run", { flow: f }); say("已下发 " + (f.name || f.id), 2);
+    }
+  } catch (e) { say("失败: " + (e.name === "AbortError" ? "超时" : e.message), 6); }
+  finally { B.busy = false; paintBtn(); }
+};
+if (window.AgvCover && AgvCover.exit) {
+  $("exit").style.display = "";
+  $("exit").onclick = () => { if (!armed("exit")) { arm("exit"); return; } AgvCover.exit(); };
+}
 async function tick() {
   $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
   let node = null, inst = null, tel = null;
@@ -141,6 +210,8 @@ async function tick() {
     set("ms", (ss.step_ms != null ? ss.step_ms.toFixed(2) : "—") + " / " + (ss.lidar_ms != null ? ss.lidar_ms.toFixed(1) : "—"));
   } else { num("rtf", null, "×", 2); set("nav", "—"); set("pose", "—"); set("ms", "—"); }
   draw(tel);
+  B.inst = inst; B.tf = tel ? (tel.taskflow || { status: "idle" }) : null;
+  await loadFlows(false); paintBtn();
   const ok = node && node.online && inst && inst.status === "running" && ss && ss.rtf >= 0.9;
   $("dot").className = "dot " + (ok ? "ok" : node && node.online ? "warn" : "bad");
 }

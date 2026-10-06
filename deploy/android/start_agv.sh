@@ -15,7 +15,7 @@ termux-wake-lock 2>/dev/null || true
 # 装了外屏状态面板 (deploy/android/cover_app) 就先打开它: 面板点亮屏幕并保持常亮，把 Termux 调到前台，自己悬浮在上面，
 # 平台起来之前显示"等待中"。三星不允许从外屏上的应用直接打开别的应用页面，所以发广播让面板应用自己处理。AGV_COVER_PANEL=0 不打开面板
 if [ "${AGV_COVER_PANEL:-1}" = 1 ] && pm path com.agvsim.cover >/dev/null 2>&1; then
-    am broadcast -n com.agvsim.cover/.StartReceiver >/dev/null 2>&1 && echo "[info] 外屏状态面板已打开 (长按面板关闭)"
+    am broadcast -n com.agvsim.cover/.StartReceiver >/dev/null 2>&1 && echo "[info] 外屏状态面板已打开 (长按面板临时让出屏幕；在面板上点过「退出」则不会打开，点应用图标重新开启)"
     for i in $(seq 1 15); do     # 等 Termux 真正到前台 (屏幕灭着时面板要先点亮屏幕)，最多 15 秒
         [ "$(cat /proc/self/cpuset 2>/dev/null)" = /top-app ] && break; sleep 1
     done
