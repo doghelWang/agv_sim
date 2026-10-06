@@ -24,7 +24,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         Intent in = getIntent();
-        Panel.setExited(this, false);            // 点应用图标 / am start = 重新开启
+        Panel.setExited(this, false);            // 点应用图标 / am start = 重新开启 (让出状态也清掉)
+        Panel.prefs(this).edit().putBoolean("yielded", false).commit();
         String u = in.getStringExtra("url");
         String url = (u != null && u.startsWith("http")) ? u : Panel.DEFAULT_URL;
         boolean keepOn = in.getBooleanExtra("keep_on", true);

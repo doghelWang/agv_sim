@@ -26,8 +26,9 @@ import android.widget.TextView;
 /** 悬浮窗面板: 全屏盖在指定屏幕上，不抢焦点 (下面的 Termux 仍是前台应用)。
  *  打开: 应用图标 / adb am start，或在 Termux 里 am broadcast -n com.agvsim.cover/.StartReceiver
  *  (可带 --es url … --ez keep_on false --ef brightness 0.5 --ei display 1 --ei yield_s 180)
- *  长按面板 = 临时让出屏幕: 面板收成右下角一个小按钮并回到桌面，可以打开音乐等别的应用；点小按钮或过 yield_s 秒 (默认 180)
- *  自动回来 (Termux 回到前台，面板盖上；音乐在后台继续播)。让出期间 Termux 只有小核可用。长按小按钮 = 关闭面板。
+ *  长按面板 = 让出屏幕: 面板收成右下角一个小按钮并回到桌面，可以用别的应用；点小按钮才回来 (Termux 回到前台，面板盖上)。
+ *  默认不会自动回来 (启动脚本、前台看守的打开请求在让出期间都不理)；要定时自动回来，打开时带 --ei yield_s 秒数。
+ *  让出期间 Termux 只有小核可用，屏幕照常休眠。长按小按钮 = 退出面板 (同页面上的「退出」)。
  *  面板页面上的按钮可以点 (下发任务 / 退出)。"退出" = 关掉面板并记住: 之后启动脚本和前台看守都不再把它打开，
  *  直到用户点应用图标 (或 am broadcast … --ez force true) 重新开启。退出后 Termux 不再被保持在前台，会被系统限制到小核。 */
 public class OverlayService extends Service {
@@ -36,7 +37,7 @@ public class OverlayService extends Service {
     private View chip;
     private Intent lastReq = new Intent();
     private Display lastDisplay;
-    private long yieldUntil;             // 让出屏幕期间 (elapsedRealtime, ms) 忽略外部的打开请求 (启动脚本的前台看守每 30 秒会发一次)
+    private long yieldUntil;             // 让出屏幕期间 (elapsedRealtime, ms；不自动回来时是 Long.MAX_VALUE) 忽略外部的打开请求 (前台看守每 30 秒会发一次)
     private final Handler h = new Handler();
 
     @Override public IBinder onBind(Intent i) { return null; }
@@ -52,7 +53,17 @@ public class OverlayService extends Service {
         nm.createNotificationChannel(new NotificationChannel("panel", "状态面板", NotificationManager.IMPORTANCE_MIN));
         startForeground(1, new Notification.Builder(this, "panel").setContentTitle("AMR 仿真面板")
                 .setContentText("悬浮显示中；长按面板临时让出屏幕").setSmallIcon(android.R.drawable.ic_menu_view).build());
-        if (SystemClock.elapsedRealtime() < yieldUntil && !in.getBooleanExtra("force", false)) return START_STICKY;
+        boolean force = in.getBooleanExtra("force", false);
+        if (SystemClock.elapsedRealtime() < yieldUntil && !force) return START_STICKY;
+        if (Panel.prefs(this).getBoolean("yielded", false) && !force) {
+            // 让出期间进程被系统回收后重新拉起: 只把小按钮放回去，不盖面板
+            yieldUntil = Long.MAX_VALUE;
+            lastReq = in;
+            wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            showChip(this);
+            return START_STICKY;
+        }
+        setYielded(false);
         yieldUntil = 0;
         remove();
         h.removeCallbacksAndMessages(null);
@@ -141,9 +152,25 @@ public class OverlayService extends Service {
     /** 临时让出屏幕: 面板换成一个小按钮，回到桌面；到时间或点小按钮后恢复 */
     private void yieldScreen() {
         final Context c = web != null ? web.getContext() : this;
-        int sec = Math.max(10, lastReq.getIntExtra("yield_s", 180));
+        int sec = lastReq.getIntExtra("yield_s", 0);          // 0 = 不自动回来 (默认)
         if (web != null) { try { wm.removeView(web); } catch (Exception e) {} web.destroy(); web = null; }
-        yieldUntil = SystemClock.elapsedRealtime() + sec * 1000L;
+        yieldUntil = sec > 0 ? SystemClock.elapsedRealtime() + Math.max(10, sec) * 1000L : Long.MAX_VALUE;
+        if (sec <= 0) setYielded(true);
+        showChip(c);
+        Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            if (lastDisplay != null) startActivity(home, ActivityOptions.makeBasic().setLaunchDisplayId(lastDisplay.getDisplayId()).toBundle());
+            else startActivity(home);
+        } catch (Exception e) { /* 回不了桌面也没关系: 面板已经收起，用户自己切 */ }
+        h.removeCallbacksAndMessages(null);
+        if (sec > 0) h.postDelayed(new Runnable() { public void run() { restore(); } }, Math.max(10, sec) * 1000L);
+    }
+
+    private void setYielded(boolean v) { Panel.prefs(this).edit().putBoolean("yielded", v).commit(); }
+
+    /** 右下角的小按钮: 点 = 面板回来，长按 = 关闭面板 */
+    private void showChip(Context c) {
+        if (chip != null) return;
         TextView t = new TextView(c);
         t.setText("\u21A9 面板");
         t.setTextColor(0xFFE8EEF5); t.setTextSize(15); t.setPadding(28, 16, 28, 16);
@@ -152,23 +179,18 @@ public class OverlayService extends Service {
         t.setBackground(bg);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON, PixelFormat.TRANSLUCENT);
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | (yieldUntil == Long.MAX_VALUE ? 0 : WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON),
+                PixelFormat.TRANSLUCENT);          // 不自动回来时屏幕照常休眠
         lp.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.RIGHT; lp.x = 16; lp.y = 90;
         t.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { restore(); } });
-        t.setOnLongClickListener(new View.OnLongClickListener() { public boolean onLongClick(View v) { stopSelf(); return true; } });
+        t.setOnLongClickListener(new View.OnLongClickListener() { public boolean onLongClick(View v) { exitPanel(); return true; } });
         try { wm.addView(t, lp); chip = t; } catch (Exception e) { chip = null; }
-        Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        try {
-            if (lastDisplay != null) startActivity(home, ActivityOptions.makeBasic().setLaunchDisplayId(lastDisplay.getDisplayId()).toBundle());
-            else startActivity(home);
-        } catch (Exception e) { /* 回不了桌面也没关系: 面板已经收起，用户自己切 */ }
-        h.removeCallbacksAndMessages(null);
-        h.postDelayed(new Runnable() { public void run() { restore(); } }, sec * 1000L);
     }
 
     /** 页面上点了"退出": 关掉面板，记住已退出 */
     private void exitPanel() {
         Panel.setExited(this, true);
+        setYielded(false);
         h.removeCallbacksAndMessages(null);
         remove();
         stopForeground(true);
@@ -176,6 +198,7 @@ public class OverlayService extends Service {
     }
 
     private void restore() {
+        setYielded(false);
         yieldUntil = 0;
         h.removeCallbacksAndMessages(null);
         remove();
