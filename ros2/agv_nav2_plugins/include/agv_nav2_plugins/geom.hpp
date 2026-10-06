@@ -12,6 +12,9 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <queue>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "agv_nav2_plugins/sweep.hpp"
@@ -22,7 +25,8 @@ namespace agv
 inline double wrap(double a) { return std::atan2(std::sin(a), std::cos(a)); }
 
 struct Pt { double x, y; };
-struct Pose2 { double x, y, th; };
+// th = 车身朝向；rev = 到达该点的这一段是倒车行驶 (行驶方向 = th + π)
+struct Pose2 { double x, y, th; bool rev{false}; };
 
 struct Rect
 {
@@ -114,6 +118,169 @@ inline bool translationBlocked(
   return false;
 }
 
+// 同上，但车体位于相对位姿 (dx, dy, th)
+inline bool translationBlockedAt(
+  const std::vector<Pt> & pts, const Rect & r, double m, double dx, double dy, double th, double dist)
+{
+  if (std::fabs(dist) < 1e-4) {return false;}
+  const sweep::Box body{-r.tail, r.head, -r.right, r.left};
+  const sweep::Box grown{-r.tail - m, r.head + m, -r.right, r.left};
+  const double c = std::cos(th), s = std::sin(th);
+  for (const auto & p : pts) {
+    const double qx = p.x - dx, qy = p.y - dy;
+    const double x = qx * c + qy * s, y = -qx * s + qy * c;
+    if (body.in(x, y)) {continue;}
+    const bool in_m0 = grown.in(x, y);
+    if (sweep::segHitsBox(x, y, -dist, 0.0, body)) {return true;}
+    if (!in_m0 && sweep::segHitsBox(x, y, -dist, 0.0, grown)) {return true;}
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- 多步挪车 (空间不足时的转向)
+// 原地转不到目标朝向时，像汽车掉头/揉库那样"转一点 → 前后挪一点 → 再转"，直到车身转到目标朝向。
+// 以前只试"摆头一次 + 后退一次 + 转一次"，后退距离内转不开就一直失败。这里在 (位置, 朝向) 上做 A* 搜索:
+//   动作: 原地转 ±th_step (每一步都对实测激光点做车体扫掠检查)、沿车身方向前进/后退 d_step
+//   约束: 离起点不超过 max_dist
+//   代价: 行驶距离 + w_rot·转角 + 每换一次动作 w_switch (少折腾)；找不到 = 这块空间里确实转不过来
+// 坐标都在"当前车体系": 起点 (0, 0, 0)，目标朝向 T_rel = wrap(目标朝向 - 当前朝向)。pts 为机体系激光点
+struct MStep { int kind; double val; };      // kind 0: 原地转 val (rad，带符号)；1: 沿车身方向平移 val (m，负 = 后退)
+struct ManeuverOpts
+{
+  double max_dist{1.0};
+  double d_step{0.1};
+  double th_step{0.1745};      // 10°
+  double w_rot{0.3};           // 每弧度转角折算的距离 (m)
+  double w_switch{0.05};
+  int max_expand{40000};
+};
+// 挪车的目标。只把车身转到目标朝向还不够: 转完以后车不在路线上，重新规划会先开回拐点、在同一个转不开的地方再转一次，
+// 于是每次重试都失败。所以目标要带上"转完落在哪":
+//   mode 0  只要求朝向 T
+//   mode 1  朝向 T，并且落在下一段的线上 (过点 (lx, ly)、行驶方向 ldir 的直线，横向偏差 ≤ tol)，沿行驶方向不超过 along_max
+//           —— 之后可以直接沿下一段走，不用回拐点
+//   mode 2  朝向 T，并且回到点 (lx, ly) (≤ tol) —— 终点对位: 位置不能变
+struct ManeuverGoal
+{
+  double T{0.0};
+  int mode{0};
+  double lx{0.0}, ly{0.0}, ldir{0.0};
+  double along_max{1.5};
+  double tol{0.03};
+};
+
+inline bool planManeuver(
+  const std::vector<Pt> & pts_all, const Rect & body, double m_rot, double m_tr, const ManeuverGoal & G,
+  const ManeuverOpts & o, std::vector<MStep> * out, int * expanded = nullptr)
+{
+  struct Node { double x, y, th, g; int parent; int kind; double val; };
+  // 只保留够得着的点
+  const double reach = std::hypot(std::max(body.head, body.tail), std::max(body.left, body.right)) + o.max_dist +
+    std::max(m_rot, m_tr) + 0.05;
+  std::vector<Pt> pts;
+  for (const auto & p : pts_all) {
+    if (std::hypot(p.x, p.y) <= reach) {pts.push_back(p);}
+  }
+  const double T_rel = G.T;
+  const double lc = std::cos(G.ldir), ls = std::sin(G.ldir);
+  auto lateral = [&](double x, double y) {return -(x - G.lx) * ls + (y - G.ly) * lc;};
+  auto along = [&](double x, double y) {return (x - G.lx) * lc + (y - G.ly) * ls;};
+  auto posOk = [&](double x, double y) {
+      if (G.mode == 1) {return std::fabs(lateral(x, y)) <= G.tol && along(x, y) >= -0.05 && along(x, y) <= G.along_max;}
+      if (G.mode == 2) {return std::hypot(x - G.lx, y - G.ly) <= G.tol;}
+      return true;
+    };
+  auto key = [&](double x, double y, double th) {
+      const long ix = std::lround(x / 0.05) + 512, iy = std::lround(y / 0.05) + 512;
+      long it = std::lround(wrap(th) / (o.th_step / 2.0));
+      const long nt = std::lround(2.0 * M_PI / (o.th_step / 2.0));
+      it = ((it % nt) + nt) % nt;
+      return (ix << 40) | (iy << 20) | it;
+    };
+  auto heur = [&](double th) {return std::fabs(wrap(T_rel - th)) * o.w_rot;};
+  std::vector<Node> nodes;
+  nodes.push_back({0.0, 0.0, 0.0, 0.0, -1, -1, 0.0});
+  using QE = std::pair<double, int>;
+  std::priority_queue<QE, std::vector<QE>, std::greater<QE>> pq;
+  std::unordered_map<long, double> best;
+  best[key(0, 0, 0)] = 0.0;
+  pq.push({heur(0.0), 0});
+  int goal = -1, n_exp = 0;
+  while (!pq.empty() && n_exp < o.max_expand) {
+    const int i = pq.top().second;
+    pq.pop();
+    const Node cur = nodes[i];
+    const long k = key(cur.x, cur.y, cur.th);
+    if (cur.g > best[k] + 1e-9) {continue;}
+    if (std::fabs(wrap(T_rel - cur.th)) < 1e-3 && posOk(cur.x, cur.y)) {goal = i; break;}
+    ++n_exp;
+    auto push = [&](double x, double y, double th, double step_cost, int kind, double val) {
+        const double g = cur.g + step_cost + (cur.kind >= 0 && (cur.kind != kind || cur.val * val < 0) ? o.w_switch : 0.0);
+        const long kk = key(x, y, th);
+        auto it = best.find(kk);
+        if (it != best.end() && it->second <= g + 1e-9) {return;}
+        best[kk] = g;
+        nodes.push_back({x, y, th, g, i, kind, val});
+        pq.push({g + heur(th), static_cast<int>(nodes.size()) - 1});
+      };
+    // 原地转: 离目标不足一步时直接转到目标
+    const double rem = wrap(T_rel - cur.th);
+    for (double sgn : {1.0, -1.0}) {
+      double d = sgn * o.th_step;
+      if (std::fabs(rem) <= o.th_step + 1e-9 && rem * sgn > 0) {d = rem;}
+      if (!rotationBlocked(pts, body, m_rot, cur.x, cur.y, cur.th, d)) {
+        push(cur.x, cur.y, cur.th + d, std::fabs(d) * o.w_rot, 0, d);
+      }
+    }
+    // 前进 / 后退；带位置目标时再加一个"正好走到线上 / 走到离目标点最近处"的距离 (格点步长对不准 3 cm 的容差)
+    double moves[3] = {o.d_step, -o.d_step, 0.0};
+    int n_mv = 2;
+    if (G.mode == 1) {
+      const double sn = std::sin(cur.th - G.ldir);
+      if (std::fabs(sn) > 0.15) {
+        const double d = -lateral(cur.x, cur.y) / sn;
+        if (std::fabs(d) > 0.01 && std::fabs(d) <= 2.0 * o.max_dist) {moves[n_mv++] = d;}
+      }
+    } else if (G.mode == 2) {
+      const double d = (G.lx - cur.x) * std::cos(cur.th) + (G.ly - cur.y) * std::sin(cur.th);
+      if (std::fabs(d) > 0.01) {moves[n_mv++] = d;}
+    }
+    for (int mi = 0; mi < n_mv; ++mi) {
+      const double d = moves[mi];
+      const double nx = cur.x + d * std::cos(cur.th), ny = cur.y + d * std::sin(cur.th);
+      if (std::hypot(nx, ny) > o.max_dist + 1e-9) {continue;}
+      if (!translationBlockedAt(pts, body, m_tr, cur.x, cur.y, cur.th, d)) {
+        push(nx, ny, cur.th, std::fabs(d), 1, d);
+      }
+    }
+  }
+  if (expanded) {*expanded = n_exp;}
+  if (goal < 0) {return false;}
+  std::vector<MStep> rev;
+  for (int i = goal; i > 0; i = nodes[i].parent) {rev.push_back({nodes[i].kind, nodes[i].val});}
+  if (out) {
+    out->clear();
+    for (auto it = rev.rbegin(); it != rev.rend(); ++it) {       // 合并相邻的同类同向动作
+      if (!out->empty() && out->back().kind == it->kind && out->back().val * it->val > 0) {
+        out->back().val += it->val;
+      } else {
+        out->push_back(*it);
+      }
+    }
+  }
+  return true;
+}
+
+// 兼容: 只要求朝向
+inline bool planManeuver(
+  const std::vector<Pt> & pts_all, const Rect & body, double m_rot, double m_tr, double T_rel,
+  const ManeuverOpts & o, std::vector<MStep> * out, int * expanded = nullptr)
+{
+  ManeuverGoal g;
+  g.T = T_rel;
+  return planManeuver(pts_all, body, m_rot, m_tr, g, o, out, expanded);
+}
+
 // ---------------------------------------------------------------- 路线稠密化
 struct RouteOptions
 {
@@ -126,12 +293,16 @@ struct RouteOptions
 };
 
 // 过弯决策 (供测试与调用方查看)
-struct Corner { int kind{0}; double R{0.0}; };   // 0 折线 1 圆弧 2 原地转向
+struct Corner { int kind{0}; double R{0.0}; };   // 0 折线 1 圆弧 2 原地转向 3 停车换向 (前进 ↔ 倒车，车身不转)
 
 // free(x, y, th): 车体在该位姿无碰撞
+// rev: 可选，(*rev)[i] != 0 表示 pts[i-1] → pts[i] 这一段倒车行驶 (执行进程的规划器按车身朝向与转向净空决定)。
+//      输出位姿的 th 是车身朝向 (倒车段 = 行驶方向 + π)；倒车段不走圆弧，段间朝向不同就在拐点原地转 (尖点)，
+//      朝向相同只是换向 (前进接倒车) 则在该点重复一个位姿、rev 不同，splitCusps 据此分段
 inline std::vector<Pose2> densify(
   const std::vector<Pt> & pts, double final_yaw, const RouteOptions & o,
-  const std::function<bool(double, double, double)> & free, std::vector<Corner> * corners = nullptr)
+  const std::function<bool(double, double, double)> & free, std::vector<Corner> * corners = nullptr,
+  const std::vector<char> * rev = nullptr)
 {
   std::vector<Pose2> out;
   const size_t n = pts.size();
@@ -140,25 +311,42 @@ inline std::vector<Pose2> densify(
     out.push_back({pts[0].x, pts[0].y, final_yaw});
     return out;
   }
-  auto line = [&](Pt a, Pt b, double h) {
+  auto line = [&](Pt a, Pt b, double h, bool r = false) {
       const double L = std::hypot(b.x - a.x, b.y - a.y);
       const int k = std::max(1, static_cast<int>(std::ceil(L / o.step)));
       for (int i = 1; i <= k; ++i) {
-        out.push_back({a.x + (b.x - a.x) * i / k, a.y + (b.y - a.y) * i / k, h});
+        out.push_back({a.x + (b.x - a.x) * i / k, a.y + (b.y - a.y) * i / k, h, r});
       }
     };
   auto head = [&](size_t i) {return std::atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);};
-  out.push_back({pts[0].x, pts[0].y, head(0)});
+  auto isRev = [&](size_t i) {return rev != nullptr && i < rev->size() && (*rev)[i] != 0;};   // 段 (i-1) → i
+  auto body = [](double h, bool r) {return r ? wrap(h + M_PI) : h;};
+  out.push_back({pts[0].x, pts[0].y, body(head(0), isRev(1)), isRev(1)});
   Pt cur = pts[0];
   if (corners) {corners->assign(n, Corner{});}
   for (size_t i = 1; i < n; ++i) {
     const Pt b = pts[i];
     const double h_in = std::atan2(b.y - pts[i - 1].y, b.x - pts[i - 1].x);
+    const bool r_in = isRev(i);
     if (i == n - 1) {
-      line(cur, b, h_in);
+      line(cur, b, body(h_in, r_in), r_in);
       break;
     }
     const double h_out = head(i);
+    const bool r_out = isRev(i + 1);
+    if (r_in || r_out) {                 // 有一侧倒车: 直线到拐点，按车身朝向决定原地转 / 只换向 / 直接续走
+      const double hb_in = body(h_in, r_in), hb_out = body(h_out, r_out);
+      line(cur, b, hb_in, r_in);
+      cur = b;
+      if (std::fabs(wrap(hb_out - hb_in)) > 0.02) {
+        out.push_back({b.x, b.y, hb_out, r_out});
+        if (corners) {(*corners)[i] = {2, 0.0};}
+      } else if (r_in != r_out) {
+        out.push_back({b.x, b.y, hb_out, r_out});
+        if (corners) {(*corners)[i] = {3, 0.0};}
+      }
+      continue;
+    }
     const double turn = wrap(h_out - h_in);
     const double at = std::fabs(turn);
     if (at < 0.02) {                     // 共线
@@ -218,13 +406,13 @@ inline std::vector<Pose2> densify(
   return out;
 }
 
-// 按尖点 (相邻两点位置重合、朝向不同) 切成若干段；每段至少一个点
+// 按尖点 (相邻两点位置重合，朝向不同或前进/倒车不同) 切成若干段；每段至少一个点
 inline std::vector<std::vector<Pose2>> splitCusps(const std::vector<Pose2> & path, double pos_eps = 1e-3)
 {
   std::vector<std::vector<Pose2>> pieces(1);
   for (size_t i = 0; i < path.size(); ++i) {
     if (i > 0 && std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y) < pos_eps &&
-      std::fabs(wrap(path[i].th - path[i - 1].th)) > 0.02 && !pieces.back().empty())
+      (std::fabs(wrap(path[i].th - path[i - 1].th)) > 0.02 || path[i].rev != path[i - 1].rev) && !pieces.back().empty())
     {
       pieces.emplace_back();
     }
@@ -232,6 +420,9 @@ inline std::vector<std::vector<Pose2>> splitCusps(const std::vector<Pose2> & pat
   }
   return pieces;
 }
+
+// 段是否倒车行驶 (单点段: 只有朝向，不行驶)
+inline bool pieceReverse(const std::vector<Pose2> & piece) {return piece.size() >= 2 && piece.back().rev;}
 
 // 段的行驶方向: 起点到第一个离起点 ≥ look 的点 (段内只有一个点时用其朝向)
 inline double pieceHeading(const std::vector<Pose2> & piece, double look = 0.15)

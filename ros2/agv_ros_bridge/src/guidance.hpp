@@ -42,6 +42,9 @@ struct Mission {
   std::vector<std::pair<double, double>> wps;
   std::vector<std::string> labels;
   std::vector<Corner> corners;   // 与 wps 同长 (下标 = 航点)
+  // rev[i] != 0: 到达航点 i 的这一段倒车 (执行进程按车头朝向规划的结果)；has_rev = false 时沿用现场判断
+  bool has_rev = false;
+  std::vector<char> rev;
   double target_yaw = 0;
   int replan_left = 2;
   std::string planner = "dijkstra", chassis = "single_steer", corner_mode = "auto";
@@ -241,6 +244,73 @@ class Guidance {
     return ok;
   }
 
+  // 沿车身方向慢速平移 dist (负 = 后退)；每拍用激光查前方 0.1 m 的扫掠区，受阻即停。返回是否走完
+  bool creep(double dist) {
+    const Pose p0 = io_.pose();
+    const double co = std::cos(p0.th), si = std::sin(p0.th), sg = dist >= 0 ? 1.0 : -1.0;
+    const agv::Rect body{m_.head, m_.tail, m_.hw, m_.hw};
+    const double t_end = now() + 4.0 + std::fabs(dist) / 0.05;
+    double done = 0.0;
+    while (!stop_ && now() < t_end) {
+      if (io_.hold()) { cmd(0, 0, 0); sleep_s(0.04); continue; }
+      const Pose p = io_.pose();
+      done = sg * ((p.x - p0.x) * co + (p.y - p0.y) * si);
+      const double left = std::fabs(dist) - done;
+      if (left <= 0.005) break;
+      if (agv::translationBlocked(io_.scan_pts(), body, m_.rotate_margin, 0.0, sg * std::min(left, 0.1))) break;
+      cmd(sg * std::max(0.02, std::min(0.08, std::sqrt(2.0 * 0.2 * left))), 0, 2.0 * wrap(p0.th - p.th));
+      sleep_s(0.03);
+    }
+    wait_until_stopped();
+    return !stop_ && std::fabs(dist) - done <= 0.02;
+  }
+
+  // 多步挪车 (agv_nav2_plugins/geom.hpp planManeuver，与 Nav2 的 adjust_pose 同一套): 像汽车掉头/揉库那样
+  // "转一点 → 前后挪一点 → 再转"，每一步都按实测激光点做车体扫掠检查。返回是否转到 target_h
+  // (lx, ly, ldir): 接下来要走的路段 —— 起点和行驶方向 (场景系)。转完要落在这条线上，否则回到线上还得再转
+  bool maneuver_turn(double target_h, double max_w, double lx, double ly, double ldir) {
+    const Pose p0 = io_.pose();
+    const agv::Rect body{m_.head, m_.tail, m_.hw, m_.hw};
+    agv::ManeuverOpts o;
+    o.max_dist = 2.0;
+    std::vector<agv::MStep> st;
+    int n = 0;
+    const double pm = m_.rotate_margin + 0.03;                  // 规划多留余量，执行时按 rotate_margin 检查
+    agv::ManeuverGoal G;
+    G.T = wrap(target_h - p0.th);
+    G.mode = 1;
+    const double c0 = std::cos(p0.th), s0 = std::sin(p0.th);
+    G.lx = c0 * (lx - p0.x) + s0 * (ly - p0.y);
+    G.ly = -s0 * (lx - p0.x) + c0 * (ly - p0.y);
+    G.ldir = wrap(ldir - p0.th);
+    G.along_max = 1.5;
+    if (!agv::planManeuver(io_.scan_pts(), body, pm, pm, G, o, &st, &n)) {
+      io_.event("TURN_MANEUVER", "warning", "空间不足: 挪车也转不过去",
+                "在 " + f2(o.max_dist) + " m 范围内前后挪动、分步转向的各种组合 (搜索了 " + std::to_string(n) +
+                    " 个位姿) 都做不到转到目标朝向并落在下一段路线上");
+      return false;
+    }
+    std::string desc;
+    for (const auto &s : st)
+      desc += (desc.empty() ? "" : " → ") + (s.kind == 0 ? "转 " + std::to_string(static_cast<int>(std::lround(s.val * 180 / M_PI))) + "°"
+                                                           : std::string(s.val > 0 ? "前进 " : "后退 ") + f2(std::fabs(s.val)) + " m");
+    io_.event("TURN_MANEUVER", "info", "空间不足，分步挪车后转向", desc);
+    double h = p0.th;
+    for (size_t i = 0; i < st.size() && !stop_; ++i) {
+      const auto &s = st[i];
+      if (s.kind == 0) {
+        h += s.val;
+        const double dir = s.val > 0 ? 1.0 : -1.0;
+        if (!align_steer(true, dir)) return false;
+        if (rotate_to(wrap(h), dir, std::min(max_w, 0.5), i + 1 == st.size() ? 0.005 : 0.01, 3.0) != 0) return false;
+      } else {
+        if (!align_steer(false, s.val > 0 ? 1.0 : -1.0)) return false;
+        if (!creep(s.val)) return false;
+      }
+    }
+    return !stop_;
+  }
+
   // 离站倒车: 沿车身反方向找最近的可转向位置 (≤ 3 m) 倒过去 (navigator._back_out)
   bool back_out(double x, double y, double yaw, double yaw_to) {
     double target = -1;
@@ -413,6 +483,9 @@ class Guidance {
     if (!stop_ || result == "REPLAN") io_.done(result == "ARRIVED", result);
   }
 
+  // 到达航点 i 的这一段是否由规划器指定倒车
+  bool planned_rev(size_t i) const { return m_.has_rev && i < m_.rev.size() && m_.rev[i] != 0; }
+
   std::string run_inner() {
     const auto &W = m_.wps;
     const size_t n = W.size();
@@ -422,7 +495,8 @@ class Guidance {
     for (size_t i = n - 2; i >= 1; --i) {
       const auto &a = W[i - 1], &b = W[i], &c = W[i + 1];
       const double h1 = std::atan2(b.second - a.second, b.first - a.first), h2 = std::atan2(c.second - b.second, c.first - b.first);
-      const bool straight = std::fabs(wrap(h2 - h1)) <= 0.02;
+      bool straight = std::fabs(wrap(h2 - h1)) <= 0.02;
+      if (planned_rev(i) != planned_rev(i + 1)) straight = false;      // 前进/倒车在此切换: 必须停车
       stop_rest[i] = straight ? std::hypot(c.first - b.first, c.second - b.second) + stop_rest[i + 1] : 0.0;
       if (i == 1) break;
     }
@@ -451,11 +525,14 @@ class Guidance {
       const double sdx = tx - prev.first, sdy = ty - prev.second, seg_dist = std::hypot(sdx, sdy);
       const double seg_h = seg_dist > 0.02 ? std::atan2(sdy, sdx) : m_.target_yaw;
       Pose p = io_.pose();
-      const double init_err = wrap(seg_h - p.th);
+      // 规划器指定本段倒车: 车身对准路段方向的反向，对准后倒着开 (有规划结果时不再做现场的"转不开就倒车"判断)
+      const bool prev_planned = planned_rev(wi) && seg_dist > 0.02;
+      const double align_h = prev_planned ? wrap(seg_h + M_PI) : seg_h;
+      const double init_err = wrap(align_h - p.th);
       const double dist_to = std::hypot(tx - p.x, ty - p.y);
       const bool need_rot = !dual() && std::fabs(init_err) > 0.02 && dist_to > 0.1;
-      double rd = need_rot ? rotation_dir(p.x, p.y, p.th, seg_h) : 1.0;
-      const bool reverse = !dual() && std::fabs(init_err) > 2.4 && dist_to > 0.3 && rd == 0.0;
+      double rd = need_rot ? rotation_dir(p.x, p.y, p.th, align_h) : 1.0;
+      bool reverse = !m_.has_rev && !dual() && std::fabs(init_err) > 2.4 && dist_to > 0.3 && rd == 0.0;
       if (reverse)
         io_.event("REVERSE", "info", "路段 " + std::to_string(wi) + " 倒车行驶",
                   "原地转向扫掠半径 " + f2(sweep_radius()) + " m 内有障碍，改为倒车 " + f2(dist_to) + " m");
@@ -463,9 +540,9 @@ class Guidance {
       if (!reverse && std::fabs(init_err) > 0.02 && dist_to > 0.1) {
         wait_until_stopped();
         if (!dual() && rd == 0.0) {
-          if (!back_out(p.x, p.y, p.th, seg_h)) return "ABORT";
+          if (!back_out(p.x, p.y, p.th, align_h)) return "ABORT";
           const Pose b = io_.pose();
-          rd = rotation_dir(b.x, b.y, b.th, seg_h);
+          rd = rotation_dir(b.x, b.y, b.th, align_h);
         }
         if (rd != 0.0) rot_dir = rd;
         if (!align_steer(true, (rot_dir != 0 ? rot_dir : init_err) > 0 ? 1.0 : -1.0)) return "ABORT";
@@ -474,32 +551,50 @@ class Guidance {
         // 起转前先用激光查整个转角的扫掠区 (与 Nav2 插件 RouteController 起转前的检查一致)：rotation_dir 只看地图，
         // 地图里没有的障碍 (人/车/临时物/形状与地图不符) 如果等转起来再靠安全层急停，高角速度下制动转角不够会碰上
         const Pose q0 = io_.pose();
-        double turn0 = wrap(seg_h - q0.th);
+        double turn0 = wrap(align_h - q0.th);
         if (rot_dir != 0 && std::fabs(turn0) > 0.5 && turn0 * rot_dir < 0) turn0 += rot_dir * 2 * M_PI;
-        int res = sweep_block_side(turn0) != 0 ? 2 : rotate_to(seg_h, rot_dir, max_w, 0.005, 2.0);
+        int res = sweep_block_side(turn0) != 0 ? 2 : rotate_to(align_h, rot_dir, max_w, 0.005, 2.0);
         for (int k = 0; res == 2 && k < 3 && !stop_; ++k) {
           wait_until_stopped();
           const Pose q = io_.pose();
-          double left = wrap(seg_h - q.th);
+          double left = wrap(align_h - q.th);
           if (rot_dir != 0 && std::fabs(left) > 0.5 && left * rot_dir < 0) left += rot_dir * 2 * M_PI;
           const bool ok = retreat_for_turn(left);
           if (!align_steer(true, left > 0 ? 1.0 : -1.0)) return "ABORT";
-          res = rotate_to(seg_h, rot_dir, max_w, 0.005, ok ? 2.0 : 8.0);
+          res = rotate_to(align_h, rot_dir, max_w, 0.005, ok ? 2.0 : 8.0);
           if (!ok) break;
+        }
+        // 让位 3 次仍转不过去: 多步挪车 (转一点、前后挪一点、再转)
+        if (res == 2 && !stop_) {
+          wait_until_stopped();
+          if (maneuver_turn(align_h, max_w, prev.first, prev.second, seg_h)) res = 0;
+          else if (stop_) return "ABORT";
         }
         if (res == 1) return "ABORT";
         if (res == 2) {
+          if (m_.replan_left > 0 && m_.has_rev) {
+            io_.event("ROTATE_BLOCKED", "warning", "原地转向受阻", "让位后仍转不过去，交回执行进程换路线 (不在此处转向，可倒车)");
+            return "REROUTE";
+          }
           io_.event("ROTATE_BLOCKED", "danger", "原地转向受阻",
                     "转向防护区内持续有障碍 8 s，任务终止；请清除障碍或调整工位/保护空间后重新下发");
           return "FAILED";
         }
         io_.status("NAVIGATING", idx_, 0);
       }
+      reverse = reverse || prev_planned;
       if (!dual() && !align_steer(false, reverse ? -1.0 : 1.0)) return "ABORT";
       // 拐点: 圆弧过弯 / 停车原地转向
       Corner corner;
       bool corner_rot = false;
-      if (!reverse && !is_final && !dual() && seg_dist > 0.05) {
+      const bool nxt_rev = !is_final && planned_rev(wi + 1);
+      if (m_.has_rev && !is_final && (reverse || nxt_rev)) {
+        // 本段或下一段倒车: 不走圆弧。车身朝向要变、或前进/倒车要切换 → 在拐点停稳，下一段开头再对准
+        const auto nxt = W[wi + 1];
+        const double nh = std::atan2(nxt.second - ty, nxt.first - tx) + (nxt_rev ? M_PI : 0.0);
+        if (std::fabs(wrap(nh - align_h)) > 0.02 || nxt_rev != reverse) corner_rot = true;
+      }
+      if (!reverse && !nxt_rev && !is_final && !dual() && seg_dist > 0.05) {
         const auto nxt = W[wi + 1];
         const double n_len = std::hypot(nxt.first - tx, nxt.second - ty);
         if (n_len > 0.1) {

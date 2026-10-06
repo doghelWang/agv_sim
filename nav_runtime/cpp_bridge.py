@@ -183,9 +183,11 @@ class CppBridge:
              + r.tobytes())
         self._send(b)
 
-    def send_route(self, mission_id: int, route, goal, bt: str, segs) -> None:
+    def send_route(self, mission_id: int, route, goal, bt: str, segs, rev=None) -> None:
+        """rev: 可选，与 route 等长；rev[i] 为真表示到达 route[i] 的这一段倒车 (rev[0] 无意义)"""
         import json
         body = json.dumps({"mid": int(mission_id), "route": [[round(float(x), 4), round(float(y), 4)] for x, y in route],
+                           "rev": [1 if r else 0 for r in (rev or [])],
                            "goal": [float(goal[0]), float(goal[1]), float(goal[2])], "bt": bt,
                            "segs": [[round(float(v), 4) for v in sg[:4]] for sg in (segs or [])]}, separators=(",", ":"))
         self._send(MAGIC + bytes([T_ROUTE]) + body.encode("utf-8"))

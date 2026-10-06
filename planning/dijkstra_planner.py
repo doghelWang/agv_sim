@@ -7,7 +7,7 @@ with dynamic obstacle edge blockage detection, automatic rerouting, and strict o
 
 import math
 import heapq
-from typing import List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any
 
 
 SCENARIO_DEFINITIONS: Dict[str, Dict[str, Any]] = {
@@ -688,10 +688,174 @@ class DijkstraPlanner:
         length = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
         return {"points": pts, "labels": labels, "length": round(length, 2)}
 
-    def plan(self, start_pt: Tuple[float, float], goal_pt: Tuple[float, float], obstacles: List[Tuple[float, float, float, float]] = None) -> List[Tuple[float, float]]:
-        r = self.plan_route(start_pt, goal_pt, obstacles)
+    def plan(self, start_pt: Tuple[float, float], goal_pt: Tuple[float, float], obstacles: List[Tuple[float, float, float, float]] = None,
+             start_yaw: Optional[float] = None, goal_yaw: Optional[float] = None) -> List[Tuple[float, float]]:
+        """start_yaw 给出时按"带车头朝向"规划 (plan_route_dir): 结果 last_route 里多出 reverse (每段是否倒车) 和 blocked"""
+        if start_yaw is not None and self.footprint and self.allow_reverse:
+            r = self.plan_route_dir(start_pt, goal_pt, obstacles, start_yaw, goal_yaw)
+        else:
+            r = self.plan_route(start_pt, goal_pt, obstacles)
         self.last_route = r
         return r["points"]
+
+    # ------------------------------------------------------------------ 带车头朝向的规划 (允许倒车)
+    # plan_route 的状态只有 (节点, 来向)，默认每一段都车头朝前开，起点的车头朝向和终点要求的朝向不参与规划；
+    # 拐点/终点原地转不开时只能加惩罚硬选，到现场才失败 (窄巷道里的工位: 车头朝里开进去，要求车头朝外，掉不了头)。
+    # 这里把"这一段前进还是倒车"放进状态: 车身朝向 = 路段方向 (前进) 或其反向 (倒车)，
+    # 节点上要转的角度、扫掠净空都按实际车身朝向算；起点朝向、终点朝向也计入代价。
+    # 于是"在巷道口掉头再倒车进去""倒车退出死胡同""绕到另一头正着开进去"都成为可比较的候选，按代价取最小。
+    REVERSE_COST = 3.0          # 倒车每米折算的路程倍数 (倒车慢、视野差: 掉个头就能前进时不选倒车，转不开或要绕很远才倒)
+    DIR_SWITCH_COST = 1.0       # 前进/倒车切换一次 (停车换向) 折算的路程 (m)
+    allow_reverse = True        # False: 始终按 plan_route (只前进)
+    rot_blocked: List[Tuple[float, float]] = []   # 现场证实原地转不开的位置 (执行进程在转向受阻、挪车也失败后登记；新任务时清空)
+
+    def mark_rot_blocked(self, x: float, y: float):
+        self.rot_blocked = list(self.rot_blocked) + [(float(x), float(y))]
+
+    def _rot_marked(self, p) -> bool:
+        return any(math.hypot(p[0] - q[0], p[1] - q[1]) < 0.6 for q in self.rot_blocked)
+
+    def _rot_penalty(self, p, h_from: float, h_to: float) -> float:
+        """在点 p 车身从 h_from 原地转到 h_to (两个方向任选) 的净空是否足够；不够返回 CORNER_BLOCK_COST"""
+        from planning import maneuver
+        key = ("rot", self.active_scenario_id, round(p[0], 2), round(p[1], 2), round(h_from, 3), round(h_to, 3))
+        cache = self.__dict__.setdefault("_corner_cache", {})
+        if key not in cache:
+            head, tail, hw, r, cmin, _ = self.footprint
+            _, clr = maneuver.plan_corner(self._static_segments(), p, h_from, h_to, 1.0, 1.0, head, tail, hw, r,
+                                          clear_min=cmin, mode="rotate")
+            cache[key] = self.CORNER_BLOCK_COST if clr < cmin else 0.0
+        return cache[key]
+
+    def plan_route_dir(self, start_pt, goal_pt, obstacles=None, start_yaw: float = 0.0, goal_yaw: Optional[float] = None) -> Dict[str, Any]:
+        """→ {"points", "labels", "length", "reverse": [每段是否倒车] (len = len(points) - 1),
+              "blocked": [(x, y, 说明)] 仍然转不开的位置 (所有候选都被挡时才会有)}"""
+        obstacles = obstacles or []
+        blocked = set()
+        if obstacles:
+            for u, nbrs in self.edges.items():
+                for v, _ in nbrs:
+                    if self._is_edge_blocked(self.nodes[u], self.nodes[v], obstacles):
+                        blocked.add(tuple(sorted((u, v))))
+
+        def near(c):
+            return [x for x in c if x[2] <= c[0][2] + self.ATTACH_SLACK][:3] if c else []
+        sc = near(self._attach(start_pt, obstacles, blocked))
+        gc = near(self._attach(goal_pt, obstacles, blocked))
+        empty = {"points": [], "labels": [], "length": 0.0, "reverse": [], "blocked": []}
+        if not sc or not gc:
+            return empty
+        START, GOAL = "__S__", "__G__"
+        wrap = lambda a: math.atan2(math.sin(a), math.cos(a))
+        best = None
+        for s_proj, s_links, s_d, s_edge in sc:
+            for g_proj, g_links, g_d, g_edge in gc:
+                pos = dict(self.nodes)
+                pos[START], pos[GOAL] = s_proj, g_proj
+                adj = {k: [(v, w) for v, w in vs if tuple(sorted((k, v))) not in blocked] for k, vs in self.edges.items()}
+                adj[START], adj[GOAL] = [], []
+                for n, w in s_links:
+                    adj[START].append((n, w))
+                for n, w in g_links:
+                    adj[n] = adj.get(n, []) + [(GOAL, w)]
+                if s_edge == g_edge:
+                    adj[START].append((GOAL, math.hypot(s_proj[0] - g_proj[0], s_proj[1] - g_proj[1])))
+                # 状态 = (节点, 来自节点, 到达时是否倒车, 到达时的车身朝向 [取整到 0.01 rad])；hb = 车身朝向的精确值。
+                # 朝向本可由 (来自节点 → 节点, 是否倒车) 推出，但零长度段 (接入点与节点重合、起点终点同处) 上朝向是继承来的
+                s0 = (START, None, False, round(start_yaw, 2))
+                cost = {s0: s_d * self.OFF_NET_COST}
+                hb = {s0: start_yaw}
+                par, note = {}, {}
+                pq = [(cost[s0], 0, s0)]
+                tie = 1
+                fin = None                      # (总代价, 状态, 终点转向说明)
+                while pq:
+                    c, _, st = heapq.heappop(pq)
+                    if fin is not None and c >= fin[0]:
+                        break
+                    if c > cost.get(st, float("inf")) + 1e-9:
+                        continue
+                    n, prv, rev = st[:3]
+                    h_body = hb[st]
+                    if n == GOAL:
+                        tc, why = 0.0, None
+                        if goal_yaw is not None:
+                            d = abs(wrap(goal_yaw - h_body))
+                            if d > 0.05:
+                                pen = self.CORNER_BLOCK_COST if self._rot_marked(goal_pt) else self._rot_penalty(goal_pt, h_body, goal_yaw)
+                                tc = d * self.TURN_COST_PER_RAD + self.CORNER_STOP_COST + pen
+                                why = (goal_pt[0], goal_pt[1], "终点对位转向") if pen else None
+                        if fin is None or c + tc < fin[0]:
+                            fin = (c + tc, st, why)
+                        continue
+                    for m, w in adj.get(n, []):
+                        if m == START:
+                            continue
+                        if obstacles and m != GOAL and m in self.nodes and self._is_node_blocked(self.nodes[m], obstacles):
+                            continue
+                        zero = w < 1e-6
+                        h_seg = None if zero else math.atan2(pos[m][1] - pos[n][1], pos[m][0] - pos[n][0])
+                        for rev2 in ((rev,) if zero else (False, True)):
+                            h2 = h_body if zero else wrap(h_seg + (math.pi if rev2 else 0.0))
+                            d = abs(wrap(h2 - h_body))
+                            tc, why = 0.0, None
+                            if d > 0.02:
+                                tc = d * self.TURN_COST_PER_RAD + self.CORNER_STOP_COST
+                                geo = prv is not None and math.hypot(pos[n][0] - pos[prv][0], pos[n][1] - pos[prv][1]) > 1e-6 and \
+                                    abs(wrap(math.atan2(pos[n][1] - pos[prv][1], pos[n][0] - pos[prv][0]) - h_body)) < 0.02
+                                if geo and not rev and not rev2 and n in self.nodes and prv != m:
+                                    pen = self._corner_penalty(pos[prv], pos[n], pos[m])      # 前进 → 前进: 可用圆弧过弯
+                                else:
+                                    at = start_pt if prv is None else pos[n]
+                                    pen = self._rot_penalty(at, h_body, h2)
+                                if self._rot_marked(start_pt if prv is None else pos[n]):
+                                    pen = self.CORNER_BLOCK_COST          # 现场证实转不开 (地图上看不出来的障碍/定位偏差)
+                                if pen:
+                                    tc += pen
+                                    why = ((start_pt if prv is None else pos[n])[0], (start_pt if prv is None else pos[n])[1],
+                                           "起步转向" if prv is None else "拐点转向")
+                            elif prv is not None and rev2 != rev:
+                                tc = self.DIR_SWITCH_COST             # 不转车身，停车换向 (前进 ↔ 倒车)
+                            elif prv is not None and m == prv:
+                                continue                              # 同向原路返回没有意义
+                            nc = c + w * (self.REVERSE_COST if rev2 else 1.0) + tc
+                            st2 = (m, n, rev2, round(h2, 2))
+                            if nc < cost.get(st2, float("inf")) - 1e-9:
+                                cost[st2], hb[st2], par[st2], note[st2] = nc, h2, st, why
+                                heapq.heappush(pq, (nc, tie, st2))
+                                tie += 1
+                if fin is None:
+                    continue
+                total = fin[0] + g_d * self.OFF_NET_COST
+                if best is None or total < best[0]:
+                    chain = []
+                    st = fin[1]
+                    while st in par:
+                        chain.append(st)
+                        st = par[st]
+                    chain.reverse()
+                    best = (total, chain, pos, [note[x] for x in chain if note.get(x)] + ([fin[2]] if fin[2] else []))
+        if not best:
+            return empty
+        _, chain, pos, blk = best
+        pts, labels, revs = [tuple(start_pt)], [None], []
+        first_rev = chain[0][2] if chain else False
+        if chain and math.hypot(pos[START][0] - pts[0][0], pos[START][1] - pts[0][1]) > 0.08:
+            pts.append(tuple(pos[START])); labels.append(None); revs.append(first_rev)      # 接入段与第一段同向
+        for n, _prv, rev, _h in chain:
+            p = pos[n]
+            lab = None if n == GOAL else n
+            if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 0.08:
+                pts.append(tuple(p)); labels.append(lab); revs.append(rev)
+            elif lab and not labels[-1]:
+                labels[-1] = lab
+        if math.hypot(goal_pt[0] - pts[-1][0], goal_pt[1] - pts[-1][1]) > 0.08:
+            pts.append(tuple(goal_pt)); labels.append(None); revs.append(revs[-1] if revs else False)
+        if len(pts) > 2 and math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) < 0.35 and revs[0] == revs[1]:
+            del pts[0], labels[0], revs[0]
+        length = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
+        return {"points": pts, "labels": labels, "length": round(length, 2), "reverse": revs,
+                "blocked": [(round(x, 2), round(y, 2), w) for x, y, w in blk]}
 
     def plan_legacy(self, start_pt: Tuple[float, float], goal_pt: Tuple[float, float], obstacles: List[Tuple[float, float, float, float]] = None) -> List[Tuple[float, float]]:
         obstacles = obstacles or []

@@ -1196,6 +1196,8 @@ class AgvRosBridge : public rclcpp::Node {
     }
     m.corners.resize(m.wps.size());
     m.target_yaw = v["yaw"].num();
+    m.has_rev = v["has_rev"].num(0) > 0.5;
+    for (const auto &r : v["rev"].a) m.rev.push_back(r.num(0) > 0.5 ? 1 : 0);
     m.replan_left = static_cast<int>(v["replan_left"].num(2));
     m.planner = v["planner"].str();
     m.chassis = v["chassis"].str();
@@ -1322,6 +1324,7 @@ class AgvRosBridge : public rclcpp::Node {
     using NTP = nav2_msgs::action::NavigateToPose;
     const long mid = static_cast<long>(json_nums(j, "mid").empty() ? 0 : json_nums(j, "mid")[0]);
     auto route = json_nums(j, "route"), goal = json_nums(j, "goal"), segs = json_nums(j, "segs");
+    auto rev = json_nums(j, "rev");            // 可选: rev[i] = 1 表示到达第 i 个路线点的这一段倒车 (AgvRoute 从 position.z 读)
     const std::string bt = json_str(j, "bt");
     auto fail = [&](const std::string &why) {
       send_nav("{\"k\":\"result\",\"mid\":" + std::to_string(mid) + ",\"result\":\"REJECTED\",\"why\":\"" + jesc(why) + "\"}");
@@ -1340,6 +1343,7 @@ class AgvRosBridge : public rclcpp::Node {
       ps.header = path.header;
       ps.pose.position.x = route[i];
       ps.pose.position.y = route[i + 1];
+      ps.pose.position.z = (i / 2 < rev.size() && rev[i / 2] > 0.5) ? 1.0 : 0.0;
       ps.pose.orientation.w = 1.0;
       path.poses.push_back(ps);
     }

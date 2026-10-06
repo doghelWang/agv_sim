@@ -3,7 +3,7 @@
     规划: AgvRoute (agv_nav2_plugins::RoutePlanner) —— 执行进程发到 /agv/route 的拓扑路线 → 圆弧过弯/拐点转向的稠密路径，
           从当前位置接回路线 (恢复后重新规划不会退回起点)
     跟随: RouteFollow (agv_nav2_plugins::RouteController) + agv_goal_checker —— 只规划一次，不按固定频率重规划
-    恢复: 清局部代价地图 → 等 1 s → adjust_pose (原地转向受阻: 摆头 + 后退 + 转向；其它中断: 后退一小段)，
+    恢复: 清局部代价地图 → 等 1 s → adjust_pose (原地转向受阻: 多步挪车 —— 转一点、前后挪一点、再转；其它中断: 后退一小段)，
           位姿调整失败不终止 (ForceSuccess)，重新规划再试；最多 4 次，仍失败则 NavigateToPose 返回 ABORTED
 -->
 <root main_tree_to_execute="MainTree">
@@ -18,7 +18,7 @@
         <Wait wait_duration="1"/>
         <!-- 位姿调整失败也不直接终止任务: 从新位置重新规划再试 (受 number_of_retries 限制) -->
         <ForceSuccess>
-          <BackUp server_name="adjust_pose" backup_dist="0.5" backup_speed="0.1" time_allowance="30"/>
+          <BackUp server_name="adjust_pose" backup_dist="0.5" backup_speed="0.15" time_allowance="90"/>
         </ForceSuccess>
       </Sequence>
     </RecoveryNode>

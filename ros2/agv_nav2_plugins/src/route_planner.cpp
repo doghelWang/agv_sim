@@ -71,6 +71,7 @@ public:
     const double gx = goal.pose.position.x, gy = goal.pose.position.y, gyaw = tf2::getYaw(goal.pose.orientation);
     // 等执行进程发来与本目标一致的路线 (目标先于路线到达时最多等 route_wait_s)
     std::vector<agv::Pt> route;
+    std::vector<char> rflag;      // rflag[i]: 到达 route[i] 的这一段倒车 (/agv/route 里用 position.z = 1 标记)
     const auto t_end = clock_->now() + rclcpp::Duration::from_seconds(wait_s_);
     while (true) {
       {
@@ -78,7 +79,10 @@ public:
         if (!route_.poses.empty()) {
           const auto & b = route_.poses.back().pose.position;
           if (std::hypot(b.x - gx, b.y - gy) < 0.05) {
-            for (const auto & p : route_.poses) {route.push_back({p.pose.position.x, p.pose.position.y});}
+            for (const auto & p : route_.poses) {
+              route.push_back({p.pose.position.x, p.pose.position.y});
+              rflag.push_back(p.pose.position.z > 0.5 ? 1 : 0);
+            }
           }
         }
       }
@@ -87,6 +91,7 @@ public:
     }
     const agv::Pt s{start.pose.position.x, start.pose.position.y};
     std::vector<agv::Pt> pts{s};
+    std::vector<char> rev{0};
     if (route.size() >= 2) {
       // 接入: 投影到 [progress_, …] 中最近的路段 (只向前)，接到该路段终点及之后的节点
       size_t best = progress_;
@@ -100,13 +105,19 @@ public:
       }
       progress_ = best;
       for (size_t i = best + 1; i < route.size(); ++i) {
-        if (std::hypot(route[i].x - pts.back().x, route[i].y - pts.back().y) > 0.03) {pts.push_back(route[i]);}
+        if (std::hypot(route[i].x - pts.back().x, route[i].y - pts.back().y) > 0.03) {
+          pts.push_back(route[i]);
+          rev.push_back(rflag[i]);
+        }
       }
     } else {
       RCLCPP_WARN(logger_, "[%s] 没有与目标一致的拓扑路线，按直线规划", name_.c_str());
     }
     if (pts.size() == 1 || std::hypot(pts.back().x - gx, pts.back().y - gy) > 0.03) {
-      if (std::hypot(gx - pts.back().x, gy - pts.back().y) > 0.03) {pts.push_back({gx, gy});}
+      if (std::hypot(gx - pts.back().x, gy - pts.back().y) > 0.03) {
+        pts.push_back({gx, gy});
+        rev.push_back(rev.size() > 1 ? rev.back() : 0);
+      }
     }
 
     auto * cm = costmap_ros_->getCostmap();
@@ -120,12 +131,13 @@ public:
     std::vector<agv::Pose2> dense;
     {
       std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lk(*cm->getMutex());
-      dense = agv::densify(pts, gyaw, opt_, free, &corners);
+      dense = agv::densify(pts, gyaw, opt_, free, &corners, &rev);
     }
-    int n_arc = 0, n_rot = 0;
-    for (const auto & c : corners) {n_arc += c.kind == 1; n_rot += c.kind == 2;}
-    RCLCPP_INFO(logger_, "[%s] 路线 %zu 个节点 → %zu 个路径点，圆弧过弯 %d 处，停车转向 %d 处",
-      name_.c_str(), pts.size(), dense.size(), n_arc, n_rot);
+    int n_arc = 0, n_rot = 0, n_sw = 0, n_rev = 0;
+    for (const auto & c : corners) {n_arc += c.kind == 1; n_rot += c.kind == 2; n_sw += c.kind == 3;}
+    for (size_t i = 1; i < rev.size(); ++i) {n_rev += rev[i] != 0;}
+    RCLCPP_INFO(logger_, "[%s] 路线 %zu 个节点 → %zu 个路径点，圆弧过弯 %d 处，停车转向 %d 处，倒车 %d 段 (停车换向 %d 处)",
+      name_.c_str(), pts.size(), dense.size(), n_arc, n_rot, n_rev, n_sw);
 
     nav_msgs::msg::Path path;
     path.header.frame_id = goal.header.frame_id.empty() ? "map" : goal.header.frame_id;
@@ -135,6 +147,7 @@ public:
       ps.header = path.header;
       ps.pose.position.x = p.x;
       ps.pose.position.y = p.y;
+      ps.pose.position.z = p.rev ? 1.0 : 0.0;      // 倒车段标记 (RouteController 据此分段、倒车跟线)
       tf2::Quaternion q;
       q.setRPY(0, 0, p.th);
       ps.pose.orientation.x = q.x();

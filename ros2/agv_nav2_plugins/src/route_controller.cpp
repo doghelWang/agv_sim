@@ -15,6 +15,9 @@
 //     VERIFY      停稳后再做一次精定位: 朝向差 > heading_fix_tol 时按实测差值再转一次 (最多 2 次，消除末段里程计
 //                 航向漂移)；位置/朝向残差作为事件发布 (ARRIVE_CHECK)
 //     DONE        到位 (SharedState::done → AgvGoalChecker)
+//   倒车段 (路径位姿 position.z = 1，由执行进程的规划器决定: 窄巷道里掉不了头的工位、退出死胡同):
+//     ALIGN 对准的是车身朝向 (行驶方向 + π)；TRACK / FINAL 用本插件自己的纯跟踪以负速度沿段行驶 (主控制器只管前进段)，
+//     每拍用激光对车体后方的平移扫掠做检查，受阻停车等待
 //   原地转向前后: 单舵轮车型先用微小指令把舵轮转到位 (steer_settle_s)，避免舵角过渡带偏车体
 //   原地转向防护: 实测激光点 (机体系) 对车体外扩 rotate_margin 的扫掠检查；最短方向受阻试反方向；
 //     都受阻等 block_wait_s 仍不行 → 发布 /agv/turn_request 并抛异常 → 行为树恢复 (adjust_pose: 摆头 + 后退 + 转向)
@@ -87,6 +90,9 @@ public:
     settle_s_ = param<double>(node, p + "steer_settle_s", 0.0);
     block_wait_s_ = param<double>(node, p + "block_wait_s", 2.0);
     scan_max_age_ = param<double>(node, p + "scan_max_age_s", 0.5);
+    rev_v_ = param<double>(node, p + "reverse_max_v", 0.3);
+    rev_look_ = param<double>(node, p + "reverse_lookahead", 0.5);
+    rev_dec_ = param<double>(node, p + "reverse_decel", 0.3);
     refine_ = param<bool>(node, p + "refine_localization", true);
     half_thick_ = param<double>(node, p + "wall_half_thickness", 0.025);
     refine_max_corr_ = param<double>(node, p + "refine_max_correction", 0.15);
@@ -126,7 +132,7 @@ public:
     map_frame_ = path.header.frame_id.empty() ? "map" : path.header.frame_id;
     std::vector<agv::Pose2> v;
     for (const auto & ps : path.poses) {
-      v.push_back({ps.pose.position.x, ps.pose.position.y, tf2::getYaw(ps.pose.orientation)});
+      v.push_back({ps.pose.position.x, ps.pose.position.y, tf2::getYaw(ps.pose.orientation), ps.pose.position.z > 0.5});
     }
     pieces_ = agv::splitCusps(v);
     // 进站段: 最后一个 ≥ 2 个点的段 (其后若还有单点段，那是终点对位转向的尖点)
@@ -181,7 +187,19 @@ public:
 
     switch (phase_) {
       case Phase::ALIGN: {
-          const double target = toOdomYaw(agv::pieceHeading(piece));
+          // 车身朝向: 前进段 = 行驶方向；倒车段 = 行驶方向 + π；单点段 = 该点朝向
+          const double target = toOdomYaw(agv::pieceHeading(piece) + (agv::pieceReverse(piece) ? M_PI : 0.0));
+          // 转向受阻时交给 adjust_pose 的要求: 转完要落在本段的线上 (1 前进 / 2 倒车，小数部分 = 沿段可用长度 / 10)；
+          // 单点段 (只差朝向) 位置不能变 (3)
+          if (piece.size() >= 2) {
+            double len = 0.0;
+            for (size_t i = 1; i < piece.size(); ++i) {len += std::hypot(piece[i].x - piece[i - 1].x, piece[i].y - piece[i - 1].y);}
+            req_mode_ = (agv::pieceReverse(piece) ? 2.0 : 1.0) + std::clamp(len - 0.3, 0.0, 2.5) / 10.0;
+            toOdomXY(piece.front().x, piece.front().y, &req_x_, &req_y_);
+          } else {
+            req_mode_ = 3.0;
+            toOdomXY(piece.front().x, piece.front().y, &req_x_, &req_y_);
+          }
           double done_e = 0.0;
           if (rotate(target, rot_tol_, yaw, w_meas, now, out, &done_e)) {
             if (piece.size() < 2) {         // 单点段 (终点只差朝向): 直接转入到位流程
@@ -189,7 +207,7 @@ public:
               setPhase(Phase::STOPPING);
             } else {
               setPhase(Phase::TRACK);
-              sendPiece();
+              if (!agv::pieceReverse(piece)) {sendPiece();}
             }
           }
           publishStop(0.0);
@@ -200,7 +218,8 @@ public:
           toOdomXY(piece.back().x, piece.back().y, &ox, &oy);
           const auto odom_piece = toOdom(piece);
           const double rem = agv::remaining(odom_piece, x, y, &hint_);
-          publishStop(rem);
+          // 倒车段不发布剩余行程: 安全层据此缩短的是车头方向的防护区、屏蔽的是车头光电，倒车时用不上
+          if (!agv::pieceReverse(piece)) {publishStop(rem);}
           if (last && rem < final_trigger_) {
             if (refine_ && haveSegs()) {
               setPhase(Phase::LOCALIZE);
@@ -212,6 +231,11 @@ public:
           }
           if (!last && (rem < cusp_tol_ || std::hypot(ox - x, oy - y) < cusp_tol_)) {
             setPhase(Phase::CUSP_STOP);
+            break;
+          }
+          if (agv::pieceReverse(piece)) {
+            if (driveSettle(now, out, -1.0)) {break;}
+            reverseTrack(odom_piece, x, y, yaw, v_meas, rem, last ? 1e9 : rem, now, out);
             break;
           }
           if (driveSettle(now, out)) {break;}
@@ -268,13 +292,16 @@ public:
           const double c = std::cos(appr_), s = std::sin(appr_);
           const double dx = gx_ - x, dy = gy_ - y;
           const double e_along = dx * c + dy * s;
-          publishStop(std::max(0.0, e_along));
+          const bool rev = agv::pieceReverse(pieces_[kf_]);
+          const double sgn = rev ? -1.0 : 1.0;                 // 进站方向 appr_ 是行驶方向；倒车进站时车身朝向与它相反
+          if (!rev) {publishStop(std::max(0.0, e_along));}
           if (e_along <= final_stop_tol_) {
             setPhase(Phase::STOPPING);
             break;
           }
-          if (driveSettle(now, out)) {break;}
-          const double e_pred = e_along - std::max(0.0, v_meas) * latency_;
+          if (driveSettle(now, out, sgn)) {break;}
+          if (rev && rearBlocked(std::min(e_along, 0.3), now)) {break;}
+          const double e_pred = e_along - std::max(0.0, sgn * v_meas) * latency_;
           double v = std::min({final_v_, std::sqrt(2.0 * final_dec_ * std::max(0.0, e_pred)), 1.5 * std::max(0.0, e_pred)});
           v = std::max(v, final_min_v_);
           // 纯跟踪: 预瞄点 = 进站直线上、车辆投影点前方 final_lookahead 处 (越过终点时沿直线延长)
@@ -283,9 +310,9 @@ public:
           const double bx = std::cos(yaw) * (cx - x) + std::sin(yaw) * (cy - y);
           const double by = -std::sin(yaw) * (cx - x) + std::cos(yaw) * (cy - y);
           const double L2 = std::max(bx * bx + by * by, 1e-4);
-          double w = v * 2.0 * by / L2;
+          double w = sgn * v * 2.0 * by / L2;                  // 纯跟踪: w = v·κ，倒车时 v 取负
           w = std::clamp(w, -0.4, 0.4);
-          out.twist.linear.x = v;
+          out.twist.linear.x = sgn * v;
           out.twist.angular.z = w;
           mode_ = 1;
           break;
@@ -307,6 +334,9 @@ public:
         }
       case Phase::GOAL_ALIGN: {
           publishStop(0.0);
+          req_mode_ = 3.0;                      // 终点对位: 位置不能变
+          req_x_ = gx_;
+          req_y_ = gy_;
           if (rotate(gyaw_, yaw_tol_, yaw, w_meas, now, out)) {
             if (refine_ && haveSegs()) {
               setPhase(Phase::VERIFY);
@@ -502,17 +532,76 @@ private:
   }
 
   // 由转向切到行驶: 单舵轮先给微小前进指令，舵轮回正后再跟线
-  bool driveSettle(double now, geometry_msgs::msg::TwistStamped & out)
+  bool driveSettle(double now, geometry_msgs::msg::TwistStamped & out, double dir = 1.0)
   {
     if (settle_s_ <= 0.0 || mode_ == 1) {return false;}
     if (settle_t_ < 0 || mode_ != 3) {settle_t_ = now; mode_ = 3;}
     if (now - settle_t_ < settle_s_) {
-      out.twist.linear.x = 0.002;
+      out.twist.linear.x = dir * 0.002;
       return true;
     }
     mode_ = 1;
     settle_t_ = -1.0;
     return false;
+  }
+
+  // 倒车防护: 车体向后平移 dist 的扫掠区内有激光点 → 受阻 (本拍不出速度；持续 2 s 报一次事件)
+  bool rearBlocked(double dist, double now)
+  {
+    double age = 0.0;
+    const auto pts = scan_.points(&age);
+    if (age >= scan_max_age_ || !agv::translationBlocked(pts, body_, rot_margin_, 0.0, -std::max(dist, 0.05))) {
+      rear_block_since_ = -1.0;
+      return false;
+    }
+    if (rear_block_since_ < 0) {rear_block_since_ = now;}
+    if (now - rear_block_since_ > 2.0 && now - rear_block_evt_ > 10.0) {
+      rear_block_evt_ = now;
+      char buf[160];
+      snprintf(buf, sizeof(buf), "车尾后方 %.2f m 内有障碍 (激光 %zu 点)，停车等待", std::max(dist, 0.05), pts.size());
+      events_.emit("REVERSE_BLOCKED", "warning", "倒车受阻", buf);
+    }
+    return true;
+  }
+
+  // 倒车跟线 (odom 系的段): 纯跟踪，预瞄点 = 最近点沿段向前 reverse_lookahead 处 (越过段末沿末方向延长)；
+  // rem_stop: 到停车点的剩余行程 (中间尖点要停稳 → 按它减速；最后一段由 FINAL 接手，传很大的值)
+  void reverseTrack(
+    const std::vector<agv::Pose2> & pc, double x, double y, double yaw, double v_meas, double rem, double rem_stop,
+    double now, geometry_msgs::msg::TwistStamped & out)
+  {
+    (void)v_meas;
+    mode_ = 1;
+    const double stop_d = rev_v_ * rev_v_ / (2.0 * std::max(rev_dec_, 0.05)) + 0.15;
+    if (rearBlocked(std::min(rem, stop_d), now)) {return;}
+    size_t i = std::min(hint_, pc.size() - 1);
+    double acc = 0.0, tx = pc.back().x, ty = pc.back().y;
+    bool found = false;
+    for (; i + 1 < pc.size(); ++i) {
+      const double d = std::hypot(pc[i + 1].x - pc[i].x, pc[i + 1].y - pc[i].y);
+      if (acc + d >= rev_look_) {
+        const double u = d > 1e-9 ? (rev_look_ - acc) / d : 0.0;
+        tx = pc[i].x + u * (pc[i + 1].x - pc[i].x);
+        ty = pc[i].y + u * (pc[i + 1].y - pc[i].y);
+        found = true;
+        break;
+      }
+      acc += d;
+    }
+    if (!found && pc.size() >= 2) {                // 预瞄越过段末: 沿末方向延长，保持预瞄距离不缩短 (否则近端曲率发散)
+      const auto & a = pc[pc.size() - 2];
+      const auto & b = pc.back();
+      const double L = std::max(std::hypot(b.x - a.x, b.y - a.y), 1e-9);
+      tx = b.x + (rev_look_ - acc) * (b.x - a.x) / L;
+      ty = b.y + (rev_look_ - acc) * (b.y - a.y) / L;
+    }
+    const double bx = std::cos(yaw) * (tx - x) + std::sin(yaw) * (ty - y);
+    const double by = -std::sin(yaw) * (tx - x) + std::cos(yaw) * (ty - y);
+    const double L2 = std::max(bx * bx + by * by, 1e-4);
+    double v = std::min(rev_v_, std::sqrt(2.0 * rev_dec_ * std::max(0.0, rem_stop)));
+    v = std::max(v, 0.03);
+    out.twist.linear.x = -v;
+    out.twist.angular.z = std::clamp(-v * 2.0 * by / L2, -0.4, 0.4);
   }
 
   // 原地转向到 target (odom 系)。返回 true 表示已到位 (±tol 且角速度 ~0)
@@ -554,8 +643,10 @@ private:
         geometry_msgs::msg::PoseStamped req;
         req.header.frame_id = costmap_ros_->getGlobalFrameID();
         req.header.stamp = clock_->now();
-        req.pose.position.x = rx_;
-        req.pose.position.y = ry_;
+        // 位置 = 本段起点 / 终点 (转完要落在的线经过它；odom 系)，z = 要求 (见 ALIGN)，朝向 = 目标车身朝向
+        req.pose.position.x = req_mode_ > 0.5 ? req_x_ : rx_;
+        req.pose.position.y = req_mode_ > 0.5 ? req_y_ : ry_;
+        req.pose.position.z = req_mode_;
         tf2::Quaternion q;
         q.setRPY(0, 0, target);
         req.pose.orientation.x = q.x();
@@ -620,6 +711,8 @@ private:
   agv::Rect body_;
   double rot_w_, rot_acc_, rot_margin_, rot_tol_, yaw_tol_, cusp_tol_, final_dist_, final_stop_tol_, final_v_,
     final_min_v_, final_dec_, final_look_, latency_, tf_avg_s_, settle_s_, block_wait_s_, scan_max_age_;
+  double rev_v_{0.3}, rev_look_{0.5}, rev_dec_{0.3}, rear_block_since_{-1.0}, rear_block_evt_{-1e9};
+  double req_mode_{0.0}, req_x_{0.0}, req_y_{0.0};
 
   std_msgs::msg::Header header_;
   std::vector<std::vector<agv::Pose2>> pieces_;

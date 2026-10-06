@@ -134,6 +134,137 @@ int main()
     auto r2 = icp(line, one, {0, 7.2, 0});
     CHECK(!r2.ok, "单面墙应判退化 (min_eig %.3f)", r2.min_eig);
   }
+  // ---- 倒车段: 窄巷道工位 (车头朝外停靠)。路线 (-3.9,4.5)→(-3.9,6)→(0,6)→(0,0)，最后一段倒车，终点朝北
+  {
+    std::vector<Pt> route{{-3.9, 4.5}, {-3.9, 6.0}, {0.0, 6.0}, {0.0, 0.0}};
+    std::vector<char> rev{0, 0, 0, 1};
+    RouteOptions o;
+    std::vector<Corner> cs;
+    auto p = densify(route, M_PI / 2, o, [](double, double, double) {return true;}, &cs, &rev);
+    auto pc = splitCusps(p);
+    CHECK(cs[1].kind == 1, "第一个拐点 (前进→前进) 仍走圆弧 (kind=%d)", cs[1].kind);
+    CHECK(cs[2].kind == 2, "巷道口: 前进朝东 → 倒车朝北，原地转 (kind=%d)", cs[2].kind);
+    CHECK(pc.size() == 2, "分成 2 段 (实际 %zu)", pc.size());
+    if (pc.size() == 2) {
+      CHECK(!pieceReverse(pc[0]) && pieceReverse(pc[1]), "第 1 段前进，第 2 段倒车");
+      CHECK(std::fabs(wrap(pieceHeading(pc[1]) + M_PI / 2)) < 1e-6, "第 2 段行驶方向朝南");
+      CHECK(std::fabs(wrap(pc[1].back().th - M_PI / 2)) < 1e-6, "倒车段车身朝北 (%.2f)", pc[1].back().th);
+      CHECK(std::fabs(wrap(pc[1].front().th - M_PI / 2)) < 1e-6, "倒车段起点 (尖点) 车身朝北");
+    }
+    CHECK(std::fabs(wrap(p.back().th - M_PI / 2)) < 1e-6, "终点朝向已满足，不再追加对位尖点");
+    // 退出死胡同: 车头朝南停在 (0,0)，倒车向北退到 (0,6)，再前进向西 —— 第一段倒车后车身仍朝南，巷道口原地转到朝西
+    std::vector<Pt> out{{0, 0}, {0, 6}, {-3.9, 6}};
+    std::vector<char> rev2{0, 1, 0};
+    auto q = densify(out, M_PI, o, [](double, double, double) {return true;}, &cs, &rev2);
+    auto pq = splitCusps(q);
+    CHECK(pq.size() == 2 && pieceReverse(pq[0]) && !pieceReverse(pq[1]), "倒车退出 + 前进 (段数 %zu)", pq.size());
+    CHECK(std::fabs(wrap(q.front().th + M_PI / 2)) < 1e-6, "倒车段车身朝南");
+    // 只换向不转车身: 前进开进死胡同再原路倒车退出
+    std::vector<Pt> io{{0, 6}, {0, 0}, {0, 6}};
+    std::vector<char> rev3{0, 0, 1};
+    auto w = densify(io, -M_PI / 2, o, [](double, double, double) {return true;}, &cs, &rev3);
+    auto pw = splitCusps(w);
+    CHECK(cs[1].kind == 3, "停车换向 (kind=%d)", cs[1].kind);
+    CHECK(pw.size() == 2 && !pieceReverse(pw[0]) && pieceReverse(pw[1]), "换向处分段 (段数 %zu)", pw.size());
+    CHECK(std::fabs(wrap(w.back().th + M_PI / 2)) < 1e-6, "全程车身朝南");
+  }
+  // ---- 多步挪车
+  {
+    auto wallX = [](std::vector<Pt> & v, double x, double y0, double y1) {for (double y = y0; y <= y1; y += 0.02) {v.push_back({x, y});}};
+    auto wallY = [](std::vector<Pt> & v, double y, double x0, double x1) {for (double x = x0; x <= x1; x += 0.02) {v.push_back({x, y});}};
+    auto show = [](const char * name, bool ok, const std::vector<MStep> & st, int n) {
+        std::printf("  挪车 [%s]: %s，展开 %d 个状态:", name, ok ? "可行" : "不可行", n);
+        for (const auto & s : st) {
+          if (s.kind == 0) {std::printf(" 转 %+.0f°", s.val * 180 / M_PI);} else {std::printf(" %s %.2f m", s.val > 0 ? "前进" : "后退", std::fabs(s.val));}
+        }
+        std::printf("\n");
+      };
+    ManeuverOpts o;
+    std::vector<MStep> st;
+    int n = 0;
+    // (1) 空旷: 直接转
+    bool ok = planManeuver({}, body, 0.05, 0.05, 1.57, o, &st, &n);
+    show("空旷转 90°", ok, st, n);
+    CHECK(ok && st.size() == 1 && st[0].kind == 0, "空旷处应一步转到位");
+    // (2) 车头前 5 cm 有墙 (工位车头朝里): 后退再转
+    std::vector<Pt> a;
+    wallX(a, 0.65, -1.5, 1.5);
+    ok = planManeuver(a, body, 0.05, 0.05, M_PI, o, &st, &n);
+    show("车头贴墙掉头", ok, st, n);
+    CHECK(ok, "后退后应能掉头");
+    CHECK(!st.empty() && st[0].kind == 1 && st[0].val < 0, "第一步应是后退");
+    // (3) 口袋: 前方、左右三面是墙，后方 1 m 处才开阔 —— 旧策略 (摆头 + 后退 ≤ 0.5 m + 一次转到位) 做不到
+    std::vector<Pt> b;
+    wallX(b, 0.65, -0.45, 0.45);
+    wallY(b, 0.45, -0.9, 0.65);
+    wallY(b, -0.45, -0.9, 0.65);
+    wallX(b, -2.6, -2.0, 2.0);          // 后方远处的墙
+    wallY(b, 2.0, -2.6, -0.9);
+    wallY(b, -2.0, -2.6, -0.9);
+    wallX(b, -0.9, 0.45, 2.0);
+    wallX(b, -0.9, -2.0, -0.45);
+    o.max_dist = 2.0;
+    ok = planManeuver(b, body, 0.05, 0.05, M_PI, o, &st, &n);
+    show("口袋里掉头", ok, st, n);
+    CHECK(ok, "退出口袋后应能掉头");
+    // (4) 巷道宽 1.0 m，车体 1.0 × 0.7 (对角线 1.22 m): 无论怎么挪都转不过来，应明确返回不可行
+    std::vector<Pt> c;
+    wallY(c, 0.5, -4.0, 4.0);
+    wallY(c, -0.5, -4.0, 4.0);
+    ok = planManeuver(c, body, 0.02, 0.02, M_PI, o, &st, &n);
+    show("窄巷道掉头", ok, {}, n);
+    CHECK(!ok, "窄巷道里应判不可行");
+    // (5) 斜向空间: 只能转一点、挪一点、再转 (多点掉头)。宽 1.3 m 的通道 (对角线 1.22 < 1.3 但扫掠半径 0.69×2=1.39 > 1.3)
+    std::vector<Pt> d;
+    wallY(d, 0.65, -4.0, 4.0);
+    wallY(d, -0.65, -4.0, 4.0);
+    o.max_dist = 1.0;
+    ok = planManeuver(d, body, 0.02, 0.02, M_PI, o, &st, &n);
+    show("1.3 m 通道多点掉头", ok, st, n);
+    CHECK(ok && st.size() >= 3, "应通过转 + 挪的组合掉头 (步数 %zu)", st.size());
+    // (6) 手机现场: 巷道口 (0,6)，车头朝东，要转成车头朝北后沿 x=0 向南倒车；拐点两侧各有一个障碍，原地两个方向都转不开。
+    //     只要求朝向 → 后退 0.4 m 转 90°，但车不在 x=0 线上 (重新规划会开回拐点再转，无限循环)；
+    //     要求落在下一段线上 → 多转一点、斜着倒到线上、再回正
+    std::vector<Pt> e;
+    Rect big{1.31, 0.48, 0.5, 0.5};
+    auto box = [&](double cx, double cy) {
+        for (double t = -0.2; t <= 0.2; t += 0.02) {
+          e.push_back({cx + t, cy - 0.2}); e.push_back({cx + t, cy + 0.2}); e.push_back({cx - 0.2, cy + t}); e.push_back({cx + 0.2, cy + t});
+        }
+      };
+    box(0.95, 1.05);            // 车体系 = 场景系平移 (0,6)，车头朝东
+    box(-0.95, -1.05);
+    for (double y = -2.5; y >= -6.0; y -= 0.02) {e.push_back({-1.0, y}); e.push_back({1.0, y});}   // 巷道两侧货架
+    for (double x = -2.4; x <= -1.0; x += 0.02) {e.push_back({x, -2.5});}
+    for (double x = 1.0; x <= 2.4; x += 0.02) {e.push_back({x, -2.5});}
+    o.max_dist = 2.5;
+    ok = planManeuver(e, big, 0.05, 0.05, M_PI / 2, o, &st, &n);
+    show("巷道口转向 (只要朝向)", ok, st, n);
+    CHECK(ok, "只要求朝向应可行");
+    ManeuverGoal g;
+    g.T = M_PI / 2;
+    g.mode = 1;
+    g.lx = 0.0; g.ly = 0.0; g.ldir = -M_PI / 2;     // 下一段: 过拐点、向南行驶 (倒车)
+    g.along_max = 2.5;
+    ok = planManeuver(e, big, 0.05, 0.05, g, o, &st, &n);
+    show("巷道口转向 (落在下一段线上)", ok, st, n);
+    CHECK(ok, "落在线上的挪车应可行");
+    if (ok) {                   // 复算终点位姿
+      double x = 0, y = 0, th = 0;
+      for (const auto & s : st) {if (s.kind == 0) {th += s.val;} else {x += s.val * std::cos(th); y += s.val * std::sin(th);}}
+      CHECK(std::fabs(x) < 0.031 && y <= 0.05 && std::fabs(wrap(th - M_PI / 2)) < 2e-3, "终点应在 x=0 线上、朝北 (%.3f, %.3f, %.1f°)", x, y, th * 180 / M_PI);
+    }
+    // (7) 终点对位 (位置不能变): 窄巷道工位里掉头 → 不可行
+    ManeuverGoal g2;
+    g2.T = M_PI;
+    g2.mode = 2;
+    std::vector<Pt> f;
+    wallY(f, 1.0, -6.0, 6.0);
+    wallY(f, -1.0, -6.0, 6.0);
+    ok = planManeuver(f, big, 0.02, 0.02, g2, o, &st, &n);
+    show("窄巷道工位原位掉头", ok, {}, n);
+    CHECK(!ok, "2 m 巷道里 1.79 × 1.0 m 的车原位掉头应判不可行");
+  }
   std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);
   return fails ? 1 : 0;
 }

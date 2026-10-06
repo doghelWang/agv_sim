@@ -344,7 +344,7 @@ class Navigator:
         """自研导引在 C++ 核心里执行 (NAV_CPP_GUIDE=0 用本进程的 _autonomous_guidance_loop)"""
         return self._core() if os.environ.get("NAV_CPP_GUIDE", "1") != "0" else None
 
-    def _start_guide_cpp(self, cpp, mission_id, waypoints, target_yaw, replan_left, corners, labels):
+    def _start_guide_cpp(self, cpp, mission_id, waypoints, target_yaw, replan_left, corners, labels, seg_rev=None):
         ch = self.cfg.get("chassis", {})
         h, t, l, r = self.outline()
         cs = []
@@ -364,6 +364,8 @@ class Navigator:
             planner, chassis = self.active_planner, self.active_chassis_type
         msg = {"mid": mission_id, "wps": [[float(p[0]), float(p[1])] for p in waypoints],
                "labels": [x or "" for x in (labels or [])], "corners": cs, "yaw": float(target_yaw), "replan_left": replan_left,
+               # rev[i]: 到达航点 i 的这一段倒车 (按车头朝向规划的结果；has_rev=0 时 C++ 导引沿用现场判断)
+               "has_rev": 1 if seg_rev is not None else 0, "rev": [0] + [1 if r else 0 for r in (seg_rev or [])],
                "planner": planner, "chassis": chassis, "corner_mode": self.prot.get("corner_mode", "auto"),
                "max_v": min(1.2, ch.get("max_speed_mps", 1.5)), "max_w": min(1.6, ch.get("max_ang_speed_radps", 2.0)),
                "max_decel": self.max_decel, "max_ang_decel": float(ch.get("max_ang_decel_radps2", 1.0) or 1.0),
@@ -395,6 +397,8 @@ class Navigator:
         if res == "REPLAN" and tgt:
             threading.Thread(target=self.send_nav_goal, args=(tgt[0], tgt[1], tgt[2]), kwargs={"_replan_left": tgt[3] - 1},
                              daemon=True).start()
+            return
+        if res == "REROUTE" and tgt and self._reroute_after_rot_block(mid, tgt[0], tgt[1], tgt[2], tgt[3]):
             return
         if res == "ARRIVED":
             with self.lock:
@@ -1210,6 +1214,9 @@ class Navigator:
 
             self.telemetry["target_goal"] = {"x": x, "y": y, "yaw": target_dock_yaw}
             self.telemetry["nav_status"] = "PLANNING"
+        if _replan_left >= 2:                      # 全新的任务 (不是重新规划): 清掉上个任务登记的"转不开的位置"
+            self.dijkstra_planner.rot_blocked = []
+            self._rot_reroute = {}
         self._new_mission(mission_id, x, y, target_dock_yaw, planner)
 
         cpp = self._guide_cpp()
@@ -1226,7 +1233,13 @@ class Navigator:
             if len(raw_path) <= 2:
                 raw_path = self.dijkstra_planner.plan((cur_x, cur_y), (x, y), active_obstacles)
         else:
-            raw_path = self.dijkstra_planner.plan((cur_x, cur_y), (x, y), active_obstacles)
+            # 带车头朝向规划 (起点朝向、终点朝向、每段前进/倒车)；NAV_PLAN_REVERSE=0 退回只前进的旧规划
+            with self.lock:
+                yaw0 = self.telemetry["yaw"]
+            if os.environ.get("NAV_PLAN_REVERSE", "1") != "0":
+                raw_path = self.dijkstra_planner.plan((cur_x, cur_y), (x, y), active_obstacles, start_yaw=yaw0, goal_yaw=target_dock_yaw)
+            else:
+                raw_path = self.dijkstra_planner.plan((cur_x, cur_y), (x, y), active_obstacles)
 
         if not raw_path or len(raw_path) < 2:
             with self.lock:
@@ -1238,12 +1251,17 @@ class Navigator:
             return
 
         # 拐点可行性: 路线中仍含「车体无法转过去」的拐点 (所有候选路线都被挡) → 规划失败并说明原因，不下发
+        lr0 = getattr(self.dijkstra_planner, "last_route", None) or {}
+        dir_plan = planner == "dijkstra" and "reverse" in lr0 and len(lr0.get("points", [])) == len(raw_path)
         if planner == "dijkstra" and len(raw_path) >= 3 and self.dijkstra_planner.footprint:
             bad = []
-            for i in range(1, len(raw_path) - 1):
-                a, b, c = raw_path[i - 1], raw_path[i], raw_path[i + 1]
-                if self.dijkstra_planner._turn(a, b, c) > 0.02 and self.dijkstra_planner._corner_penalty(a, b, c) > 0:
-                    bad.append(b)
+            if dir_plan:                 # 带朝向的规划已经比较过前进/倒车的各种走法: 仍被挡的拐点才算失败
+                bad = [(bx, by) for bx, by, why in lr0.get("blocked", []) if why == "拐点转向"]
+            else:
+                for i in range(1, len(raw_path) - 1):
+                    a, b, c = raw_path[i - 1], raw_path[i], raw_path[i + 1]
+                    if self.dijkstra_planner._turn(a, b, c) > 0.02 and self.dijkstra_planner._corner_penalty(a, b, c) > 0:
+                        bad.append(b)
             if bad:
                 with self.lock:
                     self.telemetry["nav_status"] = "NO_PATH"
@@ -1260,10 +1278,23 @@ class Navigator:
         if lr and len(lr.get("points", [])) == len(raw_path) and all(
                 math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6 for a, b in zip(lr["points"], raw_path)):
             labels = list(lr.get("labels") or labels)
+        seg_rev = [bool(r) for r in lr0["reverse"]] if dir_plan else None      # seg_rev[i]: raw_path[i] → raw_path[i+1] 倒车
         with self.lock:
             self.telemetry["plan_path"] = [{"x": round(pt[0], 3), "y": round(pt[1], 3)} for pt in raw_path]
             self.telemetry["path_labels"] = labels
+            self.telemetry["path_reverse"] = seg_rev or []
             self.telemetry["path_index"] = 1
+        if seg_rev and any(seg_rev):
+            L = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for (a, b), r in zip(zip(raw_path, raw_path[1:]), seg_rev) if r)
+            self.event_hub.emit("navigation", "PLAN_REVERSE", "info", f"任务 #{mission_id}: 路线含倒车段 {L:.1f} m",
+                                "按车头朝向规划: " + " → ".join(
+                                    f"{'倒车' if r else '前进'}到 {lab or f'({b[0]:.1f},{b[1]:.1f})'}"
+                                    for b, lab, r in zip(raw_path[1:], labels[1:], seg_rev))
+                                + f"，终点车头朝向 {math.degrees(target_dock_yaw):.0f}°", {"mission_id": mission_id, "reverse": seg_rev})
+        if dir_plan and lr0.get("blocked"):
+            self.event_hub.emit("navigation", "PLAN_WARN", "warning", f"任务 #{mission_id}: 路线上有转不开的位置",
+                                "；".join(f"({bx:.1f},{by:.1f}) {why}" for bx, by, why in lr0["blocked"])
+                                + "：按地图计算车体原地转向净空不足，到现场可能受阻", {"blocked": lr0["blocked"]})
         corners, curve = self._plan_route_corners(raw_path)
         self._mission_corners = (mission_id, corners)
         with self.lock:
@@ -1302,11 +1333,29 @@ class Navigator:
         if cpp is not None:
             with self.lock:
                 self.telemetry["nav_status"] = "NAVIGATING"
-            self._start_guide_cpp(cpp, mission_id, raw_path, target_dock_yaw, _replan_left, corners, labels)
+            self._start_guide_cpp(cpp, mission_id, raw_path, target_dock_yaw, _replan_left, corners, labels, seg_rev)
             return
-        threading.Thread(target=self._autonomous_guidance_loop, args=(mission_id, raw_path, target_dock_yaw, _replan_left), daemon=True).start()
+        threading.Thread(target=self._autonomous_guidance_loop, args=(mission_id, raw_path, target_dock_yaw, _replan_left, seg_rev),
+                         daemon=True).start()
 
-    def _autonomous_guidance_loop(self, mission_id: int, waypoints: list, target_yaw: float, replan_left: int = 2):
+    def _reroute_after_rot_block(self, mission_id, x, y, yaw, replan_left) -> bool:
+        """原地转向受阻、让位/挪车也转不过去: 把当前位置登记为"转不开"，按当前车头朝向重新规划 (规划器会改用
+        不在这里转的走法: 沿车身方向前进/倒车到能转的地方再转，或倒车驶入终点)。返回 True 表示已重新下发"""
+        if replan_left <= 0 or os.environ.get("NAV_PLAN_REVERSE", "1") == "0" or not self.dijkstra_planner.footprint:
+            return False
+        with self.lock:
+            if self.current_mission_id != mission_id:
+                return False
+            cx, cy = self.telemetry["x"], self.telemetry["y"]
+        self.publish_cmd_vel(0.0, 0.0, 0.0)
+        self.dijkstra_planner.mark_rot_blocked(cx, cy)
+        self.event_hub.emit("navigation", "REROUTE", "warning", f"任务 #{mission_id}: 这里转不开，换路线",
+                            f"在 ({cx:.2f}, {cy:.2f}) 原地转向受阻，按当前车头朝向重新规划 (不在此处转向，可倒车)；剩余 {replan_left - 1} 次",
+                            {"mission_id": mission_id, "x": round(cx, 2), "y": round(cy, 2)})
+        threading.Thread(target=self.send_nav_goal, args=(x, y, yaw), kwargs={"_replan_left": replan_left - 1}, daemon=True).start()
+        return True
+
+    def _autonomous_guidance_loop(self, mission_id: int, waypoints: list, target_yaw: float, replan_left: int = 2, seg_rev=None):
         """
         High-precision Guidance Controller with Strict Corridor Tangent Locking
         and Cardinal Orthogonal Final Docking Alignment.
@@ -1333,6 +1382,8 @@ class Navigator:
             a, b, c = waypoints[i - 1], waypoints[i], waypoints[i + 1]
             h1, h2 = math.atan2(b[1] - a[1], b[0] - a[0]), math.atan2(c[1] - b[1], c[0] - b[0])
             straight = abs(math.atan2(math.sin(h2 - h1), math.cos(h2 - h1))) <= 0.02
+            if seg_rev and i < len(seg_rev) and seg_rev[i - 1] != seg_rev[i]:
+                straight = False                    # 前进/倒车在此切换: 必须停车
             stop_rest[i] = (math.hypot(c[0] - b[0], c[1] - b[1]) + stop_rest[i + 1]) if straight else 0.0
         next_rot_dir = 0.0
         try:
@@ -1372,27 +1423,31 @@ class Navigator:
                     cur_x = self.telemetry["x"]
                     cur_y = self.telemetry["y"]
 
-                init_heading_err = math.atan2(math.sin(seg_heading - cur_yaw), math.cos(seg_heading - cur_yaw))
+                # 规划器指定本段倒车 (按车头朝向规划): 车身要对准的是路段方向的反向，对准后倒着开
+                planned_rev = bool(seg_rev and wp_idx - 1 < len(seg_rev) and seg_rev[wp_idx - 1]) and seg_dist > 0.02
+                align_heading = seg_heading + math.pi if planned_rev else seg_heading
+                init_heading_err = math.atan2(math.sin(align_heading - cur_yaw), math.cos(align_heading - cur_yaw))
 
                 # 倒车: 目标路段与车头方向近乎相反且原地转向会扫到周边 (窄巷道/设备旁工位) → 不转向，直接倒车沿路段行驶
+                # (没有带朝向的规划结果时的现场判断；有规划结果时以规划为准)
                 dist_to_target = math.hypot(target_x - cur_x, target_y - cur_y)
                 need_rot = chassis_type != "dual_steer" and abs(init_heading_err) > 0.02 and dist_to_target > 0.1
-                rd = self._rotation_dir(cur_x, cur_y, cur_yaw, seg_heading) if need_rot else 1.0
-                reverse = chassis_type != "dual_steer" and abs(init_heading_err) > 2.4 and dist_to_target > 0.3 and rd == 0.0
+                rd = self._rotation_dir(cur_x, cur_y, cur_yaw, align_heading) if need_rot else 1.0
+                reverse = seg_rev is None and chassis_type != "dual_steer" and abs(init_heading_err) > 2.4 and dist_to_target > 0.3 and rd == 0.0
                 if reverse:
                     self.event_hub.emit("navigation", "REVERSE", "info", f"路段 {wp_idx} 倒车行驶",
                                         f"原地转向扫掠半径 {self.sweep_radius():.2f} m 内有障碍，改为倒车 {dist_to_target:.1f} m", {"index": wp_idx})
-                # PHASE 1: 原地转向对准路段方向 (精度 0.3°)，随后以车头朝向路段方向行驶
+                # PHASE 1: 原地转向对准路段方向 (精度 0.3°；规划倒车的段对准其反向)，随后沿路段行驶
                 if not reverse and abs(init_heading_err) > 0.02 and dist_to_target > 0.1:
                     # 先停稳再原地转向 (按 cmodel 减速度自然制动，等待实测速度归零)
                     self._wait_until_stopped(mission_id)
                     # 原地转不开 (工位紧贴设备/墙体，车头朝里停靠): 先沿车身方向倒车到能转向的位置 (离站倒车)
                     if chassis_type != "dual_steer" and rd == 0.0:
-                        if not self._back_out(mission_id, cur_x, cur_y, cur_yaw, seg_heading):
+                        if not self._back_out(mission_id, cur_x, cur_y, cur_yaw, align_heading):
                             return
                         with self.lock:
                             bx, by, byaw = self.telemetry["x"], self.telemetry["y"], self.telemetry["yaw"]
-                        rd = self._rotation_dir(bx, by, byaw, seg_heading)
+                        rd = self._rotation_dir(bx, by, byaw, align_heading)
                     if rd:
                         rot_dir = rd
                     if not self._align_steer(mission_id, "rotate", 1.0 if (rot_dir or init_heading_err) > 0 else -1.0):
@@ -1403,17 +1458,17 @@ class Navigator:
                     # 地图里没有的障碍等转起来再靠安全层急停，高角速度下制动转角不够会碰上
                     with self.lock:
                         qyaw0 = self.telemetry["yaw"]
-                    turn0 = math.atan2(math.sin(seg_heading - qyaw0), math.cos(seg_heading - qyaw0))
+                    turn0 = math.atan2(math.sin(align_heading - qyaw0), math.cos(align_heading - qyaw0))
                     if rot_dir and abs(turn0) > 0.5 and turn0 * rot_dir < 0:
                         turn0 += rot_dir * 2 * math.pi
-                    res = "blocked" if self._sweep_block_side(turn0) else self._rotate_to(mission_id, seg_heading, rot_dir, max_w, 2.0)
+                    res = "blocked" if self._sweep_block_side(turn0) else self._rotate_to(mission_id, align_heading, rot_dir, max_w, 2.0)
                     for _ in range(3):
                         if res != "blocked":
                             break
                         self._wait_until_stopped(mission_id)
                         with self.lock:
                             qyaw = self.telemetry["yaw"]
-                        left = math.atan2(math.sin(seg_heading - qyaw), math.cos(seg_heading - qyaw))
+                        left = math.atan2(math.sin(align_heading - qyaw), math.cos(align_heading - qyaw))
                         if rot_dir and abs(left) > 0.5 and left * rot_dir < 0:
                             left += rot_dir * 2 * math.pi
                         ok = self._retreat_for_turn(mission_id, left)
@@ -1421,10 +1476,12 @@ class Navigator:
                             return
                         if not self._align_steer(mission_id, "rotate", 1.0 if left > 0 else -1.0):
                             return
-                        res = self._rotate_to(mission_id, seg_heading, rot_dir, max_w, 2.0 if ok else 8.0)
+                        res = self._rotate_to(mission_id, align_heading, rot_dir, max_w, 2.0 if ok else 8.0)
                         if not ok:
                             break
                     if res == "abort":
+                        return
+                    if res == "blocked" and self._reroute_after_rot_block(mission_id, waypoints[-1][0], waypoints[-1][1], target_yaw, replan_left):
                         return
                     if res == "blocked":
                         self.event_hub.emit("navigation", "ROTATE_BLOCKED", "danger", f"任务 #{mission_id} 原地转向受阻",
@@ -1436,6 +1493,7 @@ class Navigator:
                     with self.lock:
                         if self.telemetry["nav_status"] == "OBSTACLE_WAIT":
                             self.telemetry["nav_status"] = "NAVIGATING"
+                reverse = reverse or planned_rev
                 # 起步前舵角回正 (先转后走)
                 if chassis_type != "dual_steer" and not self._align_steer(mission_id, "drive", -1.0 if reverse else 1.0):
                     return
@@ -1444,7 +1502,14 @@ class Navigator:
                 # (长车头车型原地转向扫掠半径 = hypot(车头, 半宽)，在货架/设备岛旁的拓扑拐点易碰撞)
                 corner = None
                 corner_rot = False
-                if not reverse and not is_final_wp and chassis_type != "dual_steer" and seg_dist > 0.05:
+                nxt_rev = bool(seg_rev and wp_idx < len(seg_rev) and seg_rev[wp_idx])
+                if seg_rev is not None and not is_final_wp and (reverse or nxt_rev):
+                    # 本段或下一段倒车: 不走圆弧。车身朝向要变、或前进/倒车要切换 → 在拐点停稳，下一段开头再对准
+                    nxt = waypoints[wp_idx + 1]
+                    nh = math.atan2(nxt[1] - target_y, nxt[0] - target_x) + (math.pi if nxt_rev else 0.0)
+                    if abs(math.atan2(math.sin(nh - align_heading), math.cos(nh - align_heading))) > 0.02 or nxt_rev != reverse:
+                        corner_rot = True
+                if not reverse and not nxt_rev and not is_final_wp and chassis_type != "dual_steer" and seg_dist > 0.05:
                     nxt = waypoints[wp_idx + 1]
                     n_len = math.hypot(nxt[0] - target_x, nxt[1] - target_y)
                     if n_len > 0.1:
@@ -1648,13 +1713,32 @@ class Navigator:
         # 拓扑路线: Nav2 沿拓扑边逐点通过 (NavigateThroughPoses)，不可用时退回 NavigateToPose
         with self.lock:
             obstacles = list(self.dynamic_obstacles)
-        route = self.dijkstra_planner.plan((cur_x, cur_y), (x, y), obstacles) or []
-        labels = list((getattr(self.dijkstra_planner, "last_route", None) or {}).get("labels") or [None] * len(route))
+        # 带车头朝向规划 (起点朝向、终点朝向、每段前进/倒车): 只有 AgvRoute 插件能执行倒车段；退回 Python 分段跟线时按旧方式只前进
+        with self.lock:
+            cur_yaw = self.telemetry["yaw"]
+        dir_aware = os.environ.get("NAV2_ROUTE_MODE", "agv") == "agv" and os.environ.get("NAV_PLAN_REVERSE", "1") != "0"
+        route = (self.dijkstra_planner.plan((cur_x, cur_y), (x, y), obstacles, start_yaw=cur_yaw, goal_yaw=yaw) if dir_aware
+                 else self.dijkstra_planner.plan((cur_x, cur_y), (x, y), obstacles)) or []
+        lr = getattr(self.dijkstra_planner, "last_route", None) or {}
+        labels = list(lr.get("labels") or [None] * len(route))
+        seg_rev = list(lr.get("reverse") or [False] * max(0, len(route) - 1))     # seg_rev[i]: route[i] → route[i+1] 倒车
         n_pts = len(route)
         with self.lock:
             self.telemetry["plan_path"] = [{"x": round(p[0], 3), "y": round(p[1], 3)} for p in route]
             self.telemetry["path_labels"] = labels[:n_pts]
+            self.telemetry["path_reverse"] = [bool(r) for r in seg_rev]
             self.telemetry["path_index"] = 1 if n_pts >= 2 else 0
+        if any(seg_rev):
+            L = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for (a, b), r in zip(zip(route, route[1:]), seg_rev) if r)
+            self.event_hub.emit("navigation", "PLAN_REVERSE", "info", f"任务 #{mission_id}: 路线含倒车段 {L:.1f} m",
+                                "按车头朝向规划: " + " → ".join(
+                                    f"{'倒车' if r else '前进'}到 {lab or f'({b[0]:.1f},{b[1]:.1f})'}"
+                                    for (b, lab), r in zip(zip(route[1:], labels[1:] + [None] * len(route)), seg_rev))
+                                + f"，终点车头朝向 {math.degrees(yaw):.0f}°", {"mission_id": mission_id, "reverse": seg_rev})
+        if lr.get("blocked"):
+            self.event_hub.emit("navigation", "PLAN_WARN", "warning", f"任务 #{mission_id}: 路线上有转不开的位置",
+                                "；".join(f"({bx:.1f},{by:.1f}) {why}" for bx, by, why in lr["blocked"])
+                                + "：按地图计算车体原地转向净空不足，前进/倒车的各种走法都绕不开，到现场可能受阻", {"blocked": lr["blocked"]})
 
         stall = {"t": time.time(), "pose": None, "rec": -1, "rec_now": 0, "done": False}
 
@@ -1742,6 +1826,26 @@ class Navigator:
                 self._nav2_stall_n[mid] = 2
                 stall_recover(mid, 1, "停滞后重新下发的目标被 Nav2 中止 (控制器无应答)")
                 return
+            rr = getattr(self, "_rot_reroute", {}) or {}
+            if result == "ABORTED" and not _final and rr.get("mid") == mid and rr.get("seen") and rr.get("n", 0) < 2 \
+                    and os.environ.get("NAV_PLAN_REVERSE", "1") != "0":
+                # 原地转向受阻、挪车也转不过去 → Nav2 中止。不算任务失败: 把该位置登记为"转不开"，按当前车头朝向重新规划
+                # (规划器会改走不在这里转的路线: 沿车身方向前进/倒车到能转的地方，或倒车驶入终点)，最多 2 次
+                self._rot_reroute = dict(rr, seen=False, n=rr.get("n", 0) + 1)
+                self.dijkstra_planner.mark_rot_blocked(rr["x"], rr["y"])
+                self.event_hub.emit("navigation", "REROUTE", "warning", f"Nav2 任务 #{mid}: 这里转不开，换路线 ({rr.get('n', 0) + 1}/2)",
+                                    f"在 ({rr['x']:.2f}, {rr['y']:.2f}) 原地转向受阻且挪车无解，按当前车头朝向重新规划 (不在此处转向，可倒车)",
+                                    {"mission_id": mid, "x": round(rr["x"], 2), "y": round(rr["y"], 2)})
+
+                def reroute():
+                    time.sleep(1.0)
+                    with self.lock:
+                        ok = self.current_mission_id == mid
+                        cx, cy = self.telemetry["x"], self.telemetry["y"]
+                    if ok:
+                        self._send_nav2_goal(mid, cx, cy, x, y, yaw, matched_station, stations, _waited=True)
+                threading.Thread(target=reroute, daemon=True, name=f"nav2-reroute-{mid}").start()
+                return
             with self.lock:
                 self.telemetry["nav_status"] = status
                 if status == "ARRIVED":
@@ -1776,17 +1880,25 @@ class Navigator:
             return
         if agv_ok:
             pts = [(float(p[0]), float(p[1])) for p in route] if n_pts >= 2 else [(cur_x, cur_y), (x, y)]
+            rev = [False] + ([bool(r) for r in seg_rev] if n_pts >= 2 else [False])       # rev[i]: 到达 pts[i] 的这一段倒车
             if math.hypot(pts[0][0] - cur_x, pts[0][1] - cur_y) > 0.03:
                 pts.insert(0, (cur_x, cur_y))
+                rev.insert(1, rev[1] if len(rev) > 1 else False)
             if math.hypot(pts[-1][0] - x, pts[-1][1] - y) > 0.01:
                 pts.append((x, y))
+                rev.append(rev[-1])
             self._agv_mission = mission_id
             self.approach_left = None
             self.nav2.on_stop_distance = lambda d, mid=mission_id: (
                 setattr(self, "approach_left", d) if getattr(self, "_agv_mission", None) == mid else None)
-            self.nav2.on_plugin_event = lambda e, mid=mission_id: self.event_hub.emit(
-                "navigation", e.get("type", "NAV2_EVENT"), e.get("level", "info"), e.get("title", ""), e.get("message", ""),
-                {"mission_id": mid, "source": "agv_nav2_plugins"})
+            def on_plugin_event(e, mid=mission_id):
+                if e.get("type") in ("ROTATE_BLOCKED", "ADJUST_FAIL"):      # 记下转向受阻的位置: 任务被中止时据此换路线
+                    with self.lock:
+                        self._rot_reroute = dict(getattr(self, "_rot_reroute", {}) or {}, mid=mid, seen=True,
+                                                 x=self.telemetry["x"], y=self.telemetry["y"])
+                self.event_hub.emit("navigation", e.get("type", "NAV2_EVENT"), e.get("level", "info"), e.get("title", ""),
+                                    e.get("message", ""), {"mission_id": mid, "source": "agv_nav2_plugins"})
+            self.nav2.on_plugin_event = on_plugin_event
             try:   # 场景静态几何 (墙/货架线段) → RouteController 末段精定位
                 segs = list(self.dijkstra_planner._static_segments())
             except Exception as e:  # noqa
@@ -1797,7 +1909,7 @@ class Navigator:
                     if getattr(self, "_agv_mission", None) == mid:
                         self.telemetry["plan_curve"] = curve
             self.nav2.on_plan = on_plan
-            err = self.nav2.send_route(pts, x, y, yaw, mission_id, on_result, on_fb, segs=segs)
+            err = self.nav2.send_route(pts, x, y, yaw, mission_id, on_result, on_fb, segs=segs, rev=rev if any(rev) else None)
             if err:
                 self._agv_mission = None
                 with self.lock:

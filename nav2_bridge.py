@@ -330,8 +330,9 @@ class Nav2Bridge:
             return False
         return self.ready()
 
-    def send_route(self, route, x, y, yaw, mission_id, on_result, on_feedback=None, segs=None) -> str:
-        """拓扑路线导航: route = [(x, y), ...] (含起点与终点)，segs = 场景静态线段 (末段精定位)。
+    def send_route(self, route, x, y, yaw, mission_id, on_result, on_feedback=None, segs=None, rev=None) -> str:
+        """拓扑路线导航: route = [(x, y), ...] (含起点与终点)，segs = 场景静态线段 (末段精定位)，
+        rev = 与 route 等长的倒车标记 (rev[i]: 到达 route[i] 的这一段倒车；None = 全程前进)。
         有 C++ 桥接时整个交给 agv_ros_bridge (发布路线/线段、NavigateToPose、限频回馈)；否则由本进程 rclpy 完成"""
         # 上一个目标还在执行就来了新目标: 行为树只规划一次，Nav2 "抢占" 后仍沿旧路径走到旧终点，再把新目标报成"成功"
         # (车停在旧目标处，任务却显示到达)。所以先取消旧目标，等取消落地 (0.8 s) 再发新的；
@@ -353,7 +354,7 @@ class Nav2Bridge:
             # 每次下发带一个新编号 (任务号 × 1000 + 序号): 同一任务重新下发后，旧目标迟到的结果/回馈按编号丢弃
             self._seq = getattr(self, "_seq", 0) + 1
             self._token = int(mission_id) * 1000 + self._seq % 1000
-            cpp.send_route(self._token, route, (x, y, yaw), bt, segs)
+            cpp.send_route(self._token, route, (x, y, yaw), bt, segs, rev)
             return ""
         self._route_via_cpp = False
         io = self._py_route_io()
@@ -370,6 +371,8 @@ class Nav2Bridge:
         path.header.frame_id = "map"
         path.header.stamp = self.rnode.get_clock().now().to_msg()
         path.poses = [self._pose(px, py, 0.0) for px, py in route]
+        for i, ps in enumerate(path.poses):
+            ps.pose.position.z = 1.0 if (rev and i < len(rev) and rev[i]) else 0.0
         io["route_pub"].publish(path)
         g = NavigateToPose.Goal()
         g.pose = self._pose(x, y, yaw)
