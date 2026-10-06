@@ -8,7 +8,7 @@ JAR=$PREFIX/share/java/android.jar
 rm -rf obj bin; mkdir -p obj bin
 ecj -d obj -cp "$JAR" src/com/agvsim/cover/*.java
 d8 --output bin --lib "$JAR" $(find obj -name '*.class')
-aapt package -f -M AndroidManifest.xml -I /system/framework/framework-res.apk -F bin/unsigned.apk
+aapt package -f -M AndroidManifest.xml -S res -I /system/framework/framework-res.apk -F bin/unsigned.apk
 (cd bin && aapt add unsigned.apk classes.dex >/dev/null)
 [ -f ~/.agv-cover.keystore ] || keytool -genkeypair -validity 10000 -dname "CN=agv-sim" -keystore ~/.agv-cover.keystore \
     -storepass android -keypass android -alias cover -keyalg RSA -keysize 2048 2>/dev/null

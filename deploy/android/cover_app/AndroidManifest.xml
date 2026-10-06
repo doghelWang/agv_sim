@@ -6,7 +6,7 @@
        adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow      (屏幕灭着时由面板点亮)
      没有这个权限时退回普通全屏页面 (面板在前台，Termux 会被限核)。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.agvsim.cover" android:versionCode="5" android:versionName="1.4">
+    package="com.agvsim.cover" android:versionCode="6" android:versionName="1.5">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -15,7 +15,7 @@
     <!-- 屏幕灭着时点亮 (开机自启 / 息屏后重新打开)。Android 13+ 还要: adb shell appops set com.agvsim.cover TURN_SCREEN_ON allow -->
     <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
     <queries><package android:name="com.termux" /></queries>
-    <application android:label="AMR 仿真面板" android:hardwareAccelerated="true" android:usesCleartextTraffic="true">
+    <application android:label="AMR 仿真面板" android:icon="@mipmap/ic_launcher" android:hardwareAccelerated="true" android:usesCleartextTraffic="true">
         <!-- 三星 Z Flip 外屏 (Flex Window) 允许显示 -->
         <meta-data android:name="com.samsung.android.foldable.support.cover" android:value="true" />
         <meta-data android:name="android.max_aspect" android:value="2.5" />
