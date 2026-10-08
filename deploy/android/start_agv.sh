@@ -47,6 +47,12 @@ fi
 # 上次没停干净留下的残留进程 (见 agv_common.sh: agv_orphans) 先清掉，否则它们占着的端口会让新实例的 Nav2 起不来
 O=$(agv_orphans); [ -n "$O" ] && { kill -9 $O 2>/dev/null; echo "[info] 清理上次残留的进程 $(echo $O | wc -w) 个"; }
 
+# ---- 安卓助手 (平台「运维管理」安装 APK、打开面板、无线调试 adb 用；只监听本机 8067)
+if [ -f ~/android_helper.py ] && ! pgrep -f "^([^ ]*/)?python3? [^ ]*android_helper.py" >/dev/null; then
+    nohup python3 ~/android_helper.py > ~/android_helper.log 2>&1 < /dev/null &
+    echo "[info] 安卓助手 :8067 已启动"
+fi
+
 # ---- 1. proot 派生服务
 if [ "${AGV_SPAWNER_OFF:-0}" != 1 ] && ! http_ok http://127.0.0.1:8069/health; then
     SPAWNER_DISTRO="$AGV_DISTRO" nohup python3 ~/proot_spawner.py > ~/spawner.log 2>&1 < /dev/null &

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-通过 SSH 接入计算节点: 平台用用户在「添加计算节点」里填的 IP / SSH 端口 / 用户名 / 密码登录目标设备，
-把节点代理 (agent + common，纯 Python 标准库) 拷过去，用一次性令牌 (平台内部生成，不给用户看) 在后台启动，
-代理随后自己向平台注册 (之后走心跳，和原来的令牌接入完全一样)。
+通过 SSH 接入计算节点 (安装基础环境): 平台用用户在「添加计算节点」里填的 IP / SSH 端口 / 用户名 / 密码登录目标设备，
+检查基础环境 (python3、Docker)，把节点程序 (agent + common，纯 Python 标准库) 拷过去，以「基础监测」角色 (AGENT_ROLE=monitor)
+用一次性令牌 (平台内部生成，不给用户看) 在后台启动: 只上报 CPU/内存/温度/磁盘等状态，不接受部署。
+第一次在该节点部署仿真时，平台把它切换为完整运行环境 (POST /api/v1/admin/role)，之后照常部署。
 
   - 密码只用于这一次登录，不写入平台数据库
   - 目标设备需要 python3 (>= 3.8)；有 Docker 时代理用 Docker 运行仿真实例，没有时用进程方式
@@ -29,17 +30,18 @@ REMOTE = r'''
 D="$HOME/.agv-agent"; mkdir -p "$D/app" || exit 10
 command -v python3 >/dev/null 2>&1 || { echo "AGVERR 目标设备没有 python3"; exit 11; }
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' || { echo "AGVERR 目标设备的 python3 版本过低 (需要 3.8 以上)"; exit 12; }
-cd "$D/app" && rm -rf agent common && base64 -d | tar xzf - || { echo "AGVERR 解包节点代理失败"; exit 13; }
+cd "$D/app" && rm -rf agent common && base64 -d | tar xzf - || { echo "AGVERR 解包失败"; exit 13; }
 # 停掉之前装的代理 (本方式启动的进程，或 deploy.sh 起的 agv-agent 容器)，避免端口冲突
 if [ -f "$D/agent.pid" ] && kill -0 "$(cat "$D/agent.pid")" 2>/dev/null; then kill "$(cat "$D/agent.pid")"; sleep 1; fi
 command -v docker >/dev/null 2>&1 && docker rm -f agv-agent >/dev/null 2>&1
-export HUB_API=__HUB__ JOIN_TOKEN=__TOKEN__ AGENT_KIND=__KIND__ AGENT_HOST=__HOST__ AGENT_DATA="$D" PYTHONDONTWRITEBYTECODE=1
+export HUB_API=__HUB__ JOIN_TOKEN=__TOKEN__ AGENT_KIND=__KIND__ AGENT_HOST=__HOST__ AGENT_DATA="$D" AGENT_ROLE=monitor PYTHONDONTWRITEBYTECODE=1
 __NAME__
 nohup python3 -m agent.server > "$D/agent.log" 2>&1 < /dev/null &
 echo $! > "$D/agent.pid"
 sleep 4
-if ! kill -0 "$(cat "$D/agent.pid")" 2>/dev/null; then echo "AGVERR 节点代理启动后退出:"; tail -n 15 "$D/agent.log"; exit 14; fi
-echo "AGVOK $(uname -m) $(python3 -V 2>&1)"
+if ! kill -0 "$(cat "$D/agent.pid")" 2>/dev/null; then echo "AGVERR 基础监测程序启动后退出:"; tail -n 15 "$D/agent.log"; exit 14; fi
+DK="无 Docker"; if command -v docker >/dev/null 2>&1; then V=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -1); DK="Docker ${V:-(当前用户无权访问 Docker 服务)}"; fi
+echo "AGVOK $(uname -m) · $(python3 -V 2>&1) · $DK"
 '''
 
 
@@ -121,7 +123,7 @@ def _run_openssh(ip, port, user, password, cmd, data, timeout) -> Tuple[int, str
 
 def install_agent(ip: str, port: int, user: str, password: str, hub_url: str, token: str, kind: str, name: str = "",
                   timeout: int = 90) -> str:
-    """登录目标设备安装并启动节点代理；成功返回目标设备简况，失败抛 ApiError (带中文原因)"""
+    """登录目标设备安装基础环境 (基础监测)；成功返回目标设备简况，失败抛 ApiError (带中文原因)"""
     script = (REMOTE.replace("__HUB__", shlex.quote(hub_url)).replace("__TOKEN__", shlex.quote(token))
               .replace("__KIND__", shlex.quote(kind)).replace("__HOST__", shlex.quote(ip))
               .replace("__NAME__", f"export AGENT_NAME={shlex.quote(name)}" if name else ""))
@@ -134,5 +136,5 @@ def install_agent(ip: str, port: int, user: str, password: str, hub_url: str, to
         rc, out = _run_openssh(ip, port, user, password, cmd, data, timeout)
     if rc != 0 or "AGVOK" not in out:
         msg = "\n".join(l.replace("AGVERR ", "") for l in out.strip().splitlines()[-16:]) or f"退出码 {rc}"
-        raise ApiError(502, f"在 {ip} 上启动节点代理失败: {msg}", "agent_start")
-    return out.strip().splitlines()[-1].replace("AGVOK ", "")
+        raise ApiError(502, f"在 {ip} 上安装基础环境失败: {msg}", "agent_start")
+    return next(l for l in reversed(out.splitlines()) if l.startswith("AGVOK ")).replace("AGVOK ", "").strip()

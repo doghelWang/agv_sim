@@ -5,16 +5,17 @@ import { $, $$, esc, fmt, hub, http, upload, download, toast, guard, icons, moda
   user, CHASSIS_LABEL, sleep } from './core.js';
 import { drawSceneThumb, modelTopSVG, decodePGM, parseMapYaml } from './viz2d.js';
 import { ModelView, SceneView } from './viz3d.js';
+import * as Ops from './ops.js';
 
 const S = { page: null, timer: null, overview: null };
 const main = () => $('#platform-main');
 export function setOverview(o) { S.overview = o; }
-export function leave() { clearInterval(S.timer); S.timer = null; }
+export function leave() { clearInterval(S.timer); S.timer = null; Ops.leave(); }
 
 export async function show(page) {
   leave();
   S.page = page;
-  const fn = { overview: pOverview, compute: pCompute, models: pModels, scenes: pScenes, software: pSoftware, records: pRecords }[page] || pOverview;
+  const fn = { overview: pOverview, compute: pCompute, models: pModels, scenes: pScenes, software: pSoftware, records: pRecords, ops: () => Ops.render(main()) }[page] || pOverview;
   await guard(fn)();
   icons(main());
   if (page === 'overview' || page === 'compute') {
@@ -215,7 +216,7 @@ async function pCompute() {
       <div class="flex justify-between items-start"><div class="min-w-0"><div class="text-sm font-bold font-mono text-slate-800">${esc(n.lan_host)}</div>
         <div class="text-xs text-slate-600 mt-0.5">${esc(n.name)} (${n.cpu_count || '?'}核/${n.mem_total ? Math.round(n.mem_total / 1073741824) + 'G' : '?'}) · ${esc(n.arch || '')}</div></div>${st}</div>
       <div class="text-[11px] text-slate-400 mt-2 truncate">系统: ${esc(n.os || '—')} | ${esc(n.runtime?.runtime || '—')} ${esc(n.runtime?.version || '')} | 代理端口: ${n.api_port}${n.temp_c ? ` | ${n.temp_c}°C` : ''}</div>
-      <div class="text-[11px] text-slate-400 mt-1">镜像: ${n.images.map(i => esc(i.ref)).join(', ') || '无'}${n.agent_error ? ` · <span class="text-rose-500">${esc(n.agent_error)}</span>` : ''}</div></div>`;
+      <div class="text-[11px] text-slate-400 mt-1">${n.role === 'monitor' ? '<span class="text-blue-600">基础监测 (首次部署时启用运行环境)</span> · ' : ''}镜像: ${n.images.map(i => esc(i.ref)).join(', ') || '无'}${n.agent_error ? ` · <span class="text-rose-500">${esc(n.agent_error)}</span>` : ''}</div></div>`;
   };
   main().innerHTML = header('计算资源池', `<button class="btn-primary" data-add><i data-lucide="plus" class="w-3.5 h-3.5"></i>添加计算节点</button>`) +
     KINDS.map(([k, t, c]) => {
@@ -236,20 +237,20 @@ function openAddNode() {
       <div><label class="lbl">部署端口 (SSH)</label><input class="inp font-mono" data-f="ssh_port" type="number" min="1" max="65535" value="22"></div>
       <div><label class="lbl">用户名</label><input class="inp font-mono" data-f="username" autocomplete="off"></div>
       <div><label class="lbl">密码</label><input class="inp font-mono" data-f="password" type="password" autocomplete="new-password"></div></div>
-      <div class="text-[11px] text-slate-500 leading-relaxed mt-3">平台用以上 SSH 信息登录目标设备，安装并启动节点代理，代理随后自动注册到平台。目标设备需要 python3 (3.8 以上)；有 Docker 时仿真实例用 Docker 运行。密码只用于本次登录，平台不保存。</div>
+      <div class="text-[11px] text-slate-500 leading-relaxed mt-3">平台用以上 SSH 信息登录目标设备，检查并安装基础环境 (只做状态监测：CPU、内存、温度、磁盘)，随后节点出现在资源池里。仿真运行环境在第一次部署到该节点时再启用。目标设备需要 python3 (3.8 以上)；有 Docker 时仿真实例用 Docker 运行。密码只用于本次登录，平台不保存。</div>
       <div data-res class="mt-3 text-xs"></div>`,
-    footer: `<button data-close class="btn-ghost">取消</button><button data-ok class="btn-primary">添加节点</button>` });
+    footer: `<button data-close class="btn-ghost">取消</button><button data-ok class="btn-primary">添加并安装基础环境</button>` });
   const res = $('[data-res]', m.el), ok = $('[data-ok]', m.el);
   ok.onclick = async () => {
     const b = {}; $$('[data-f]', m.el).forEach(i => b[i.dataset.f] = i.value.trim());
     b.password = $('[data-f=password]', m.el).value;
     if (!b.ip || !b.username || !b.password) { res.innerHTML = '<div class="text-rose-600">请填写节点 IP、用户名和密码</div>'; return; }
     ok.disabled = true;
-    res.innerHTML = `<div class="flex items-center gap-2 text-blue-600"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i>正在登录 ${esc(b.ip)}:${esc(b.ssh_port || '22')} 并安装节点代理…</div>`; icons(m.el);
+    res.innerHTML = `<div class="flex items-center gap-2 text-blue-600"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i>正在登录 ${esc(b.ip)}:${esc(b.ssh_port || '22')} 并安装基础环境…</div>`; icons(m.el);
     try {
       const r = await hub.post('/nodes/add', b);
       const n = r.node;
-      res.innerHTML = `<div class="flex items-center gap-2 text-emerald-700"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>节点 ${esc(n.name)} (${esc(n.lan_host)}, ${esc(n.arch || '')}) 已接入</div>`;
+      res.innerHTML = `<div class="flex items-center gap-2 text-emerald-700"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>节点 ${esc(n.name)} (${esc(n.lan_host)}) 已接入: ${esc(r.agent || '')}</div>`;
       ok.textContent = '完成'; ok.disabled = false; ok.onclick = () => m.close();
       show('compute');
     } catch (e) {

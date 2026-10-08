@@ -52,6 +52,8 @@ class Hub:
         self.scenes.seed_builtins()
         self._seed_models()
         self.dep = Deployer(self.s, self.nodes, self.packages, self.models, self.scenes, port)
+        from hub.admin import Admin
+        self.admin = Admin(self)
 
     def _seed_models(self):
         if self.s.list("models"):
@@ -198,7 +200,7 @@ def build_api(hub: Hub) -> RestServer:
     R("POST", P + "/nodes/enroll", enroll, "生成节点接入令牌与命令")
 
     def add_node(q):
-        """SSH 接入: {kind, note, ip, ssh_port, username, password} → 登录目标设备装好并启动节点代理，等它注册上来"""
+        """SSH 接入: {kind, note, ip, ssh_port, username, password} → 登录目标设备安装基础环境 (基础监测)，等它注册上来"""
         from hub.sshjoin import install_agent, local_ip_towards
         b = q.json
         ip, usr, pw = str(b.get("ip", "")).strip(), str(b.get("username", "")).strip(), str(b.get("password", ""))
@@ -226,7 +228,7 @@ def build_api(hub: Hub) -> RestServer:
                 n = hub.nodes.get(tk["node_id"])
                 return {"node": hub.nodes.view(n, hub.dep.list()), "agent": brief, "hub_url": hub_url}
             time.sleep(0.5)
-        raise ApiError(504, f"节点代理已在 {ip} 启动 ({brief})，但 20 秒内没有注册到平台。请确认该设备能访问 {hub_url}"
+        raise ApiError(504, f"基础监测已在 {ip} 启动 ({brief})，但 20 秒内没有注册到平台。请确认该设备能访问 {hub_url}"
                             f" (日志在目标设备 ~/.agv-agent/agent.log)", "agent_no_register")
     R("POST", P + "/nodes/add", add_node, "SSH 接入计算节点 {kind,note,ip,ssh_port,username,password} (密码不保存)")
     R("POST", P + "/nodes/register", lambda q: hub.nodes.register(q.json, (q.client or ("127.0.0.1",))[0]), "节点代理注册")
@@ -240,6 +242,44 @@ def build_api(hub: Hub) -> RestServer:
         url = f"http://{hub.nodes.addr_between(a, b)}:{b.get('api_port', 8070)}/api/v1/health"
         return hub.nodes.client(a).call("POST", "/api/v1/probe", {"url": url})
     R("POST", P + "/nodes/probe", probe_link, "探测两节点之间的连通性 {from,to}")
+
+    # ---- 运维管理 (管理员密码；hub/admin.py)
+    A = P + "/admin"
+    adm = hub.admin
+
+    def tok(q):
+        return q.headers.get("X-Admin-Token") or q.q("token") or ""
+
+    def need(fn):
+        def h(q):
+            adm.check(tok(q))
+            return fn(q)
+        return h
+    R("GET", A + "/state", lambda q: adm.state(tok(q)), "运维登录状态")
+    R("POST", A + "/setup", lambda q: adm.setup(q.json.get("password", "")), "首次设置管理员密码")
+    R("POST", A + "/login", lambda q: adm.login(q.json.get("password", "")), "管理员登录")
+    R("POST", A + "/logout", lambda q: adm.logout(tok(q)), "退出登录")
+    R("POST", A + "/password", need(lambda q: adm.change_pw(q.json.get("old", ""), q.json.get("new", ""))), "修改管理员密码")
+    R("GET", A + "/services", need(lambda q: adm.services()), "服务状态")
+    R("POST", A + "/restart", need(lambda q: adm.restart(q.json.get("target", ""), user(q))), "重启 {target: hub|agent}")
+    R("GET", A + "/logs", need(lambda q: {"logs": adm.logs()}), "日志文件列表")
+    R("GET", A + "/logs/{name}", need(lambda q: BinaryBody(adm.log_file(q.params["name"]), {
+        "Content-Disposition": f'attachment; filename="{q.params["name"]}"'}, "text/plain; charset=utf-8")), "下载日志")
+    R("GET", A + "/updates", need(lambda q: {"updates": adm.updates(), "current": adm.version()}), "更新包列表")
+    R("POST", A + "/updates/upload", need(lambda q: adm.upload(q.raw, user(q))), "上传更新包 (请求体为 .tgz)")
+    R("GET", A + "/updates/{uid}", need(lambda q: adm.view(q.params["uid"])), "更新包详情与预览")
+    R("POST", A + "/updates/{uid}/apply", need(lambda q: adm.apply(q.params["uid"], q.json, user(q))), "应用更新 {restart_instances}")
+    R("POST", A + "/updates/{uid}/rollback", need(lambda q: adm.rollback(q.params["uid"], q.json, user(q))), "回滚最近一次更新")
+    R("DELETE", A + "/updates/{uid}", need(lambda q: adm.delete_update(q.params["uid"])), "删除更新包")
+    R("GET", A + "/jobs", need(lambda q: {"jobs": adm.jobs(), "current": adm.job and adm.job.get("id")}), "运维任务")
+    R("GET", A + "/jobs/{jid}", need(lambda q: adm.job_view(q.params["jid"])), "运维任务详情")
+    R("GET", A + "/apps", need(lambda q: adm.apps()), "App 列表与安装状态")
+    R("POST", A + "/apps/upload", need(lambda q: adm.app_upload(q.raw, q.q("filename", ""), user(q))), "上传 APK (请求体为文件)")
+    R("DELETE", A + "/apps/{aid}", need(lambda q: adm.app_delete(q.params["aid"])), "删除 APK")
+    R("POST", A + "/apps/{aid}/install", need(lambda q: adm.app_install(q.params["aid"], q.json.get("mode", "prompt"), q.json.get("serial", ""))),
+      "安装 APK {mode: prompt|adb, serial}")
+    R("POST", A + "/adb/{action}", need(lambda q: adm.adb(q.params["action"], q.json)), "手机无线调试 adb: pair|connect|disconnect|mdns")
+    R("POST", A + "/panel", need(lambda q: adm.panel(q.json.get("action", "open"))), "外屏面板 open|close")
 
     # ---- 车辆模型
     R("GET", P + "/models", lambda q: {"models": hub.models.list()}, "车辆模型")

@@ -214,6 +214,8 @@ class Agent:
         self.jobs: Dict[str, dict] = {}
         self.hub_online = False
         self.last_error = ""
+        # monitor = 只做基础监测 (平台「添加计算节点」时装的)，第一次部署实例时平台切换成 full；状态文件里的设置优先
+        self.role = self.state.get("role") or os.environ.get("AGENT_ROLE", "full")
 
     # ------------------------------------------------------------------ 状态文件
     def _load_state(self) -> dict:
@@ -237,6 +239,8 @@ class Agent:
 
     # ------------------------------------------------------------------ 信息
     def info(self, full: bool = True) -> dict:
+        if self.last_error.startswith(("镜像列表", "容器列表")):
+            self.last_error = ""
         try:
             images = self.rt.images()
         except Exception as e:
@@ -251,7 +255,7 @@ class Agent:
              "cpu_percent": self.sys.cpu_percent(), "mem": self.sys.mem(), "temp_c": self.sys.temp(),
              "load": list(os.getloadavg()) if hasattr(os, "getloadavg") else [], "disk": free_disk(self.data),
              "model": self.sys.model(), "os": self.sys.os_name(), "ips": self.sys.ips(), "kind": self.kind, "runtime": self.rt.describe(),
-             "agent_version": AGENT_VERSION, "api_port": self.port, "advertise_host": self.advertise,
+             "agent_version": AGENT_VERSION, "role": self.role, "api_port": self.port, "advertise_host": self.advertise,
              "images": images, "containers": conts, "port_range": [self.port_lo, self.port_hi],
              "reservations": self.state.get("reservations", {}), "last_error": self.last_error, "time": time.time()}
         if full:
@@ -305,6 +309,8 @@ class Agent:
             try:
                 self._hub("POST", f"/api/hub/nodes/{self.state['node_id']}/heartbeat", self.info())
                 self.hub_online = True
+                if self.last_error.startswith("心跳失败"):       # 平台重启时短暂连不上，恢复后不再挂着旧错误
+                    self.last_error = ""
             except ApiError as e:
                 self.hub_online = e.status < 500
                 if e.status in (401, 404):
@@ -444,18 +450,27 @@ def build_api(ag: Agent) -> RestServer:
             return fn(q)
         return w
 
+    def full(fn):
+        """部署类操作: 只装了基础监测的节点 (role=monitor) 拒绝，平台部署前会先切换成 full"""
+        def w(q):
+            ag.check(q)
+            if ag.role == "monitor":
+                raise ApiError(409, "该节点只安装了基础监测，部署时由平台启用运行环境", "monitor_only")
+            return fn(q)
+        return w
+
     R("GET", "/api/v1/info", auth(lambda q: ag.info()), "节点信息")
-    R("POST", "/api/v1/ports/allocate", auth(lambda q: {"ports": ag.allocate(q.json["instance"], q.json.get("names") or ["port"])}),
+    R("POST", "/api/v1/ports/allocate", full(lambda q: {"ports": ag.allocate(q.json["instance"], q.json.get("names") or ["port"])}),
       "分配端口 {instance, names[]}")
     R("POST", "/api/v1/ports/release", auth(lambda q: ag.release(q.json["instance"]) or {"ok": True}), "释放端口")
-    R("POST", "/api/v1/images/ensure", auth(lambda q: ag.ensure_image(q.json["ref"], q.json.get("package_url"))),
+    R("POST", "/api/v1/images/ensure", full(lambda q: ag.ensure_image(q.json["ref"], q.json.get("package_url"))),
       "确保镜像存在 (缺失时从平台下载并导入)")
     R("POST", "/api/v1/images/export", auth(lambda q: ag.export_image(q.json["ref"], q.json["upload_url"])),
       "导出本机镜像并上传到平台")
     R("GET", "/api/v1/jobs/{jid}", auth(lambda q: ag.jobs.get(q.params["jid"]) or (_ for _ in ()).throw(ApiError(404, "无此任务"))),
       "任务进度")
     R("GET", "/api/v1/containers", auth(lambda q: {"containers": ag.rt.list()}), "托管容器")
-    R("POST", "/api/v1/containers/run", auth(lambda q: ag.run(q.json)), "启动容器 {name,image,role,instance,env}")
+    R("POST", "/api/v1/containers/run", full(lambda q: ag.run(q.json)), "启动容器 {name,image,role,instance,env}")
 
     def cstatus(q):
         s = ag.rt.status(q.params["name"])
@@ -481,6 +496,27 @@ def build_api(ag: Agent) -> RestServer:
         except Exception as e:
             return {"ok": False, "error": str(e), "ms": round((time.time() - t0) * 1000, 1)}
     R("POST", "/api/v1/probe", auth(probe), "探测 URL 连通性 {url}")
+
+    def self_restart(q):
+        """平台运维: 代码更新后重启本代理 (exec 自身，环境变量与工作目录不变)。实例进程由平台先停止、之后重新部署"""
+        def go():
+            time.sleep(1.0)
+            log("按平台请求重启 (exec)")
+            sys.stdout.flush(); sys.stderr.flush()
+            os.execv(sys.executable, [sys.executable, "-m", "agent.server"])
+        threading.Thread(target=go, daemon=True).start()
+        return {"ok": True}
+    R("POST", "/api/v1/admin/restart", auth(self_restart), "重启节点代理 (平台运维)")
+
+    def set_role(q):
+        r = q.json.get("role")
+        if r not in ("monitor", "full"):
+            raise ApiError(400, "role 只能是 monitor 或 full")
+        ag.role = ag.state["role"] = r
+        ag._save_state()
+        log(f"角色切换为 {r}")
+        return {"ok": True, "role": r, "info": ag.info(full=False)}
+    R("POST", "/api/v1/admin/role", auth(set_role), "切换节点角色 {role: monitor|full} (平台部署前启用运行环境)")
     R("DELETE", "/api/v1/instances/{iid}", auth(lambda q: ag.release(q.params["iid"]) or {"ok": True}), "释放实例资源")
     return api
 

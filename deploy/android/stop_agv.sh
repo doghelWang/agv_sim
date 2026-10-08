@@ -5,6 +5,7 @@
 . ~/agv_common.sh
 echo "=== 停止 AMR 仿真节点 ($AGV_DISTRO) ==="
 pkill -f "^([^ ]*/)?python3? [^ ]*proot_spawner.py" 2>/dev/null
+pkill -f "^([^ ]*/)?python3? [^ ]*android_helper.py" 2>/dev/null
 pkill -f "^([^ ]*/)?gpucastd 8068" 2>/dev/null
 kill "$(cat ~/.agv_front.pid 2>/dev/null)" 2>/dev/null; rm -f ~/.agv_front.pid
 sleep 0.5

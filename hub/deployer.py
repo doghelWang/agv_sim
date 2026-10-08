@@ -189,7 +189,15 @@ class Deployer:
             sim_p, nav_p = self.pk.get(i["sim_pkg"]), self.pk.get(i["nav_pkg"])
             ag_s.call("GET", "/api/v1/health", timeout=5)
             ag_n.call("GET", "/api/v1/health", timeout=5)
-            self._step(iid, "check", "done", f"仿真 {sim_n['name']} · 执行 {nav_n['name']}")
+            enabled = []
+            for node, ag in {sim_n["id"]: (sim_n, ag_s), nav_n["id"]: (nav_n, ag_n)}.values():
+                if ((node.get("info") or {}).get("role")) == "monitor":   # 只装了基础监测: 第一次部署时启用运行环境
+                    self._step(iid, "check", "running", f"节点 {node['name']} 首次部署，启用运行环境…")
+                    r = ag.call("POST", "/api/v1/admin/role", {"role": "full"}, timeout=15)
+                    info = dict(node.get("info") or {}, **(r.get("info") or {}), role="full")
+                    self.s.update("nodes", node["id"], info=info)
+                    enabled.append(node["name"])
+            self._step(iid, "check", "done", f"仿真 {sim_n['name']} · 执行 {nav_n['name']}" + (f" · 已启用运行环境: {'、'.join(enabled)}" if enabled else ""))
 
             # ---- 端口
             self._step(iid, "ports", "running")

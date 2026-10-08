@@ -62,7 +62,7 @@ echo '已同步到 /opt/agv'
 " || exit 1
 # Termux 侧脚本 (启动/停止/状态/更新/派生服务/开机自启) 随仓库更新
 R="$AGV_ROOTFS/opt/agv/deploy/android"
-for f in agv_common.sh start_agv.sh stop_agv.sh status_agv.sh update_from_git.sh proot_spawner.py keep_front.sh bench_nav.py nav_profile.py prof_stat.py wobble.py wobble_stat.py; do
+for f in agv_common.sh start_agv.sh stop_agv.sh status_agv.sh update_from_git.sh proot_spawner.py android_helper.py keep_front.sh bench_nav.py nav_profile.py prof_stat.py wobble.py wobble_stat.py; do
     cp "$R/$f" ~/"$f" && chmod +x ~/"$f"
 done
 # GPU 射线求交服务: 在 Termux 里 (不是容器里) 编译，要用系统的 C 库才能加载厂商 OpenCL 驱动；没有 cc 就跳过 (pkg install clang)

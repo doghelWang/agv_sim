@@ -91,7 +91,7 @@ class NodeRegistry:
                 "instances": [{"id": i["id"], "name": i.get("name"), "operator": i.get("operator"), "role":
                                "sim+nav" if i.get("sim_node") == i.get("nav_node") else ("sim" if i.get("sim_node") == n["id"] else "nav")}
                               for i in mine],
-                "agent_error": info.get("last_error"), "history": n.get("history", [])[-60:], "created": n.get("created")}
+                "agent_error": info.get("last_error"), "role": info.get("role") or "full", "history": n.get("history", [])[-60:], "created": n.get("created")}
 
     # ------------------------------------------------------------------ 地址
     @staticmethod
