@@ -14,6 +14,7 @@ AGV_SPAWNER=http://127.0.0.1:8069 时走派生服务 (见 deploy/android/proot_s
 """
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -116,6 +117,24 @@ def popen(name, argv, cwd=None, env=None, log=None, stdout=None, cpus=None, top_
     elif log:
         kw.update(stdout=open(log, "ab", buffering=0), stderr=subprocess.STDOUT)
     return subprocess.Popen(list(argv), cwd=cwd, env=env, start_new_session=True, **kw)
+
+
+def respawn(name: str, argv, log=None, wait_s: float = 2.0):
+    """用新进程替换当前服务 (平台/节点代理自更新后重启)，当前进程随即退出。
+    Android 上经派生服务在新的 proot 会话里启动: 旧进程所在的 proot-distro 会话带 --kill-on-exit，
+    在里面起的子进程会随旧进程一起被结束；os.execv 则会让多线程进程在 proot 里段错误。
+    没有派生服务时 (Linux 板卡 / Docker) 用脱离会话的子进程。"""
+    cmd = f"sleep {wait_s}; exec " + " ".join(shlex.quote(a) for a in argv)
+    if available():
+        popen(name, ["bash", "-c", cmd], cwd=os.getcwd(), env=dict(os.environ), log=log, top_level=True)
+    else:
+        kw = {}
+        if log:
+            kw.update(stdout=open(log, "ab", buffering=0), stderr=subprocess.STDOUT)
+        subprocess.Popen(["/bin/sh", "-c", cmd], cwd=os.getcwd(), env=dict(os.environ), stdin=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True, **kw)
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(0)
 
 
 def killpg(p, sig):

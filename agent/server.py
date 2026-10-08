@@ -498,12 +498,15 @@ def build_api(ag: Agent) -> RestServer:
     R("POST", "/api/v1/probe", auth(probe), "探测 URL 连通性 {url}")
 
     def self_restart(q):
-        """平台运维: 代码更新后重启本代理 (exec 自身，环境变量与工作目录不变)。实例进程由平台先停止、之后重新部署"""
+        """平台运维: 代码更新后重启本代理 (新进程，环境变量与工作目录不变)。实例进程由平台先停止、之后重新部署"""
         def go():
             time.sleep(1.0)
             log("按平台请求重启 (exec)")
             sys.stdout.flush(); sys.stderr.flush()
-            os.execv(sys.executable, [sys.executable, "-m", "agent.server"])
+            from common import spawn   # 见 common.spawn.respawn (proot 下不能 exec，也不能在旧会话里起子进程)
+            th = "/data/data/com.termux/files/home"
+            spawn.respawn("agv-agent", [sys.executable, "-m", "agent.server"],
+                          log=os.path.join(th, "agent.log") if os.path.isdir(th) else None)
         threading.Thread(target=go, daemon=True).start()
         return {"ok": True}
     R("POST", "/api/v1/admin/restart", auth(self_restart), "重启节点代理 (平台运维)")

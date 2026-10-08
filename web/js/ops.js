@@ -157,7 +157,8 @@ async function openJob(jid) {
     } catch (e) {
       if (e.status === 401) { $('[data-st]', m.el).textContent = '平台已重启，请重新登录后查看结果'; break; }
       down++;
-      $('[data-st]', m.el).textContent = down > 2 ? '平台重启中，等待恢复…' : e.message;
+      $('[data-st]', m.el).textContent = down > 40 ? '平台 1 分钟内没有恢复：请在手机 Termux 里执行 bash ~/start_agv.sh，或查看 ~/hub.log'
+        : down > 2 ? '平台重启中，等待恢复…' : e.message;
     }
     await sleep(1500);
   }

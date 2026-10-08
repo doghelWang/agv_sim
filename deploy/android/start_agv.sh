@@ -68,7 +68,7 @@ if remote_hub; then
     HUB="$HUB_API"; TOKEN="$JOIN_TOKEN"; ADV="AGENT_HOST=${AGENT_HOST:-$(wlan_ip)}"
 else
     if ! http_ok "http://127.0.0.1:$AGV_HUB_PORT/api/hub/health"; then
-        nohup proot-distro login "$AGV_DISTRO" -- bash -c "cd /opt/agv && HUB_PORT=$AGV_HUB_PORT python3 -m hub.server" > ~/hub.log 2>&1 < /dev/null &
+        nohup proot-distro login "$AGV_DISTRO" -- bash -c "cd /opt/agv && $SPAWNER_ENV HUB_PORT=$AGV_HUB_PORT python3 -m hub.server" > ~/hub.log 2>&1 < /dev/null &
         echo "[info] 资源平台 :$AGV_HUB_PORT 启动中"
         for i in $(seq 1 60); do http_ok "http://127.0.0.1:$AGV_HUB_PORT/api/hub/health" && break; sleep 1; done
     fi

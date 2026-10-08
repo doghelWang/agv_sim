@@ -166,6 +166,9 @@ class Admin:
         self.lock = threading.Lock()
         self.job: Optional[dict] = None  # 正在执行的任务
         self.started = time.time()
+        if os.path.isdir(TERMUX_HOME) and not os.environ.get("AGV_SPAWNER"):
+            from common import spawn          # 手机: 平台由 start_agv.sh 启动时没带派生服务地址，补上 (编译、自重启要用)
+            spawn.SPAWNER = os.environ["AGV_SPAWNER"] = "http://127.0.0.1:8069"
 
     # ------------------------------------------------------------------ 鉴权
     def _tok_path(self):
@@ -694,11 +697,14 @@ class Admin:
                 self._wait_instances(insts)
 
     def _restart_hub_later(self, delay: float = 1.5):
+        """平台自身重启: 新进程 (等 2 秒端口释放后启动平台)，本进程退出；见 common.spawn.respawn"""
         def go():
             time.sleep(delay)
-            log("平台按运维请求重启 (exec)")
+            log("平台按运维请求重启")
             sys.stdout.flush(); sys.stderr.flush()
-            os.execv(sys.executable, [sys.executable, "-m", "hub.server"])
+            from common import spawn
+            logp = os.path.join(TERMUX_HOME, "hub.log")
+            spawn.respawn("agv-hub", [sys.executable, "-m", "hub.server"], log=logp if os.path.isdir(TERMUX_HOME) else None)
         threading.Thread(target=go, daemon=True).start()
 
     def restart(self, target: str, by: str = "", node_id: str = "") -> dict:
