@@ -136,7 +136,7 @@ async function send(method, url, body) {
   try {
     const r = await fetch(url, { method, signal: c.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error((d.error && (d.error.message || d.error)) || d.message || d.detail || ("HTTP " + r.status));
+    if (!r.ok) throw new Error(d.detail || (d.error && (d.error.message || d.error)) || d.message || ("HTTP " + r.status));
     return d;
   } finally { clearTimeout(t); }
 }

@@ -134,7 +134,8 @@ def _camera_body(d: dict, stream, fmt):
 
 
 def build_api(svc: SimService, port: int = 8090) -> RestServer:
-    api = RestServer("sim", port=port)
+    api = RestServer("sim", port=port, title="仿真进程 sim_server",
+                     description="MuJoCo 物理仿真: 车型、场景、障碍物、传感器 (激光/相机/IMU/光电/触边/读码)、IO、速度指令、推送流")
     R = api.route
 
     R("GET", "/api/v1/health", lambda q: {"service": "sim", "api_version": API_VERSION, "ok": True,
@@ -241,7 +242,7 @@ def build_api(svc: SimService, port: int = 8090) -> RestServer:
             raise ApiError(400, "需要障碍物数组")
         svc.set_obstacles(obs)
         return {"count": len(obs)}
-    R("PUT", "/api/v1/world/obstacles", put_obs, "设置动态障碍物")
+    R("PUT", "/api/v1/world/obstacles", put_obs, "设置动态障碍物 (请求体为数组，元素 {x, y, w, h, z, yaw, motion})")
 
     # ---- 仿真控制
     R("GET", "/api/v1/sim", lambda q: svc.sim_status(), "仿真状态/性能")
@@ -275,7 +276,7 @@ def build_api(svc: SimService, port: int = 8090) -> RestServer:
         return _jsonable_scan(d)
     R("GET", "/api/v1/sensors/lidars/{name}", get_lidar, "激光帧 (长轮询/二进制)")
     R("GET", "/api/v1/sensors/scan", lambda q: get_lidar(q, "merged"), "融合扫描")
-    R("PUT", "/api/v1/sensors/lidar_config", lambda q: svc.set_lidar_config(q.json), "激光配置")
+    R("PUT", "/api/v1/sensors/lidar_config", lambda q: svc.set_lidar_config(q.json), "激光配置 {beams, range_max, freq_hz, sensor_resolution_deg}")
 
     # ---- 相机类 (单目 / 双目 / ToF)
     R("GET", "/api/v1/sensors/cameras", lambda q: {"cameras": svc.cameras()}, "相机清单 (内参/流/帧序号)")
@@ -319,7 +320,7 @@ def build_api(svc: SimService, port: int = 8090) -> RestServer:
     R("PUT", "/api/v1/control/cmd_vel", put_cmd, "速度指令 (执行进程 → 仿真)")
 
     R("GET", "/api/v1/nav/feedback", lambda q: svc.get_nav_feedback(), "导航回馈")
-    R("PUT", "/api/v1/nav/feedback", lambda q: svc.set_nav_feedback(q.json) or {"ok": True}, "执行进程回馈导航状态")
+    R("PUT", "/api/v1/nav/feedback", lambda q: svc.set_nav_feedback(q.json) or {"ok": True}, "执行进程回馈导航状态 (请求体为导航回馈对象，字段同 GET /api/v1/nav/feedback)")
 
     R("GET", "/api/v1/events", lambda q: {"events": svc.events_since(q.q("since", 0, int))}, "仿真事件")
     R("GET", "/api/v1/snapshot", lambda q: svc.snapshot(q.q("scans", False, bool)), "Web 汇总快照")

@@ -6,6 +6,7 @@ import { $, $$, esc, fmt, hub, http, upload, download, toast, guard, icons, moda
 import { drawSceneThumb, modelTopSVG, decodePGM, parseMapYaml } from './viz2d.js';
 import { ModelView, SceneView } from './viz3d.js';
 import * as Ops from './ops.js';
+import * as ApiDocs from './apidocs.js';
 
 const S = { page: null, timer: null, overview: null };
 const main = () => $('#platform-main');
@@ -15,7 +16,7 @@ export function leave() { clearInterval(S.timer); S.timer = null; Ops.leave(); }
 export async function show(page) {
   leave();
   S.page = page;
-  const fn = { overview: pOverview, compute: pCompute, models: pModels, scenes: pScenes, software: pSoftware, records: pRecords, ops: () => Ops.render(main()) }[page] || pOverview;
+  const fn = { overview: pOverview, compute: pCompute, models: pModels, scenes: pScenes, software: pSoftware, records: pRecords, ops: () => Ops.render(main()), apidocs: () => ApiDocs.render(main()) }[page] || pOverview;
   await guard(fn)();
   icons(main());
   if (page === 'overview' || page === 'compute') {

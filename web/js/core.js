@@ -37,7 +37,8 @@ export async function http(method, url, body, headers = {}) {
   }
   const ct = r.headers.get('content-type') || '';
   const j = ct.includes('json') ? await r.json().catch(() => ({})) : null;
-  if (!r.ok) throw new ApiError(r.status, (j && j.error && j.error.message) || j?.message || r.statusText, j?.error?.code);
+  // 错误体按 RFC 9457 (application/problem+json): detail 为说明、code 为错误码；旧服务的 {error:{code,message}} 也兼容
+  if (!r.ok) throw new ApiError(r.status, j?.detail || j?.error?.message || j?.message || r.statusText, j?.code || j?.error?.code);
   return j !== null ? j : r;
 }
 export const hub = {
@@ -57,7 +58,7 @@ export function upload(url, file, onProgress) {
     x.onload = () => {
       let j = {};
       try { j = JSON.parse(x.responseText || '{}'); } catch (e) { }
-      if (x.status >= 400) reject(new ApiError(x.status, j.error?.message || x.statusText)); else resolve(j);
+      if (x.status >= 400) reject(new ApiError(x.status, j.detail || j.error?.message || x.statusText, j.code || j.error?.code)); else resolve(j);
     };
     x.onerror = () => reject(new ApiError(0, '上传失败 (网络)'));
     x.send(file);

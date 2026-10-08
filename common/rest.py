@@ -6,8 +6,10 @@
   * 路由: 方法 + 路径模板 (/api/v1/sensors/lidars/{name})，处理函数返回 dict/list → JSON
   * 二进制: 处理函数返回 BinaryBody(bytes, headers) → application/octet-stream (点云等大数据)
   * HTTP/1.1 keep-alive (客户端复用连接，10~50 Hz 轮询开销低)
-  * 统一错误: {"error": {"code": ..., "message": ...}}；CORS 允许浏览器直接访问
-  * GET /api/v1 自动列出全部路由 (自描述)
+  * 错误: RFC 9457 Problem Details (application/problem+json)，兼容保留旧字段 {"error": {"code", "message"}}
+  * 自描述: GET {base} 列出全部路由 (响应头按 RFC 8631 带 Link: rel="service-desc")；
+           GET {base}/openapi.json 由路由表生成 OpenAPI 3.1 文档。base 默认 /api/v1 (路径版本号，见 docs/API.md)
+  * CORS 允许浏览器直接访问
 
 客户端 RestClient
   * 每线程一条持久连接；超时/断线自动重连；json()/binary() 两种取数
@@ -82,6 +84,97 @@ class RawBody:
         self.data, self.content_type, self.headers, self.status = data, content_type, headers or {}, status
 
 
+API_VERSION = "1.0.0"          # 接口契约版本 (语义化版本)；路径里的 v1 是它的主版本号
+API_DOC = "https://github.com/doghelWang/agv_sim/blob/main/docs/API.md"
+PROBLEM_TYPE = API_DOC + "#error"          # 各错误码的说明锚点: docs/API.md#error-<code>
+
+
+def problem(status: int, code: str, detail: str, instance: str = "") -> "RawBody":
+    """RFC 9457 Problem Details。扩展成员 code 为机器可读错误码；error 为兼容旧客户端保留"""
+    import http as _http
+    try:
+        title = _http.HTTPStatus(status).phrase
+    except ValueError:
+        title = "Error"
+    body = {"type": f"{PROBLEM_TYPE}-{code}" if code and code != "error" else "about:blank", "title": title, "status": status, "detail": detail,
+            "code": code, "error": {"code": code, "message": detail}}
+    if instance:
+        body["instance"] = instance
+    return RawBody(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                   "application/problem+json; charset=utf-8", status=status)
+
+
+def _doc_parts(doc: str):
+    """从路由说明里拆出: 摘要、请求体字段 ({a, b: x|y})、查询参数 (?k=v&k2)"""
+    doc = doc or ""
+    summary = re.split(r"\s[{?(]|[{?]", doc, 1)[0].strip() or doc.strip()
+    body = []
+    i = doc.find("{")
+    if i >= 0:
+        depth, j, cur = 0, i, ""
+        for j in range(i, len(doc)):
+            c = doc[j]
+            if c == "{":
+                depth += 1
+                if depth == 1:
+                    continue
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            if depth == 1 and c == ",":
+                body.append(cur); cur = ""
+            else:
+                cur += c
+        body.append(cur)
+        fields = []
+        for f in body:
+            f = f.strip()
+            m = re.match(r"^([A-Za-z_][\w]*)\s*(?::\s*(.*))?$", f, re.S)
+            if m:
+                fields.append((m.group(1), (m.group(2) or "").strip()))
+        body = fields
+    query = []
+    for m in re.finditer(r"[?&]([A-Za-z_]\w*)(?:=([^&\s)，,]*))?", doc):
+        query.append((m.group(1), m.group(2) or ""))
+    return summary, body, query
+
+
+def _handler_keys(fn, depth: int = 0):
+    """从处理函数源码里找出用到的请求体字段 (q.json["k"] / q.json.get("k")) 和查询参数 (q.q("k"))；
+    包装函数 (鉴权等) 顺着闭包往里找一层"""
+    import inspect
+    body, query = [], []
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError):
+        src = ""
+    if src.lstrip().startswith(("R(", "self.route(", "api.route(")) or "lambda" in src.split("\n", 1)[0]:
+        i = src.find("lambda")                       # 一行里的 lambda: 只看 lambda 之后
+        src = src[i:] if i >= 0 else src
+    for k in re.findall(r"""q\.json(?:\.get\(\s*|\[\s*)["'](\w+)["']""", src):
+        if k not in body:
+            body.append(k)
+    for var in set(re.findall(r"(\w+)\s*=\s*q\.json\b(?!\s*\.|\s*\[)", src)):     # b = q.json; b["x"] / b.get("x")
+        for k in re.findall(r"\b" + var + r"""(?:\.get\(\s*|\[\s*)["'](\w+)["']""", src):
+            if k not in body:
+                body.append(k)
+    for k in re.findall(r"""q\.q\(\s*["'](\w+)["']""", src):
+        if k not in query:
+            query.append(k)
+    if depth < 2 and getattr(fn, "__closure__", None):
+        for c in fn.__closure__:
+            try:
+                v = c.cell_contents
+            except ValueError:
+                continue
+            if callable(v) and getattr(v, "__code__", None) is not None and v is not fn:
+                b2, q2 = _handler_keys(v, depth + 1)
+                body += [k for k in b2 if k not in body]
+                query += [k for k in q2 if k not in query]
+    return body, query
+
+
 class FileBody:
     """流式发送本地文件 (大文件: 镜像包/场景包)，不整体读入内存"""
 
@@ -120,14 +213,16 @@ class Request:
 
 
 class RestServer:
-    def __init__(self, name: str, host: str = "", port: int = 8090):
+    def __init__(self, name: str, host: str = "", port: int = 8090, base: str = "/api/v1", title: str = "", description: str = ""):
         host = host or os.environ.get("AGV_BIND", "0.0.0.0")   # 单手机模式实例进程只监听本机 (平台部署时设置)
-        self.name, self.host, self.port = name, host, port
+        self.name, self.host, self.port, self.base = name, host, port, base.rstrip("/")
+        self.title, self.description = title or name, description
         self.routes: List[Tuple[str, re.Pattern, str, Callable, str]] = []
         self.fallback: Optional[Callable] = None
         self.mounts: List[Tuple[str, Callable]] = []     # (路径前缀, fn(handler)) 原始处理: 反向代理/流式上传/静态文件
         self.httpd = None
-        self.route("GET", "/api/v1", self._index, "列出全部接口")
+        self.route("GET", self.base, self._index, "列出全部接口 (响应头 Link 指向 OpenAPI 文档，RFC 8631)")
+        self.route("GET", self.base + "/openapi.json", lambda q: self.openapi(), "本服务的 OpenAPI 3.1 文档 (由路由表生成)")
 
     def route(self, method: str, template: str, fn: Callable, doc: str = ""):
         rx = "^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", template.rstrip("/")) + "/?$"
@@ -138,7 +233,70 @@ class RestServer:
         self.mounts.append((prefix, fn))
 
     def _index(self, req):
-        return {"service": self.name, "routes": [{"method": m, "path": t, "doc": d} for m, _, t, _, d in self.routes]}
+        body = {"service": self.name, "api_version": API_VERSION, "openapi": self.base + "/openapi.json",
+                "routes": [{"method": m, "path": t, "doc": d} for m, _, t, _, d in self.routes]}
+        return RawBody(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), "application/json; charset=utf-8",
+                       {"Link": f'<{self.base}/openapi.json>; rel="service-desc"; type="application/openapi+json", '
+                                f'<{API_DOC}>; rel="service-doc"'})
+
+    def openapi(self) -> dict:
+        """OpenAPI 3.1: 路径/方法/路径参数来自路由模板；摘要、请求体字段、查询参数来自路由说明 (doc 字符串)"""
+        build = ""
+        try:
+            with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".agv_version"), encoding="utf-8") as f:
+                build = f.read().split(" ", 1)[0].strip()
+        except OSError:
+            pass
+        paths, tags = {}, []
+        for m, _, tpl, fn, doc in self.routes:
+            summary, fields, query = _doc_parts(doc)
+            hb, hq = _handler_keys(fn)              # 说明里没写的字段，从处理函数源码补上
+            fields += [(k, "") for k in hb if k not in [f for f, _ in fields]]
+            query += [(k, "") for k in hq if k not in [n for n, _ in query] and k not in re.findall(r"\{(\w+)\}", tpl)]
+            rest = tpl[len(self.base):] if tpl.startswith(self.base) else tpl
+            seg = [x for x in rest.split("/") if x and not x.startswith("{") and x not in ("api", "hub", "v1", "v2")]
+            tag = seg[0] if seg else "meta"
+            if tag not in tags:
+                tags.append(tag)
+            op = {"operationId": (m.lower() + "_" + re.sub(r"[^A-Za-z0-9]+", "_", tpl).strip("_"))[:120], "summary": summary,
+                  "tags": [tag], "responses": {
+                      "200": {"description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+                              "content": {"application/json": {"schema": {}}}},
+                      "default": {"description": "错误 (RFC 9457)", "content": {
+                          "application/problem+json": {"schema": {"$ref": "#/components/schemas/Problem"}}}}}}
+            if doc and doc != summary:
+                op["description"] = doc
+            params = [{"name": n, "in": "path", "required": True, "schema": {"type": "string"}} for n in re.findall(r"\{(\w+)\}", tpl)]
+            params += [{"name": n, "in": "query", "required": False, "schema": {"type": "string"},
+                        **({"description": f"例如 {v}"} if v else {})} for n, v in query]
+            if params:
+                op["parameters"] = params
+            if m in ("POST", "PUT", "PATCH") and (tpl.endswith("/upload") or "请求体为文件" in doc or "请求体为 .tgz" in doc):
+                op["requestBody"] = {"required": True, "description": "文件内容",
+                                     "content": {"application/octet-stream": {"schema": {"type": "string", "contentMediaType": "application/octet-stream"}}}}
+            elif m in ("POST", "PUT", "PATCH"):
+                sch = {"type": "array", "items": {"type": "object"}} if "请求体为数组" in doc else {"type": "object"}
+                if fields and sch["type"] == "array":
+                    sch["items"]["properties"] = {n: ({"description": d} if d else {}) for n, d in fields}
+                elif fields:
+                    sch["properties"] = {n: ({"description": d} if d else {}) for n, d in fields}
+                op["requestBody"] = {"required": bool(fields), "content": {"application/json": {"schema": sch}}}
+            paths.setdefault(tpl, {})[m.lower()] = op
+        spec = {"openapi": "3.1.0",
+                "info": {"title": self.title, "version": API_VERSION, "description": self.description or f"{self.name} 服务接口",
+                         **({"x-build": build} if build else {})},
+                "servers": [{"url": "/", "description": "相对当前服务地址"}],
+                "tags": [{"name": t} for t in tags], "paths": paths,
+                "components": {"schemas": {"Problem": {
+                    "type": "object", "description": "RFC 9457 Problem Details；code / error 为本项目扩展",
+                    "properties": {"type": {"type": "string", "format": "uri-reference"}, "title": {"type": "string"},
+                                   "status": {"type": "integer"}, "detail": {"type": "string"},
+                                   "instance": {"type": "string", "format": "uri-reference"},
+                                   "code": {"type": "string", "description": "机器可读错误码"},
+                                   "error": {"type": "object", "description": "兼容旧客户端: {code, message}"}}}}}}
+        if self.mounts:
+            spec["x-raw-mounts"] = [p for p, _ in self.mounts]
+        return spec
 
     def dispatch(self, method: str, raw_path: str, body: bytes, headers, client=None) -> Tuple[int, Any]:
         u = urllib.parse.urlparse(raw_path)
@@ -240,11 +398,11 @@ class RestServer:
                         except (BrokenPipeError, ConnectionResetError):
                             return
                         except ApiError as e:
-                            return self._send(e.status, {"error": {"code": e.code, "message": e.message}})
+                            return self._send(e.status, problem(e.status, e.code, e.message, self.path.split("?")[0]))
                         except Exception as e:  # pragma: no cover
                             traceback.print_exc()
                             try:
-                                return self._send(500, {"error": {"code": "internal", "message": str(e)}})
+                                return self._send(500, problem(500, "internal", str(e), self.path.split("?")[0]))
                             except Exception:
                                 return
                 n = int(self.headers.get("Content-Length") or 0)
@@ -255,10 +413,10 @@ class RestServer:
                     if payload is None:
                         payload = {"ok": True}
                 except ApiError as e:
-                    status, payload = e.status, {"error": {"code": e.code, "message": e.message}}
+                    status, payload = e.status, problem(e.status, e.code, e.message, self.path.split("?")[0])
                 except Exception as e:  # pragma: no cover
                     traceback.print_exc()
-                    status, payload = 500, {"error": {"code": "internal", "message": str(e)}}
+                    status, payload = 500, problem(500, "internal", str(e), self.path.split("?")[0])
                 try:
                     self._send(status, payload)
                 except (BrokenPipeError, ConnectionResetError):
@@ -278,7 +436,7 @@ class RestServer:
                 self.send_response(204)
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Lock-Token, X-Node-Key, X-User")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Lock-Token, X-Node-Key, X-User, X-Admin-Token")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 

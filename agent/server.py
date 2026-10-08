@@ -439,7 +439,8 @@ def _norm_arch(m: str) -> str:
 
 # ====================================================================== REST
 def build_api(ag: Agent) -> RestServer:
-    api = RestServer("agent", port=ag.port)
+    api = RestServer("agent", port=ag.port, title="节点代理 agv-agent",
+                     description="在设备上分配端口、导入镜像、启停实例进程/容器、读取日志。除 health / openapi 外都要请求头 X-Node-Key")
     R = api.route
     R("GET", "/api/v1/health", lambda q: {"service": "agent", "ok": True, "name": ag.name, "node_id": ag.state.get("node_id"),
                                           "hub": ag.hub, "hub_online": ag.hub_online, "runtime": ag.rt.name}, "健康检查")

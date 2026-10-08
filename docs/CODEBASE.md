@@ -1,6 +1,6 @@
 # 代码框架说明 (CODEBASE)
 
-本文档说明仓库中每个文件的职责、依赖的库及其用途，以及模块之间的调用链。与 `docs/ARCHITECTURE.md` (架构理念)、`docs/API.md` (REST 接口)、`docs/PLATFORM.md` (平台功能)、`docs/DEPLOY.md` (部署) 互补。
+本文档说明仓库中每个文件的职责、依赖的库及其用途，以及模块之间的调用链。与 `docs/ARCHITECTURE.md` (架构理念)、`docs/API.md` (REST 接口约定与规范依据)、`docs/API_REFERENCE.md` + `docs/openapi/` (接口清单与 OpenAPI 文档，自动生成)、`docs/PLATFORM.md` (平台功能)、`docs/DEPLOY.md` (部署) 互补。
 
 ---
 
@@ -168,6 +168,8 @@ agv-agent  agent/server.py  :8070 (每台计算节点一份)      ← 镜像 agv
 | `tools/precision_test.py` | 导航/定位精度考核：经网关逐目标下发，统计横向偏差、终点误差、定位误差 | — | 人工 |
 | `tools/check_loc_stack.sh` | 检查执行容器内定位/导航栈 (软件包、节点、话题频率、TF、已保存地图) | docker、ros2 CLI | 人工 |
 | `tools/refresh_images.sh` | 在已构建的 agv-sim / agv-nav 镜像上只刷新代码层 (不重装依赖，几十秒)，代码更新后用 |
+| `tools/gen_api_docs.py` | 从运行中的各服务取 OpenAPI 3.1 文档，写 `docs/openapi/*.json` (离线快照) 与 `docs/API_REFERENCE.md` | 标准库 | 人工 (改了接口之后) |
+| `tools/make_update.py` | 生成平台「运维管理 → 平台更新」用的更新包 (git 两个提交之间改动的文件 + sha256 清单) | git | 人工 |
 | `tools/perf_sample.py` | 运行性能采样：进程 CPU/内存、CPU 频率、温度、仿真 RTF、执行进程状态频率、TF 延迟 (只用标准库) |
 | `tools/perf_matrix.py` | 手机/板卡组合性能对比：经主平台依次部署 4 种组合，采样 + 精度测试，结果见 docs/PERFORMANCE.md |
 | `tools/bench_host.py` | 单机计算基准 (Python/numpy/MuJoCo 步/激光/相机/内置 SLAM) |

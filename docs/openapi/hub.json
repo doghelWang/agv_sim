@@ -1,0 +1,3859 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "资源平台 agv-hub",
+  "version": "1.0.0",
+  "description": "计算节点、车辆模型、仿真场景、软件程序包、仿真实例部署与记录、运维管理。接口在 /api/hub 下 (v1 契约)；/inst/<实例>/ 反向代理到实例的 Web 网关"
+ },
+ "servers": [
+  {
+   "url": "/",
+   "description": "相对当前服务地址"
+  }
+ ],
+ "tags": [
+  {
+   "name": "meta"
+  },
+  {
+   "name": "openapi.json"
+  },
+  {
+   "name": "health"
+  },
+  {
+   "name": "overview"
+  },
+  {
+   "name": "nodes"
+  },
+  {
+   "name": "apidocs"
+  },
+  {
+   "name": ".well-known"
+  },
+  {
+   "name": "admin"
+  },
+  {
+   "name": "models"
+  },
+  {
+   "name": "scenes"
+  },
+  {
+   "name": "packages"
+  },
+  {
+   "name": "deployments"
+  },
+  {
+   "name": "instances"
+  },
+  {
+   "name": "records"
+  }
+ ],
+ "paths": {
+  "/api/v1": {
+   "get": {
+    "operationId": "get_api_v1",
+    "summary": "列出全部接口",
+    "tags": [
+     "meta"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "列出全部接口 (响应头 Link 指向 OpenAPI 文档，RFC 8631)"
+   }
+  },
+  "/api/v1/openapi.json": {
+   "get": {
+    "operationId": "get_api_v1_openapi_json",
+    "summary": "本服务的 OpenAPI 3.1 文档",
+    "tags": [
+     "openapi.json"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "本服务的 OpenAPI 3.1 文档 (由路由表生成)"
+   }
+  },
+  "/api/hub/health": {
+   "get": {
+    "operationId": "get_api_hub_health",
+    "summary": "健康检查",
+    "tags": [
+     "health"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/overview": {
+   "get": {
+    "operationId": "get_api_hub_overview",
+    "summary": "资源总览",
+    "tags": [
+     "overview"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/nodes": {
+   "get": {
+    "operationId": "get_api_hub_nodes",
+    "summary": "计算节点",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/nodes/{nid}": {
+   "get": {
+    "operationId": "get_api_hub_nodes_nid",
+    "summary": "节点详情",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "patch": {
+    "operationId": "patch_api_hub_nodes_nid",
+    "summary": "修改节点",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "修改节点 {name, kind: controller|hybrid|sim, note, max_instances}",
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {},
+         "kind": {
+          "description": "controller|hybrid|sim"
+         },
+         "note": {},
+         "max_instances": {}
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "delete_api_hub_nodes_nid",
+    "summary": "移除节点",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/nodes/enroll": {
+   "post": {
+    "operationId": "post_api_hub_nodes_enroll",
+    "summary": "生成节点接入令牌与命令",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "note": {},
+         "kind": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/nodes/add": {
+   "post": {
+    "operationId": "post_api_hub_nodes_add",
+    "summary": "添加计算节点",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "添加计算节点 {kind,note,name,ip,ssh_port,username,password}: 验证 SSH 后保存 (首次部署时安装运行环境)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "kind": {},
+         "note": {},
+         "name": {},
+         "ip": {},
+         "ssh_port": {},
+         "username": {},
+         "password": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/nodes/register": {
+   "post": {
+    "operationId": "post_api_hub_nodes_register",
+    "summary": "节点代理注册",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "节点代理注册 {name, token, node_id, node_key, api_port, advertise_host, kind, hub_url, info} (节点代理调用)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {},
+         "token": {},
+         "node_id": {},
+         "node_key": {},
+         "api_port": {},
+         "advertise_host": {},
+         "kind": {},
+         "hub_url": {},
+         "info": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/nodes/{nid}/heartbeat": {
+   "post": {
+    "operationId": "post_api_hub_nodes_nid_heartbeat",
+    "summary": "节点心跳",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "节点心跳 (请求体为节点信息 info；请求头 X-Node-Key)",
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/nodes/{nid}/jobs/{jid}": {
+   "get": {
+    "operationId": "get_api_hub_nodes_nid_jobs_jid",
+    "summary": "节点任务进度",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "jid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/nodes/probe": {
+   "post": {
+    "operationId": "post_api_hub_nodes_probe",
+    "summary": "探测两节点之间的连通性",
+    "tags": [
+     "nodes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "探测两节点之间的连通性 {from,to}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "from": {},
+         "to": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/apidocs": {
+   "get": {
+    "operationId": "get_api_hub_apidocs",
+    "summary": "接口文档目录",
+    "tags": [
+     "apidocs"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/apidocs/{svc}": {
+   "get": {
+    "operationId": "get_api_hub_apidocs_svc",
+    "summary": "某个服务的 OpenAPI 3.1 文档",
+    "tags": [
+     "apidocs"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "某个服务的 OpenAPI 3.1 文档 (svc: hub|agent|sim|nav|gateway)；服务在运行时取实时文档，否则取仓库里的离线快照",
+    "parameters": [
+     {
+      "name": "svc",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/.well-known/api-catalog": {
+   "get": {
+    "operationId": "get_well_known_api_catalog",
+    "summary": "API 目录",
+    "tags": [
+     ".well-known"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "API 目录 (RFC 9727)"
+   }
+  },
+  "/api/hub/admin/state": {
+   "get": {
+    "operationId": "get_api_hub_admin_state",
+    "summary": "运维登录状态",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/setup": {
+   "post": {
+    "operationId": "post_api_hub_admin_setup",
+    "summary": "首次设置管理员密码",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "password": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/login": {
+   "post": {
+    "operationId": "post_api_hub_admin_login",
+    "summary": "管理员登录",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "password": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/logout": {
+   "post": {
+    "operationId": "post_api_hub_admin_logout",
+    "summary": "退出登录",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/password": {
+   "post": {
+    "operationId": "post_api_hub_admin_password",
+    "summary": "修改管理员密码",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "old": {},
+         "new": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/services": {
+   "get": {
+    "operationId": "get_api_hub_admin_services",
+    "summary": "服务状态",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/restart": {
+   "post": {
+    "operationId": "post_api_hub_admin_restart",
+    "summary": "重启",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "重启 {target: hub|agent}",
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "target": {
+          "description": "hub|agent"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/logs": {
+   "get": {
+    "operationId": "get_api_hub_admin_logs",
+    "summary": "日志文件列表",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/logs/{name}": {
+   "get": {
+    "operationId": "get_api_hub_admin_logs_name",
+    "summary": "下载日志",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/updates": {
+   "get": {
+    "operationId": "get_api_hub_admin_updates",
+    "summary": "更新包列表",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/updates/upload": {
+   "post": {
+    "operationId": "post_api_hub_admin_updates_upload",
+    "summary": "上传更新包",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "上传更新包 (请求体为 .tgz)",
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "description": "文件内容",
+     "content": {
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "contentMediaType": "application/octet-stream"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/updates/{uid}": {
+   "get": {
+    "operationId": "get_api_hub_admin_updates_uid",
+    "summary": "更新包详情与预览",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "delete": {
+    "operationId": "delete_api_hub_admin_updates_uid",
+    "summary": "删除更新包",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/updates/{uid}/apply": {
+   "post": {
+    "operationId": "post_api_hub_admin_updates_uid_apply",
+    "summary": "应用更新",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "应用更新 {restart_instances}",
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "restart_instances": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/updates/{uid}/rollback": {
+   "post": {
+    "operationId": "post_api_hub_admin_updates_uid_rollback",
+    "summary": "回滚最近一次更新",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "回滚最近一次更新 {restart_instances}",
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "restart_instances": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/jobs": {
+   "get": {
+    "operationId": "get_api_hub_admin_jobs",
+    "summary": "运维任务",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/jobs/{jid}": {
+   "get": {
+    "operationId": "get_api_hub_admin_jobs_jid",
+    "summary": "运维任务详情",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "jid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/apps": {
+   "get": {
+    "operationId": "get_api_hub_admin_apps",
+    "summary": "App 列表与安装状态",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/apps/upload": {
+   "post": {
+    "operationId": "post_api_hub_admin_apps_upload",
+    "summary": "上传 APK",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "上传 APK (请求体为文件)",
+    "parameters": [
+     {
+      "name": "filename",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "description": "文件内容",
+     "content": {
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "contentMediaType": "application/octet-stream"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/apps/{aid}": {
+   "delete": {
+    "operationId": "delete_api_hub_admin_apps_aid",
+    "summary": "删除 APK",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/admin/apps/{aid}/install": {
+   "post": {
+    "operationId": "post_api_hub_admin_apps_aid_install",
+    "summary": "安装 APK",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "安装 APK {mode: prompt|adb, serial}",
+    "parameters": [
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "mode": {
+          "description": "prompt|adb"
+         },
+         "serial": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/adb/{action}": {
+   "post": {
+    "operationId": "post_api_hub_admin_adb_action",
+    "summary": "手机无线调试 adb",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "手机无线调试 adb (action: pair|connect|disconnect|mdns) {port, code, serial}",
+    "parameters": [
+     {
+      "name": "action",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "port": {},
+         "code": {},
+         "serial": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/admin/panel": {
+   "post": {
+    "operationId": "post_api_hub_admin_panel",
+    "summary": "外屏面板 open|close",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "token",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "action": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/models": {
+   "get": {
+    "operationId": "get_api_hub_models",
+    "summary": "车辆模型",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/models/{mid}": {
+   "get": {
+    "operationId": "get_api_hub_models_mid",
+    "summary": "模型详情",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "模型详情 (含生效参数)",
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "patch": {
+    "operationId": "patch_api_hub_models_mid",
+    "summary": "修改模型信息",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "修改模型信息 {name, project, vtype, material_no, note}",
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {},
+         "project": {},
+         "vtype": {},
+         "material_no": {},
+         "note": {}
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "delete_api_hub_models_mid",
+    "summary": "删除模型",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/models/upload": {
+   "post": {
+    "operationId": "post_api_hub_models_upload",
+    "summary": "上传 .cmodel",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "上传 .cmodel (请求体为文件内容，?filename=&name=&project=&vtype=&material_no=)",
+    "parameters": [
+     {
+      "name": "filename",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "name",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "project",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "vtype",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "material_no",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "description": "文件内容",
+     "content": {
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "contentMediaType": "application/octet-stream"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/models/{mid}/cmodel": {
+   "get": {
+    "operationId": "get_api_hub_models_mid_cmodel",
+    "summary": "下载 cmodel",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/bundle": {
+   "get": {
+    "operationId": "get_api_hub_models_mid_versions_ver_bundle",
+    "summary": "实例启动用模型包",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "实例启动用模型包 (基线+补全)",
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/api/v1/model/editor": {
+   "get": {
+    "operationId": "get_api_hub_models_mid_versions_ver_api_v1_model_editor",
+    "summary": "补全编辑器数据",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/api/v1/model/preview": {
+   "post": {
+    "operationId": "post_api_hub_models_mid_versions_ver_api_v1_model_preview",
+    "summary": "试算补全",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/api/v1/model/overrides": {
+   "put": {
+    "operationId": "put_api_hub_models_mid_versions_ver_api_v1_model_overrides",
+    "summary": "保存补全",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/api/v1/model/sensor_template": {
+   "get": {
+    "operationId": "get_api_hub_models_mid_versions_ver_api_v1_model_sensor_template",
+    "summary": "传感器模板",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "type",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/api/v1/model/urdf": {
+   "get": {
+    "operationId": "get_api_hub_models_mid_versions_ver_api_v1_model_urdf",
+    "summary": "URDF",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/api/v1/model": {
+   "get": {
+    "operationId": "get_api_hub_models_mid_versions_ver_api_v1_model",
+    "summary": "生效参数",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/models/{mid}/versions/{ver}/api/v1/sensors/cameras": {
+   "get": {
+    "operationId": "get_api_hub_models_mid_versions_ver_api_v1_sensors_cameras",
+    "summary": "离线编辑无相机画面",
+    "tags": [
+     "models"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ver",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/scenes": {
+   "get": {
+    "operationId": "get_api_hub_scenes",
+    "summary": "仿真场景",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/scenes/{sid}": {
+   "get": {
+    "operationId": "get_api_hub_scenes_sid",
+    "summary": "场景详情",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "场景详情 (含定义)",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "patch": {
+    "operationId": "patch_api_hub_scenes_sid",
+    "summary": "修改场景信息",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "修改场景信息 {name, description, tags}",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {},
+         "description": {},
+         "tags": {}
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "delete_api_hub_scenes_sid",
+    "summary": "删除场景",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/scenes/upload": {
+   "post": {
+    "operationId": "post_api_hub_scenes_upload",
+    "summary": "上传场景包",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "上传场景包 (.zip / scene.json)",
+    "parameters": [
+     {
+      "name": "filename",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "description": "文件内容",
+     "content": {
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "contentMediaType": "application/octet-stream"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/scenes/{sid}/definition": {
+   "get": {
+    "operationId": "get_api_hub_scenes_sid_definition",
+    "summary": "场景定义 JSON",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/scenes/{sid}/map": {
+   "get": {
+    "operationId": "get_api_hub_scenes_sid_map",
+    "summary": "栅格地图",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "栅格地图 ?part=pgm|yaml",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "part",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 pgm|yaml"
+     }
+    ]
+   }
+  },
+  "/api/hub/scenes/{sid}/package": {
+   "get": {
+    "operationId": "get_api_hub_scenes_sid_package",
+    "summary": "下载场景包",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/scenes/{sid}/taskflows": {
+   "get": {
+    "operationId": "get_api_hub_scenes_sid_taskflows",
+    "summary": "场景任务流",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "put": {
+    "operationId": "put_api_hub_scenes_sid_taskflows",
+    "summary": "保存任务流",
+    "tags": [
+     "scenes"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "taskflows": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/packages": {
+   "get": {
+    "operationId": "get_api_hub_packages",
+    "summary": "软件程序包",
+    "tags": [
+     "packages"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "kind",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/packages/{pid}": {
+   "patch": {
+    "operationId": "patch_api_hub_packages_pid",
+    "summary": "修改程序包",
+    "tags": [
+     "packages"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "修改程序包 {version, note, tag}",
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "version": {},
+         "note": {},
+         "tag": {}
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "delete_api_hub_packages_pid",
+    "summary": "删除程序包",
+    "tags": [
+     "packages"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/packages/{pid}/image": {
+   "get": {
+    "operationId": "get_api_hub_packages_pid_image",
+    "summary": "下载镜像包",
+    "tags": [
+     "packages"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "下载镜像包 (节点代理导入用)",
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/packages/from_node": {
+   "post": {
+    "operationId": "post_api_hub_packages_from_node",
+    "summary": "节点镜像入库",
+    "tags": [
+     "packages"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "节点镜像入库 (导出上传到平台) {node_id, ref, kind, version, note}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "node_id": {},
+         "ref": {},
+         "kind": {},
+         "version": {},
+         "note": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/deployments/check": {
+   "post": {
+    "operationId": "post_api_hub_deployments_check",
+    "summary": "部署前校验",
+    "tags": [
+     "deployments"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "部署前校验 {sim_node, nav_node, model_id, model_ver, scene_id, sim_pkg, nav_pkg}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "sim_node": {},
+         "nav_node": {},
+         "model_id": {},
+         "model_ver": {},
+         "scene_id": {},
+         "sim_pkg": {},
+         "nav_pkg": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/instances": {
+   "get": {
+    "operationId": "get_api_hub_instances",
+    "summary": "仿真实例",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "active",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "post": {
+    "operationId": "post_api_hub_instances",
+    "summary": "部署新实例",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "部署新实例 {name, sim_node, nav_node, model_id, model_ver, scene_id, sim_pkg, nav_pkg, options} (先用 /deployments/check 校验)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {},
+         "sim_node": {},
+         "nav_node": {},
+         "model_id": {},
+         "model_ver": {},
+         "scene_id": {},
+         "sim_pkg": {},
+         "nav_pkg": {},
+         "options": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/instances/attach": {
+   "post": {
+    "operationId": "post_api_hub_instances_attach",
+    "summary": "接入外部实例",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "接入外部实例 {name, web_url}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {},
+         "web_url": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/instances/{iid}": {
+   "get": {
+    "operationId": "get_api_hub_instances_iid",
+    "summary": "实例详情",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "iid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "delete": {
+    "operationId": "delete_api_hub_instances_iid",
+    "summary": "删除实例记录",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "iid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/instances/{iid}/stop": {
+   "post": {
+    "operationId": "post_api_hub_instances_iid_stop",
+    "summary": "终止仿真",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "iid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/instances/{iid}/restart": {
+   "post": {
+    "operationId": "post_api_hub_instances_iid_restart",
+    "summary": "重启实例",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "iid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hub/instances/{iid}/logs": {
+   "get": {
+    "operationId": "get_api_hub_instances_iid_logs",
+    "summary": "容器日志",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "iid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "svc",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "tail",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/instances/{iid}/logs/file": {
+   "get": {
+    "operationId": "get_api_hub_instances_iid_logs_file",
+    "summary": "下载实例日志文件",
+    "tags": [
+     "instances"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "下载实例日志文件 ?svc=sim|nav&tail=20000",
+    "parameters": [
+     {
+      "name": "iid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "svc",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 sim|nav"
+     },
+     {
+      "name": "tail",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 20000"
+     }
+    ]
+   }
+  },
+  "/api/hub/records": {
+   "post": {
+    "operationId": "post_api_hub_records",
+    "summary": "归档仿真记录",
+    "tags": [
+     "records"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "归档仿真记录 (sim_bundle)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "metadata": {},
+         "environment": {},
+         "vehicleModel": {},
+         "injectedElements": {}
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "operationId": "get_api_hub_records",
+    "summary": "仿真记录",
+    "tags": [
+     "records"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "instance",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/hub/records/{rid}": {
+   "get": {
+    "operationId": "get_api_hub_records_rid",
+    "summary": "下载记录 sim_bundle",
+    "tags": [
+     "records"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "rid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "delete": {
+    "operationId": "delete_api_hub_records_rid",
+    "summary": "删除记录",
+    "tags": [
+     "records"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "rid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "Problem": {
+    "type": "object",
+    "description": "RFC 9457 Problem Details；code / error 为本项目扩展",
+    "properties": {
+     "type": {
+      "type": "string",
+      "format": "uri-reference"
+     },
+     "title": {
+      "type": "string"
+     },
+     "status": {
+      "type": "integer"
+     },
+     "detail": {
+      "type": "string"
+     },
+     "instance": {
+      "type": "string",
+      "format": "uri-reference"
+     },
+     "code": {
+      "type": "string",
+      "description": "机器可读错误码"
+     },
+     "error": {
+      "type": "object",
+      "description": "兼容旧客户端: {code, message}"
+     }
+    }
+   }
+  }
+ },
+ "x-raw-mounts": [
+  "/api/hub/packages/upload",
+  "/inst/"
+ ]
+}

@@ -1,0 +1,1064 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "执行进程 nav_runtime",
+  "version": "1.0.0",
+  "description": "定位 (SLAM)、拓扑路径规划、导航任务、任务流、安全防护、遥控"
+ },
+ "servers": [
+  {
+   "url": "/",
+   "description": "相对当前服务地址"
+  }
+ ],
+ "tags": [
+  {
+   "name": "meta"
+  },
+  {
+   "name": "openapi.json"
+  },
+  {
+   "name": "health"
+  },
+  {
+   "name": "nav"
+  },
+  {
+   "name": "missions"
+  },
+  {
+   "name": "teleop"
+  },
+  {
+   "name": "taskflows"
+  },
+  {
+   "name": "plan"
+  },
+  {
+   "name": "safety"
+  },
+  {
+   "name": "slam"
+  },
+  {
+   "name": "events"
+  },
+  {
+   "name": "ros"
+  }
+ ],
+ "paths": {
+  "/api/v1": {
+   "get": {
+    "operationId": "get_api_v1",
+    "summary": "列出全部接口",
+    "tags": [
+     "meta"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "列出全部接口 (响应头 Link 指向 OpenAPI 文档，RFC 8631)"
+   }
+  },
+  "/api/v1/openapi.json": {
+   "get": {
+    "operationId": "get_api_v1_openapi_json",
+    "summary": "本服务的 OpenAPI 3.1 文档",
+    "tags": [
+     "openapi.json"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "本服务的 OpenAPI 3.1 文档 (由路由表生成)"
+   }
+  },
+  "/api/v1/health": {
+   "get": {
+    "operationId": "get_api_v1_health",
+    "summary": "健康检查",
+    "tags": [
+     "health"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/nav": {
+   "get": {
+    "operationId": "get_api_v1_nav",
+    "summary": "执行状态",
+    "tags": [
+     "nav"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/nav/planner": {
+   "put": {
+    "operationId": "put_api_v1_nav_planner",
+    "summary": "切换规划器",
+    "tags": [
+     "nav"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "type": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/missions": {
+   "get": {
+    "operationId": "get_api_v1_missions",
+    "summary": "最近任务",
+    "tags": [
+     "missions"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "operationId": "post_api_v1_missions",
+    "summary": "下发任务",
+    "tags": [
+     "missions"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "station": {},
+         "x": {},
+         "y": {},
+         "yaw": {},
+         "planner": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/missions/current": {
+   "get": {
+    "operationId": "get_api_v1_missions_current",
+    "summary": "当前任务",
+    "tags": [
+     "missions"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "delete_api_v1_missions_current",
+    "summary": "取消当前任务",
+    "tags": [
+     "missions"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/missions/{id}": {
+   "get": {
+    "operationId": "get_api_v1_missions_id",
+    "summary": "任务详情",
+    "tags": [
+     "missions"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "delete": {
+    "operationId": "delete_api_v1_missions_id",
+    "summary": "取消任务",
+    "tags": [
+     "missions"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/v1/teleop": {
+   "post": {
+    "operationId": "post_api_v1_teleop",
+    "summary": "手动遥控",
+    "tags": [
+     "teleop"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "vx": {},
+         "vy": {},
+         "wz": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/taskflows/run": {
+   "post": {
+    "operationId": "post_api_v1_taskflows_run",
+    "summary": "执行任务流",
+    "tags": [
+     "taskflows"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "执行任务流 {flow:{id,name,tid,loop,steps:[{type,target,speed,seconds}]}}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "flow": {
+          "description": "{id,name,tid,loop,steps:[{type,target,speed,seconds}]}"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/taskflows/stop": {
+   "post": {
+    "operationId": "post_api_v1_taskflows_stop",
+    "summary": "终止任务流",
+    "tags": [
+     "taskflows"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "reason": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/taskflows/current": {
+   "get": {
+    "operationId": "get_api_v1_taskflows_current",
+    "summary": "任务流进度",
+    "tags": [
+     "taskflows"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/plan": {
+   "post": {
+    "operationId": "post_api_v1_plan",
+    "summary": "路线预览",
+    "tags": [
+     "plan"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "路线预览 (拓扑规划，不下发)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "points": {},
+         "obstacles": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/safety/params": {
+   "get": {
+    "operationId": "get_api_v1_safety_params",
+    "summary": "保护空间 / 避障参数",
+    "tags": [
+     "safety"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "operationId": "put_api_v1_safety_params",
+    "summary": "运行时调整保护空间",
+    "tags": [
+     "safety"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "运行时调整保护空间 {protection:{...}} (兼容旧字段)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "protection": {
+          "description": "{...}"
+         },
+         "enabled": {},
+         "stop_dist": {},
+         "corridor_margin": {},
+         "slow_dist": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/slam": {
+   "get": {
+    "operationId": "get_api_v1_slam",
+    "summary": "定位状态: 模式/位姿/协方差/匹配得分/相对真值误差",
+    "tags": [
+     "slam"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/slam/map": {
+   "get": {
+    "operationId": "get_api_v1_slam_map",
+    "summary": "SLAM 地图",
+    "tags": [
+     "slam"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "SLAM 地图 ?part=grid(默认, base64 0未知/1空闲/2占据)|pgm|yaml &step=N 下采样",
+    "parameters": [
+     {
+      "name": "part",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 grid(默认"
+     },
+     {
+      "name": "step",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 N"
+     }
+    ]
+   }
+  },
+  "/api/v1/slam/mode": {
+   "post": {
+    "operationId": "post_api_v1_slam_mode",
+    "summary": "切换定位模式",
+    "tags": [
+     "slam"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "切换定位模式 {mode: slam|localization|odom|ground_truth}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "mode": {
+          "description": "slam|localization|odom|ground_truth"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/slam/save": {
+   "post": {
+    "operationId": "post_api_v1_slam_save",
+    "summary": "保存当前场景的 SLAM 地图",
+    "tags": [
+     "slam"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "保存当前场景的 SLAM 地图 (之后该场景自动进入定位模式)",
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/slam/reset": {
+   "post": {
+    "operationId": "post_api_v1_slam_reset",
+    "summary": "清空 SLAM 地图重新建图",
+    "tags": [
+     "slam"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "清空 SLAM 地图重新建图 {delete_saved: bool}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "delete_saved": {
+          "description": "bool"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/slam/initialpose": {
+   "post": {
+    "operationId": "post_api_v1_slam_initialpose",
+    "summary": "设置初始位姿",
+    "tags": [
+     "slam"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "设置初始位姿 {x, y, yaw}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "x": {},
+         "y": {},
+         "yaw": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/events": {
+   "get": {
+    "operationId": "get_api_v1_events",
+    "summary": "执行事件",
+    "tags": [
+     "events"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/api/v1/ros": {
+   "get": {
+    "operationId": "get_api_v1_ros",
+    "summary": "ROS 图",
+    "tags": [
+     "ros"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "Problem": {
+    "type": "object",
+    "description": "RFC 9457 Problem Details；code / error 为本项目扩展",
+    "properties": {
+     "type": {
+      "type": "string",
+      "format": "uri-reference"
+     },
+     "title": {
+      "type": "string"
+     },
+     "status": {
+      "type": "integer"
+     },
+     "detail": {
+      "type": "string"
+     },
+     "instance": {
+      "type": "string",
+      "format": "uri-reference"
+     },
+     "code": {
+      "type": "string",
+      "description": "机器可读错误码"
+     },
+     "error": {
+      "type": "object",
+      "description": "兼容旧客户端: {code, message}"
+     }
+    }
+   }
+  }
+ }
+}

@@ -44,7 +44,8 @@ def log(msg):
 
 
 def build_api(nav: Navigator, link: SimLink, ros=None, port: int = 8091) -> RestServer:
-    api = RestServer("nav", port=port)
+    api = RestServer("nav", port=port, title="执行进程 nav_runtime",
+                     description="定位 (SLAM)、拓扑路径规划、导航任务、任务流、安全防护、遥控")
     R = api.route
     R("GET", "/api/v1/health", lambda q: {"service": "nav", "ok": True, "sim_link": link.online,
                                           "ros": ros is not None, "nav2_ready": nav.nav2.status().get("server_ready", False)}, "健康检查")

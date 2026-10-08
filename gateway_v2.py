@@ -25,7 +25,7 @@ import urllib.request
 import zipfile
 from typing import Optional
 
-from common.rest import ApiError, BinaryBody, RawBody, RestServer
+from common.rest import ApiError, BinaryBody, RawBody, RestServer, problem
 
 LOCK_TTL = 30.0
 
@@ -470,7 +470,8 @@ class GatewayV2:
 
     # ------------------------------------------------------------------ 路由
     def _build(self) -> RestServer:
-        api = RestServer("gateway-v2")
+        api = RestServer("gateway-v2", base="/api/v2", title="设备端 Web 网关 v2",
+                         description="仿真实例的工作台接口: 控制权锁、任务流、注入、记录、回放 (经平台 /inst/<实例>/api/v2 代理访问)")
         R = api.route
         V = "/api/v2"
         tok = lambda q: q.headers.get("X-Lock-Token", "")  # noqa: E731
@@ -495,7 +496,7 @@ class GatewayV2:
         R("POST", V + "/taskflow/run", lambda q: self.run_flow(q.json.get("flow") or q.json), "执行任务流")
         R("POST", V + "/taskflow/stop", lambda q: self.stop_flow(), "终止任务流")
         R("GET", V + "/inject/catalog", lambda q: {"catalog": INJECT_CATALOG, "placements": PLACEMENTS}, "注入库")
-        R("POST", V + "/inject", lambda q: self.inject(q.json), "注入元素")
+        R("POST", V + "/inject", lambda q: self.inject(q.json), "注入元素 {type, placement, x, y, w, h, z, motion, force} (类型见 GET /api/v2/inject/catalog)")
         R("DELETE", V + "/inject/{oid}", lambda q: self.remove(int(q.params["oid"])), "移除注入元素")
         R("GET", V + "/records", lambda q: {"records": [self.rec.summary(b) for b in self.rec.records], "stats": self.rec.stats()}, "仿真记录")
 
@@ -532,8 +533,8 @@ class GatewayV2:
             "Content-Disposition": f"attachment; filename=sim_logs_{time.strftime('%Y%m%d_%H%M%S')}.zip"}), "下载仿真日志 RCD/EVT")
 
         R("GET", V + "/safety", lambda q: self.gw.nav.safe("GET", "/api/v1/safety/params") or {}, "避障参数")
-        R("POST", V + "/plan", lambda q: self.gw.nav.safe("POST", "/api/v1/plan", q.json) or {"legs": []}, "路线预览 (执行进程规划器)")
-        R("PUT", V + "/safety", lambda q: self.gw.nav.put("/api/v1/safety/params", q.json), "修改避障参数")
+        R("POST", V + "/plan", lambda q: self.gw.nav.safe("POST", "/api/v1/plan", q.json) or {"legs": []}, "路线预览 (执行进程规划器) {points: [{x, y}], obstacles}")
+        R("PUT", V + "/safety", lambda q: self.gw.nav.put("/api/v1/safety/params", q.json), "修改避障参数 {protection: {...}}")
         # ---- 定位 (执行进程: 激光 SLAM + 里程计融合)
         R("GET", V + "/slam", lambda q: self.gw.nav.safe("GET", "/api/v1/slam") or {"online": False}, "定位状态")
 
@@ -548,7 +549,9 @@ class GatewayV2:
             return self.gw.nav.safe("GET", f"/api/v1/slam/map?step={q.q('step', 1, int)}", timeout=5) or {"empty": True}
         R("GET", V + "/slam/map", slam_map, "SLAM 地图 ?part=grid|pgm|yaml")
         for act in ("mode", "save", "reset", "initialpose"):
-            R("POST", V + "/slam/" + act, (lambda a: lambda q: self.gw.nav.post("/api/v1/slam/" + a, q.json, timeout=10))(act), "定位: " + act)
+            R("POST", V + "/slam/" + act, (lambda a: lambda q: self.gw.nav.post("/api/v1/slam/" + a, q.json, timeout=10))(act),
+              {"mode": "切换定位模式 {mode: slam|localization|odom|ground_truth}", "initialpose": "设置初始位姿 {x, y, yaw}",
+               "save": "保存当前场景的 SLAM 地图", "reset": "重置定位/建图"}.get(act, "定位: " + act))
         R("PUT", V + "/planner", lambda q: self.gw.set_planner_type(q.json.get("type")) or {"planner": self.gw.active_planner}, "切换规划器")
         R("PUT", V + "/chassis", lambda q: self.gw.set_chassis_type(q.json.get("type")) or {"ok": True}, "切换车型 (热切换)")
 
@@ -595,15 +598,15 @@ class GatewayV2:
         if method != "GET" and not path.startswith("/api/v2/lock") and path != "/api/v2/plan":   # 路线预览为只读
             who = self.locks.allowed(h.headers.get("X-Lock-Token", ""))
             if who:
-                return self.send(h, 423, {"error": {"code": "locked", "message": f"控制权由 {who} 持有，当前为只读"}})
+                return self.send(h, 423, problem(423, "locked", f"控制权由 {who} 持有，当前为只读", path))
         try:
             status, payload = self.api.dispatch(method, h.path, body, h.headers, h.client_address)
         except ApiError as e:
-            status, payload = e.status, {"error": {"code": e.code, "message": e.message}}
+            status, payload = e.status, problem(e.status, e.code, e.message, path)
         except Exception as e:
             import traceback
             traceback.print_exc()
-            status, payload = 500, {"error": {"code": "internal", "message": str(e)}}
+            status, payload = 500, problem(500, "internal", str(e), path)
         self.send(h, status, payload if payload is not None else {"ok": True})
 
     def guard_legacy(self, h) -> bool:

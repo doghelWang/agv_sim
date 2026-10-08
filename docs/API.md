@@ -1,13 +1,72 @@
-# REST API v1
+# REST API 规范与说明
 
-两个服务都遵守同一套约定 (实现见 `common/rest.py`)：
+本文是全部服务接口的**约定** (第 0 节) 和各服务的补充说明 (第 1 节起)。逐个接口的清单见 [API_REFERENCE.md](API_REFERENCE.md) (自动生成)，
+机器可读的完整描述是各服务的 OpenAPI 3.1 文档 (`docs/openapi/*.json`，运行中访问 `GET <base>/openapi.json`)；平台网页「接口文档」可以浏览、搜索、下载。
+实现集中在 `common/rest.py`，新增接口只要在路由表里写好路径模板和说明，文档自动生成。
 
-* 基础路径 `/api/v1`。`GET /api/v1` 返回本服务全部路由 (自描述)。
-* 请求体、响应体默认都是 JSON (`application/json; charset=utf-8`)。
-* 出错时统一返回 `{"error": {"code": "...", "message": "..."}}`，并带上对应的 HTTP 状态码：400 参数错误、404 资源不存在、405 方法不允许、503 暂无数据。
-* 使用 HTTP/1.1 keep-alive，服务端和客户端都开启 `TCP_NODELAY`。局域网内一次 state 轮询约 0.3 ms。
-* 已开启 CORS，浏览器可以直接调用。
-* 单位：米、弧度、秒、m/s、rad/s。坐标系：`map` (仿真世界，真值在此系下)、`odom` (里程计)、`base_link` (机体)。
+## 0. 约定与依据的规范
+
+| 方面 | 约定 | 依据 |
+|---|---|---|
+| 资源与方法 | 面向资源的 URL；GET 读取 (安全、幂等)、PUT 整体设置 (幂等)、PATCH 部分修改、POST 创建或触发动作、DELETE 删除 | [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) HTTP 语义 §9 |
+| 版本 | 主版本号放在路径里：仿真/执行/节点代理 `/api/v1`，Web 网关 `/api/v2`；平台 `/api/hub` 为 v1 契约 (历史路径，保留不变)。同一主版本内只做向后兼容的修改 (新增字段/接口)，不兼容修改升主版本并行提供。契约版本号 (语义化) 见 OpenAPI `info.version` 与 `GET <base>` 的 `api_version` | [Google AIP-185 API Versioning](https://google.aip.dev/185)、[SemVer 2.0](https://semver.org/) |
+| 数据格式 | 请求/响应体为 JSON (`application/json; charset=utf-8`)；大数据 (点云、地图、镜像、日志) 返回二进制或文本，接口说明里注明 | [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) JSON |
+| 接口描述 | 每个服务 `GET <base>/openapi.json` 返回由路由表生成的 OpenAPI 3.1 文档：路径、方法、路径参数、查询参数、请求体字段、错误格式 | [OpenAPI 3.1.0](https://spec.openapis.org/oas/v3.1.0) |
+| 自描述入口 | `GET <base>` 列出本服务全部路由；响应头 `Link: <…/openapi.json>; rel="service-desc", <API.md>; rel="service-doc"` | [RFC 8631](https://www.rfc-editor.org/rfc/rfc8631) Link Relation Types for Web Services、[RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) Web Linking |
+| API 目录 | 平台 `GET /.well-known/api-catalog` (Linkset JSON) 列出平台、各节点代理、各运行中实例 Web 网关的接口入口和 OpenAPI 地址 | [RFC 9727](https://www.rfc-editor.org/rfc/rfc9727) api-catalog、[RFC 9264](https://www.rfc-editor.org/rfc/rfc9264) Linkset |
+| 错误 | 4xx/5xx 一律返回 Problem Details (`application/problem+json`)，见下文「错误」 | [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) Problem Details for HTTP APIs |
+| 鉴权 | 节点代理: 请求头 `X-Node-Key`；实例写操作: 控制权锁 `X-Lock-Token` (被他人持有时 423)；运维管理: `X-Admin-Token` (登录获取) | 自定义请求头 (局域网内部服务) |
+| 跨域 | 允许浏览器直接调用 (`Access-Control-Allow-Origin: *`) | [Fetch 标准 CORS](https://fetch.spec.whatwg.org/#http-cors-protocol) |
+| 单位与坐标 | 米、弧度、秒、m/s、rad/s；坐标系 `map` (仿真世界，真值在此系下)、`odom` (里程计)、`base_link` (机体) | [ROS REP-103](https://www.ros.org/reps/rep-0103.html) / [REP-105](https://www.ros.org/reps/rep-0105.html) |
+| 连接 | HTTP/1.1 keep-alive，服务端与客户端开启 `TCP_NODELAY`；局域网一次 state 轮询约 0.3 ms | [RFC 9112](https://www.rfc-editor.org/rfc/rfc9112) |
+
+### 错误 <a id="errors"></a>
+
+```json
+HTTP/1.1 404 Not Found
+Content-Type: application/problem+json; charset=utf-8
+
+{"type": "https://github.com/doghelWang/agv_sim/blob/main/docs/API.md#error-not_found",
+ "title": "Not Found", "status": 404, "detail": "未找到资源 /api/v1/nope", "instance": "/api/v1/nope",
+ "code": "not_found", "error": {"code": "not_found", "message": "未找到资源 /api/v1/nope"}}
+```
+
+* `type` 指向本节对应错误码的说明；没有专门错误码的通用错误为 `about:blank` (此时以 HTTP 状态码为准)。
+* `title` 为状态码短语，`detail` 为给人看的中文说明，`instance` 为出错的请求路径。
+* `code` 为本项目扩展的机器可读错误码；`error` 为兼容旧客户端保留的 `{code, message}`，新代码请读 `detail` / `code`。
+
+| 错误码 | 状态码 | 含义 |
+|---|---|---|
+| <a id="error-bad_json"></a>`bad_json` | 400 | 请求体不是合法 JSON |
+| <a id="error-bad_param"></a>`bad_param` | 400 | 查询参数无效 |
+| <a id="error-not_found"></a>`not_found` | 404 | 资源或路径不存在 |
+| <a id="error-method_not_allowed"></a>`method_not_allowed` | 405 | 该路径不支持此方法 (说明里列出可用方法) |
+| <a id="error-unauthorized"></a>`unauthorized` | 401 | 节点密钥无效 (节点代理) |
+| <a id="error-bad_token"></a>`bad_token` | 401 | 接入令牌无效或过期 (节点注册) |
+| <a id="error-admin_auth"></a>`admin_auth` | 401 | 运维管理未登录或登录已过期 |
+| <a id="error-bad_password"></a>`bad_password` | 401 | 运维管理员密码错误 |
+| <a id="error-ssh_auth"></a>`ssh_auth` | 401 | 添加节点: SSH 用户名或密码错误 |
+| <a id="error-locked"></a>`locked` | 409 / 423 | 控制权被他人持有 (实例写操作返回 423 Locked) |
+| <a id="error-lock_lost"></a>`lock_lost` | 409 | 控制权已失效，需要重新获取 |
+| <a id="error-monitor_only"></a>`monitor_only` | 409 | 节点只做了基础监测，还没启用运行环境 |
+| <a id="error-not_paused"></a>`not_paused` | 409 | 需要先暂停仿真 |
+| <a id="error-check_failed"></a>`check_failed` | 409 | 部署前校验未通过 |
+| <a id="error-cred"></a>`cred` | 500 | 保存的 SSH 密码无法解密 (平台密钥变化) |
+| <a id="error-no_ssh"></a>`no_ssh` | 500 | 平台所在设备没有 SSH 客户端 |
+| <a id="error-internal"></a>`internal` | 500 | 服务内部错误 (看服务日志) |
+| <a id="error-bad_gateway"></a>`bad_gateway` | 502 | 网关转发到后端进程失败 |
+| <a id="error-agent_start"></a>`agent_start` | 502 | 在目标设备上安装/启动节点程序失败 |
+| <a id="error-ssh_connect"></a>`ssh_connect` | 502 | SSH 端口不通或连接失败 |
+| <a id="error-ssh_exec"></a>`ssh_exec` | 502 | SSH 登录成功但命令执行失败 |
+| <a id="error-no_data"></a>`no_data` | 503 | 暂无数据 (如传感器还没有第一帧) |
+| <a id="error-no_helper"></a>`no_helper` | 503 | 安卓助手未运行 |
+| <a id="error-ssh_timeout"></a>`ssh_timeout` | 504 | SSH 操作超时 |
+
+### 新增接口时
+
+1. 在服务的路由表里 `R(方法, 路径模板, 处理函数, "说明 {请求体字段, 字段: 取值} ?查询参数=示例")`：说明的第一段成为摘要，`{…}` 里的字段成为请求体字段，`?k=v` 成为查询参数。
+2. 出错时抛 `ApiError(状态码, 中文说明, 错误码)`，新错误码补到上表。
+3. 运行 `python3 tools/gen_api_docs.py --hub … --agent … --sim … --nav … --gateway …` 更新 `docs/openapi/*.json` 与 `API_REFERENCE.md`。
 
 ---
 

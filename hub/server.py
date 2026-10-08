@@ -166,7 +166,8 @@ def proxy(h, target_base: str, path: str):
 
 # ====================================================================== REST
 def build_api(hub: Hub) -> RestServer:
-    api = RestServer("hub", port=hub.port)
+    api = RestServer("hub", port=hub.port, title="资源平台 agv-hub",
+                     description="计算节点、车辆模型、仿真场景、软件程序包、仿真实例部署与记录、运维管理。接口在 /api/hub 下 (v1 契约)；/inst/<实例>/ 反向代理到实例的 Web 网关")
     R = api.route
     P = "/api/hub"
 
@@ -183,7 +184,7 @@ def build_api(hub: Hub) -> RestServer:
     def node_get(q):
         return hub.nodes.view(hub.nodes.get(q.params["nid"]), hub.dep.list())
     R("GET", P + "/nodes/{nid}", node_get, "节点详情")
-    R("PATCH", P + "/nodes/{nid}", lambda q: hub.nodes.view(hub.nodes.update(q.params["nid"], q.json), hub.dep.list()), "修改节点")
+    R("PATCH", P + "/nodes/{nid}", lambda q: hub.nodes.view(hub.nodes.update(q.params["nid"], q.json), hub.dep.list()), "修改节点 {name, kind: controller|hybrid|sim, note, max_instances}")
     R("DELETE", P + "/nodes/{nid}", lambda q: hub.nodes.delete(q.params["nid"]) or {"ok": True}, "移除节点")
 
     def enroll(q):
@@ -223,9 +224,9 @@ def build_api(hub: Hub) -> RestServer:
                                   {"ip": ip, "port": port, "user": usr}, seal(hub.s, pw), info)
         return {"node": hub.nodes.view(n, hub.dep.list()), "check": info["brief"]}
     R("POST", P + "/nodes/add", add_node, "添加计算节点 {kind,note,name,ip,ssh_port,username,password}: 验证 SSH 后保存 (首次部署时安装运行环境)")
-    R("POST", P + "/nodes/register", lambda q: hub.nodes.register(q.json, (q.client or ("127.0.0.1",))[0]), "节点代理注册")
+    R("POST", P + "/nodes/register", lambda q: hub.nodes.register(q.json, (q.client or ("127.0.0.1",))[0]), "节点代理注册 {name, token, node_id, node_key, api_port, advertise_host, kind, hub_url, info} (节点代理调用)")
     R("POST", P + "/nodes/{nid}/heartbeat", lambda q: hub.nodes.heartbeat(q.params["nid"], q.headers.get("X-Node-Key", ""), q.json),
-      "节点心跳")
+      "节点心跳 (请求体为节点信息 info；请求头 X-Node-Key)")
     R("GET", P + "/nodes/{nid}/jobs/{jid}", lambda q: hub.nodes.client(q.params["nid"]).call("GET", f"/api/v1/jobs/{q.params['jid']}"),
       "节点任务进度")
 
@@ -234,6 +235,88 @@ def build_api(hub: Hub) -> RestServer:
         url = f"http://{hub.nodes.addr_between(a, b)}:{b.get('api_port', 8070)}/api/v1/health"
         return hub.nodes.client(a).call("POST", "/api/v1/probe", {"url": url})
     R("POST", P + "/nodes/probe", probe_link, "探测两节点之间的连通性 {from,to}")
+
+    # ---- 接口文档 (OpenAPI 3.1 聚合) 与 API 目录 (RFC 9727)
+    DOC_SVCS = [("hub", "资源平台 agv-hub"), ("agent", "节点代理 agv-agent"), ("sim", "仿真进程 sim_server"),
+                ("nav", "执行进程 nav_runtime"), ("gateway", "设备端 Web 网关 v2")]
+
+    def _fetch_json(url, timeout=4.0):
+        u = urllib.parse.urlparse(url)
+        c = HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+        try:
+            c.request("GET", u.path + ("?" + u.query if u.query else ""))
+            r = c.getresponse()
+            data = r.read()
+            if r.status != 200:
+                raise OSError(f"HTTP {r.status}")
+            return json.loads(data)
+        finally:
+            c.close()
+
+    def _live_url(svc):
+        """运行中的服务的 OpenAPI 地址 (平台本机能访问到的)"""
+        if svc == "agent":
+            for n in hub.nodes.list():
+                if n.get("status") not in ("offline", "pending") and n.get("key"):
+                    return f"http://{n['host']}:{n.get('api_port', 8070)}/api/v1/openapi.json", n.get("name")
+            return None, None
+        key = {"sim": "sim_api", "nav": "nav_api", "gateway": "web"}[svc]
+        for i in hub.dep.list():
+            u = (i.get("urls") or {}).get(key)
+            if i.get("status") in ("running", "degraded") and u:
+                return u.rstrip("/") + ("/api/v2/openapi.json" if svc == "gateway" else "/api/v1/openapi.json"), i["id"]
+        return None, None
+
+    def apidoc(svc):
+        if svc == "hub":
+            spec = api.openapi()
+            spec["x-source"] = {"kind": "live", "from": "hub"}
+            return spec
+        if svc not in dict(DOC_SVCS):
+            raise ApiError(404, f"没有服务 {svc} 的接口文档")
+        url, who = _live_url(svc)
+        if url:
+            try:
+                spec = _fetch_json(url)
+                spec["x-source"] = {"kind": "live", "from": who}
+                return spec
+            except (OSError, ValueError):
+                pass
+        f = os.path.join(ROOT, "docs", "openapi", f"{svc}.json")
+        try:
+            with open(f, encoding="utf-8") as fh:
+                spec = json.load(fh)
+        except OSError:
+            raise ApiError(404, f"{svc} 没有在运行，也没有离线文档 (docs/openapi/{svc}.json)")
+        spec["x-source"] = {"kind": "snapshot", "from": f"docs/openapi/{svc}.json"}
+        return spec
+    R("GET", P + "/apidocs", lambda q: {"services": [{"id": k, "title": t} for k, t in DOC_SVCS],
+                                        "standards": ["OpenAPI 3.1", "RFC 9457", "RFC 8631", "RFC 9727", "Google AIP-185"]},
+      "接口文档目录")
+    R("GET", P + "/apidocs/{svc}", lambda q: apidoc(q.params["svc"]),
+      "某个服务的 OpenAPI 3.1 文档 (svc: hub|agent|sim|nav|gateway)；服务在运行时取实时文档，否则取仓库里的离线快照")
+
+    def api_catalog(q):
+        """RFC 9727: /.well-known/api-catalog，Linkset (RFC 9264) 格式列出本平台能访问到的全部 API"""
+        origin = "http://" + ((q.headers.get("Host") or f"127.0.0.1:{hub.port}").split(",")[0])
+        items = [{"anchor": f"{origin}/api/hub",
+                  "service-desc": [{"href": f"{origin}/api/v1/openapi.json", "type": "application/openapi+json"}],
+                  "service-doc": [{"href": f"{origin}/#/platform/apidocs", "type": "text/html"}],
+                  "status": [{"href": f"{origin}/api/hub/health", "type": "application/json"}]}]
+        for i in hub.dep.list():
+            if i.get("status") in ("running", "degraded"):
+                items.append({"anchor": f"{origin}/inst/{i['id']}/api/v2",
+                              "service-desc": [{"href": f"{origin}/inst/{i['id']}/api/v2/openapi.json", "type": "application/openapi+json"}],
+                              "title": [{"value": f"仿真实例 {i['id']} 的 Web 网关"}]})
+        for n in hub.nodes.list():
+            if n.get("status") not in ("offline", "pending") and n.get("key"):
+                base = f"http://{hub.nodes.lan_host(n)}:{n.get('api_port', 8070)}/api/v1"
+                items.append({"anchor": base, "service-desc": [{"href": base + "/openapi.json", "type": "application/openapi+json"}],
+                              "title": [{"value": f"节点代理 {n.get('name')}"}]})
+        return RawBody(json.dumps({"linkset": items}, ensure_ascii=False).encode("utf-8"),
+                       'application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"',
+                       {"Link": f'<{origin}/.well-known/api-catalog>; rel="api-catalog"'})
+    R("GET", "/.well-known/api-catalog", api_catalog, "API 目录 (RFC 9727)")
 
     # ---- 运维管理 (管理员密码；hub/admin.py)
     A = P + "/admin"
@@ -261,7 +344,7 @@ def build_api(hub: Hub) -> RestServer:
     R("POST", A + "/updates/upload", need(lambda q: adm.upload(q.raw, user(q))), "上传更新包 (请求体为 .tgz)")
     R("GET", A + "/updates/{uid}", need(lambda q: adm.view(q.params["uid"])), "更新包详情与预览")
     R("POST", A + "/updates/{uid}/apply", need(lambda q: adm.apply(q.params["uid"], q.json, user(q))), "应用更新 {restart_instances}")
-    R("POST", A + "/updates/{uid}/rollback", need(lambda q: adm.rollback(q.params["uid"], q.json, user(q))), "回滚最近一次更新")
+    R("POST", A + "/updates/{uid}/rollback", need(lambda q: adm.rollback(q.params["uid"], q.json, user(q))), "回滚最近一次更新 {restart_instances}")
     R("DELETE", A + "/updates/{uid}", need(lambda q: adm.delete_update(q.params["uid"])), "删除更新包")
     R("GET", A + "/jobs", need(lambda q: {"jobs": adm.jobs(), "current": adm.job and adm.job.get("id")}), "运维任务")
     R("GET", A + "/jobs/{jid}", need(lambda q: adm.job_view(q.params["jid"])), "运维任务详情")
@@ -270,7 +353,7 @@ def build_api(hub: Hub) -> RestServer:
     R("DELETE", A + "/apps/{aid}", need(lambda q: adm.app_delete(q.params["aid"])), "删除 APK")
     R("POST", A + "/apps/{aid}/install", need(lambda q: adm.app_install(q.params["aid"], q.json.get("mode", "prompt"), q.json.get("serial", ""))),
       "安装 APK {mode: prompt|adb, serial}")
-    R("POST", A + "/adb/{action}", need(lambda q: adm.adb(q.params["action"], q.json)), "手机无线调试 adb: pair|connect|disconnect|mdns")
+    R("POST", A + "/adb/{action}", need(lambda q: adm.adb(q.params["action"], q.json)), "手机无线调试 adb (action: pair|connect|disconnect|mdns) {port, code, serial}")
     R("POST", A + "/panel", need(lambda q: adm.panel(q.json.get("action", "open"))), "外屏面板 open|close")
 
     # ---- 车辆模型
@@ -285,7 +368,7 @@ def build_api(hub: Hub) -> RestServer:
         meta["operator"] = user(q)
         return hub.models.add_cmodel(fn, q.raw, meta)
     R("POST", P + "/models/upload", model_upload, "上传 .cmodel (请求体为文件内容，?filename=&name=&project=&vtype=&material_no=)")
-    R("PATCH", P + "/models/{mid}", lambda q: hub.models.update_meta(q.params["mid"], q.json), "修改模型信息")
+    R("PATCH", P + "/models/{mid}", lambda q: hub.models.update_meta(q.params["mid"], q.json), "修改模型信息 {name, project, vtype, material_no, note}")
     R("DELETE", P + "/models/{mid}", lambda q: hub.models.delete(q.params["mid"]) or {"ok": True}, "删除模型")
     R("GET", P + "/models/{mid}/cmodel", lambda q: FileBody(hub.models.cmodel_file(q.params["mid"], q.q("ver")),
                                                               filename=hub.models.get(q.params["mid"]).get("file") or "model.cmodel"),
@@ -316,7 +399,7 @@ def build_api(hub: Hub) -> RestServer:
         meta["operator"] = user(q)
         return hub.scenes.import_upload(fn, q.raw, meta)
     R("POST", P + "/scenes/upload", scene_upload, "上传场景包 (.zip / scene.json)")
-    R("PATCH", P + "/scenes/{sid}", lambda q: hub.scenes.update_meta(q.params["sid"], q.json), "修改场景信息")
+    R("PATCH", P + "/scenes/{sid}", lambda q: hub.scenes.update_meta(q.params["sid"], q.json), "修改场景信息 {name, description, tags}")
     R("DELETE", P + "/scenes/{sid}", lambda q: hub.scenes.delete(q.params["sid"]) or {"ok": True}, "删除场景")
     R("GET", P + "/scenes/{sid}/definition", lambda q: hub.scenes.scene_def(q.params["sid"]), "场景定义 JSON")
 
@@ -332,7 +415,7 @@ def build_api(hub: Hub) -> RestServer:
 
     # ---- 程序包
     R("GET", P + "/packages", lambda q: {"packages": hub.packages.list(q.q("kind")), "tags": TAGS}, "软件程序包")
-    R("PATCH", P + "/packages/{pid}", lambda q: hub.packages.update(q.params["pid"], q.json), "修改程序包")
+    R("PATCH", P + "/packages/{pid}", lambda q: hub.packages.update(q.params["pid"], q.json), "修改程序包 {version, note, tag}")
     R("DELETE", P + "/packages/{pid}", lambda q: hub.packages.delete(q.params["pid"]) or {"ok": True}, "删除程序包")
 
     def pkg_image(q):
@@ -365,9 +448,9 @@ def build_api(hub: Hub) -> RestServer:
     api.mount(P + "/packages/upload", upload_mount)
 
     # ---- 实例
-    R("POST", P + "/deployments/check", lambda q: hub.dep.check(q.json), "部署前校验")
+    R("POST", P + "/deployments/check", lambda q: hub.dep.check(q.json), "部署前校验 {sim_node, nav_node, model_id, model_ver, scene_id, sim_pkg, nav_pkg}")
     R("GET", P + "/instances", lambda q: {"instances": [hub.inst_view(i) for i in hub.dep.list(q.q("active", False, bool))]}, "仿真实例")
-    R("POST", P + "/instances", lambda q: hub.inst_view(hub.dep.deploy(q.json, user(q))), "部署新实例")
+    R("POST", P + "/instances", lambda q: hub.inst_view(hub.dep.deploy(q.json, user(q))), "部署新实例 {name, sim_node, nav_node, model_id, model_ver, scene_id, sim_pkg, nav_pkg, options} (先用 /deployments/check 校验)")
     R("POST", P + "/instances/attach", lambda q: hub.inst_view(hub.dep.attach(q.json, user(q))), "接入外部实例 {name, web_url}")
     R("GET", P + "/instances/{iid}", lambda q: hub.inst_view(hub.dep.get(q.params["iid"])), "实例详情")
     R("POST", P + "/instances/{iid}/stop", lambda q: hub.inst_view(hub.dep.stop(q.params["iid"])), "终止仿真")
