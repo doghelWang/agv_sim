@@ -23,7 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from common.rest import ApiError, FileBody, RawBody, RestServer  # noqa: E402
+from common.rest import ApiError, BinaryBody, FileBody, RawBody, RestServer  # noqa: E402
 from hub.deployer import Deployer  # noqa: E402
 from hub.models_repo import ModelRepo  # noqa: E402
 from hub.nodes import KIND_LABEL, NodeRegistry  # noqa: E402
@@ -196,6 +196,39 @@ def build_api(hub: Hub) -> RestServer:
                            f"-e AGENT_DATA=$HOME/.agv-agent -e HUB_API={hub_url} -e JOIN_TOKEN={t['id']} -e AGENT_KIND={kind} "
                            f"agv-platform:latest agent")}
     R("POST", P + "/nodes/enroll", enroll, "生成节点接入令牌与命令")
+
+    def add_node(q):
+        """SSH 接入: {kind, note, ip, ssh_port, username, password} → 登录目标设备装好并启动节点代理，等它注册上来"""
+        from hub.sshjoin import install_agent, local_ip_towards
+        b = q.json
+        ip, usr, pw = str(b.get("ip", "")).strip(), str(b.get("username", "")).strip(), str(b.get("password", ""))
+        try:
+            port = int(b.get("ssh_port") or 22)
+        except (TypeError, ValueError):
+            port = 0
+        kind = b.get("kind") or "hybrid"
+        if not ip or any(c in ip for c in " /@:;'\"$`"):
+            raise ApiError(400, "请填写正确的节点 IP")
+        if not 0 < port < 65536:
+            raise ApiError(400, "SSH 端口应为 1–65535")
+        if not usr or not pw:
+            raise ApiError(400, "请填写 SSH 用户名和密码")
+        if kind not in KIND_LABEL:
+            raise ApiError(400, "计算资源类型无效")
+        me = local_ip_towards(ip, port) or (q.headers.get("Host") or "127.0.0.1").split(":")[0]
+        hub_url = f"http://{me}:{hub.port}"
+        ssh = {"ip": ip, "port": port, "user": usr}
+        t = hub.nodes.new_token(user(q), b.get("note", ""), meta={"kind": kind, "note": b.get("note", ""), "ssh": ssh}, ttl=600)
+        brief = install_agent(ip, port, usr, pw, hub_url, t["id"], kind, str(b.get("name", "")).strip())
+        for _ in range(40):                      # 代理启动后几秒内注册
+            tk = hub.nodes.s.get("tokens", t["id"]) or {}
+            if tk.get("node_id"):
+                n = hub.nodes.get(tk["node_id"])
+                return {"node": hub.nodes.view(n, hub.dep.list()), "agent": brief, "hub_url": hub_url}
+            time.sleep(0.5)
+        raise ApiError(504, f"节点代理已在 {ip} 启动 ({brief})，但 20 秒内没有注册到平台。请确认该设备能访问 {hub_url}"
+                            f" (日志在目标设备 ~/.agv-agent/agent.log)", "agent_no_register")
+    R("POST", P + "/nodes/add", add_node, "SSH 接入计算节点 {kind,note,ip,ssh_port,username,password} (密码不保存)")
     R("POST", P + "/nodes/register", lambda q: hub.nodes.register(q.json, (q.client or ("127.0.0.1",))[0]), "节点代理注册")
     R("POST", P + "/nodes/{nid}/heartbeat", lambda q: hub.nodes.heartbeat(q.params["nid"], q.headers.get("X-Node-Key", ""), q.json),
       "节点心跳")
@@ -309,6 +342,15 @@ def build_api(hub: Hub) -> RestServer:
     R("POST", P + "/instances/{iid}/restart", lambda q: hub.inst_view(hub.dep.restart(q.params["iid"])), "重启实例")
     R("DELETE", P + "/instances/{iid}", lambda q: hub.dep.delete(q.params["iid"]) or {"ok": True}, "删除实例记录")
     R("GET", P + "/instances/{iid}/logs", lambda q: hub.dep.logs(q.params["iid"], q.q("svc", "sim"), q.q("tail", 300, int)), "容器日志")
+
+    def logs_file(q):
+        """下载实例日志文件 (默认仿真引擎 agv-sim，最近 20000 行)"""
+        iid, svc = q.params["iid"], q.q("svc", "sim")
+        r = hub.dep.logs(iid, svc, q.q("tail", 20000, int))
+        fn = f"{iid}_{'sim-engine' if svc == 'sim' else 'nav'}_{time.strftime('%Y%m%d-%H%M%S')}.log"
+        return BinaryBody((r.get("logs") or "").encode("utf-8"), {"Content-Disposition": f'attachment; filename="{fn}"'},
+                          "text/plain; charset=utf-8")
+    R("GET", P + "/instances/{iid}/logs/file", logs_file, "下载实例日志文件 ?svc=sim|nav&tail=20000")
 
     # ---- 仿真记录 (实例归档)
     def rec_post(q):

@@ -48,8 +48,7 @@ async function pOverview(refresh) {
       ${statCard('仿真场景', 'map', 'emerald', o.scenes.total, '个可用', esc((o.scenes.names || []).slice(0, 3).join(' · ')))}
       ${statCard('软件程序包', 'package', 'amber', o.packages.total, '个版本', `运行程序 ${o.packages.nav} · 仿真引擎 ${o.packages.sim}`)}
     </div>
-    ${header('正在进行的仿真任务', `<button class="btn-ghost" data-act="attach"><i data-lucide="link" class="w-3.5 h-3.5"></i>接入已有实例</button>
-      <button class="btn-primary" data-act="new"><i data-lucide="plus" class="w-3.5 h-3.5"></i>新建仿真</button>`)}
+    ${header('正在进行的仿真任务', `<button class="btn-primary" data-act="new"><i data-lucide="plus" class="w-3.5 h-3.5"></i>新建仿真</button>`)}
     <div class="grid grid-cols-2 gap-5">${act.map(instCard).join('') || `<div class="col-span-2 card p-10 text-center text-sm text-slate-400">
       暂无运行中的仿真。点击「新建仿真」选择设备、车辆模型、场景与软件版本，一键部署。</div>`}</div>
     ${hist.length ? `<div class="mt-8">${header('历史实例', '')}
@@ -65,30 +64,38 @@ async function pOverview(refresh) {
             <button class="btn-ghost !py-1" data-steps="${i.id}">详情</button><button class="btn-danger !py-1" data-del="${i.id}">删除</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
   main().innerHTML = html;
   $('[data-act=new]', main()).onclick = () => openDeploy();
-  $('[data-act=attach]', main()).onclick = openAttach;
   $$('[data-enter]', main()).forEach(b => b.onclick = () => { location.hash = `#/wb/${b.dataset.enter}`; });
   $$('[data-stop]', main()).forEach(b => b.onclick = guard(async () => {
     if (!await confirmBox(`终止仿真实例 ${b.dataset.stop}？两个容器将被删除，仿真记录会先归档到平台。`, '终止仿真')) return;
     await hub.post(`/instances/${b.dataset.stop}/stop`); toast('已终止', 'ok'); show('overview');
   }));
   $$('[data-steps]', main()).forEach(b => b.onclick = () => openProgress(b.dataset.steps));
-  $$('[data-logs]', main()).forEach(b => b.onclick = () => openLogs(b.dataset.logs));
-  $$('[data-restart]', main()).forEach(b => b.onclick = guard(async () => { await hub.post(`/instances/${b.dataset.restart}/restart`); openProgress(b.dataset.restart); }));
+  $$('[data-restart]', main()).forEach(b => b.onclick = guard(async () => {
+    if (!await confirmBox(`重启仿真实例 ${b.dataset.restart}？仿真与执行容器会重新部署，当前任务中断。`, '重启')) return;
+    await hub.post(`/instances/${b.dataset.restart}/restart`); toast('正在重新部署', 'ok'); show('overview');
+  }));
   $$('[data-redeploy]', main()).forEach(b => b.onclick = guard(async () => { await hub.post(`/instances/${b.dataset.redeploy}/restart`); openProgress(b.dataset.redeploy); }));
   $$('[data-del]', main()).forEach(b => b.onclick = guard(async () => { await hub.del(`/instances/${b.dataset.del}`); show('overview'); }));
 }
 
+// 卡片上的状态只分三种: 部署中 / 运行中 / 已停止
+const CARD_ST = { deploying: ['部署中', 'bg-blue-50 text-blue-700 border-blue-200', 'bg-blue-500 animate-pulse'],
+  running: ['运行中', 'bg-emerald-50 text-emerald-700 border-emerald-200', 'bg-emerald-500'],
+  stopped: ['已停止', 'bg-slate-100 text-slate-600 border-slate-200', 'bg-slate-400'] };
+function cardState(st) {
+  const k = st === 'deploying' || st === 'starting' ? 'deploying' : st === 'running' || st === 'degraded' ? 'running' : 'stopped';
+  const [t, c, d] = CARD_ST[k];
+  return `<span class="px-2 py-0.5 rounded-full text-[11px] font-bold border ${c} inline-flex items-center gap-1 whitespace-nowrap"><span class="w-1.5 h-1.5 rounded-full ${d}"></span>${t}</span>`;
+}
+
 function instCard(i) {
-  const run = i.status === 'running';
+  const run = i.status === 'running' || i.status === 'degraded';
   const sn = i.sim_node_view, nn = i.nav_node_view;
   const split = i.nav_node && i.nav_node !== i.sim_node;
-  const tf = i.brief?.taskflow || {};
-  const step = tf.status === 'running' && tf.step ? `工步: TID:${esc(tf.tid || '-')} (${tf.step_index + 1}/${tf.total} ${esc(tf.step.type)} ${esc(tf.step.target || '')})`
-    : (i.status === 'deploying' ? '部署中: ' + esc((i.steps || []).find(s => s.status === 'running')?.label || '') : `状态: ${esc(i.brief?.nav_status === 'IDLE' || !i.brief ? '等待新任务' : i.brief.nav_status)}`);
   const kindTag = (v) => v ? `<span class="text-[10px] px-1.5 py-0.5 rounded ${v.kind === 'controller' ? 'bg-slate-100 text-slate-600' : 'bg-purple-50 text-purple-600'}">${esc({ controller: '实体控制器', hybrid: '虚拟机(运行+仿真)', sim: '虚拟机(仿真)' }[v.kind] || '')}</span>` : '';
   return `<div class="card p-5 flex flex-col">
     <div class="flex items-center justify-between pb-3 border-b border-slate-100">
-      <div class="flex items-center gap-2 min-w-0"><h3 class="text-sm font-bold text-slate-800 truncate">仿真 ${esc(i.id)}: ${esc(i.name)}</h3>${badge(i.status)}</div>
+      <div class="flex items-center gap-2 min-w-0"><h3 class="text-sm font-bold text-slate-800 truncate">仿真 ${esc(i.id)}: ${esc(i.name)}</h3>${cardState(i.status)}</div>
       <span class="text-xs text-slate-500 font-mono whitespace-nowrap">时长: ${dur(Date.now() / 1000 - (i.started || i.created))}</span></div>
     <div class="grid grid-cols-2 gap-x-6 gap-y-2 py-4 text-xs">
       <div>• 仿真节点: <span class="font-mono">${esc(sn?.host || '外部')}</span> ${kindTag(sn)}</div>
@@ -99,45 +106,12 @@ function instCard(i) {
       <div>• 使用人员: ${esc(i.operator || '—')}${i.brief?.lock?.held ? ` <span class="text-[10px] text-emerald-600">(控制中: ${esc(i.brief.lock.user)})</span>` : ''}</div>
     </div>
     ${i.health && !(i.health.sim && i.health.nav) ? `<div class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-1.5 mb-3">健康检查: 仿真 ${i.health.sim ? '正常' : '无响应'} · 执行 ${i.health.nav ? '正常' : '无响应'} · 网关 ${i.health.web ? '正常' : '无响应'}</div>` : ''}
-    <div class="mt-auto pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-      <span class="text-xs text-slate-500 truncate">${step}</span>
-      <div class="flex items-center gap-1.5 shrink-0">
-        ${i.external ? '' : `<button class="btn-ghost !px-2" title="日志" data-logs="${i.id}"><i data-lucide="scroll-text" class="w-3.5 h-3.5"></i></button>`}
-        <button class="btn-ghost !px-2" title="部署详情" data-steps="${i.id}"><i data-lucide="list-checks" class="w-3.5 h-3.5"></i></button>
-        ${i.external ? '' : `<button class="btn-ghost !px-2" title="重启" data-restart="${i.id}"><i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i></button>`}
-        <button class="btn-danger" data-stop="${i.id}"><i data-lucide="square" class="w-3.5 h-3.5"></i>终止仿真</button>
-        ${run || i.status === 'degraded' ? `<button class="btn-primary" data-enter="${i.id}"><i data-lucide="play-circle" class="w-3.5 h-3.5"></i>进入仿真控制界面</button>`
-      : `<button class="btn-soft" data-steps="${i.id}">查看进度</button>`}
-      </div></div></div>`;
-}
-
-function openAttach() {
-  const m = modal({
-    title: '接入已有实例', icon: 'link', size: 'max-w-lg',
-    body: `<p class="text-xs text-slate-500 mb-4 leading-relaxed">把未经平台部署的仿真 (例如用 deploy.sh 直接启动的) 接入平台，即可在工作台操作。平台只做代理，不管理其容器。</p>
-      <label class="lbl">名称</label><input class="inp mb-3" data-f="name" placeholder="例如: 车间树莓派现有仿真">
-      <label class="lbl">Web 网关地址</label><input class="inp font-mono" data-f="web_url" value="http://${location.hostname}:8088">`,
-    footer: `<button data-close class="btn-ghost">取消</button><button data-ok class="btn-primary">接入</button>`,
-  });
-  $('[data-ok]', m.el).onclick = guard(async () => {
-    const b = {}; $$('[data-f]', m.el).forEach(i => b[i.dataset.f] = i.value.trim());
-    const r = await hub.post('/instances/attach', b); m.close(); toast(`已接入 ${r.id}`, 'ok'); show('overview');
-  });
-}
-
-async function openLogs(iid) {
-  let svc = 'sim';
-  const m = modal({ title: `实例 ${iid} 容器日志`, icon: 'scroll-text', size: 'max-w-5xl',
-    headExtra: `<div class="seg"><button data-svc="sim" class="on">仿真程序 agv-sim</button><button data-svc="nav">运行程序 agv-nav</button></div>
-      <button class="btn-ghost" data-refresh><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>`,
-    body: `<pre data-log class="text-[11px] leading-relaxed font-mono bg-slate-900 text-slate-200 rounded-lg p-4 h-[60vh] overflow-auto whitespace-pre-wrap">加载中…</pre>` });
-  const load = guard(async () => {
-    const r = await hub.get(`/instances/${iid}/logs?svc=${svc}&tail=400`);
-    const pre = $('[data-log]', m.el); pre.textContent = r.logs || '(空)'; pre.scrollTop = pre.scrollHeight;
-  });
-  $$('[data-svc]', m.el).forEach(b => b.onclick = () => { svc = b.dataset.svc; $$('[data-svc]', m.el).forEach(x => x.classList.toggle('on', x === b)); load(); });
-  $('[data-refresh]', m.el).onclick = load;
-  load();
+    <div class="mt-auto pt-3 border-t border-slate-100 flex items-center justify-end gap-1.5 flex-wrap">
+      ${i.external ? '' : `<a class="btn-ghost" title="下载仿真引擎 (agv-sim) 运行日志文件" href="/api/hub/instances/${encodeURIComponent(i.id)}/logs/file?svc=sim" download><i data-lucide="download" class="w-3.5 h-3.5"></i>仿真引擎日志</a>
+        <button class="btn-ghost !px-2" title="重启" data-restart="${i.id}"><i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i></button>`}
+      <button class="btn-danger" data-stop="${i.id}"><i data-lucide="square" class="w-3.5 h-3.5"></i>终止仿真</button>
+      ${run ? `<button class="btn-primary" data-enter="${i.id}"><i data-lucide="play-circle" class="w-3.5 h-3.5"></i>进入仿真控制界面</button>` : ''}
+    </div></div>`;
 }
 
 // ============================================================================ 部署向导
@@ -255,31 +229,35 @@ async function pCompute() {
 
 function openAddNode() {
   const m = modal({ title: '添加计算资源节点', icon: 'server', size: 'max-w-2xl',
-    body: `<div class="grid grid-cols-2 gap-3 mb-4"><div><label class="lbl">计算资源类型</label><select class="inp" data-f="kind">
+    body: `<div class="grid grid-cols-2 gap-3"><div><label class="lbl">计算资源类型</label><select class="inp" data-f="kind">
         <option value="hybrid">虚拟机/树莓派 (运行 + 仿真引擎)</option><option value="controller">实体运行设备 (控制器)</option><option value="sim">虚拟机设备 (仿真引擎)</option></select></div>
-      <div><label class="lbl">备注</label><input class="inp" data-f="note" placeholder="例如: 2 号树莓派"></div></div>
-      <div class="text-xs text-slate-600 leading-relaxed bg-slate-50 border border-slate-200 rounded-lg p-3 mb-3">节点通过<b>节点代理</b>接入 (代替 SSH 密码握手，平台不保存任何密码)：在目标设备的项目目录执行下面的命令，代理启动后自动注册到平台。令牌 24 小时内有效，仅能使用一次。</div>
-      <div data-cmd class="hidden"><label class="lbl">在目标设备执行 (需已安装 Docker)</label>
-        <pre data-c1 class="text-[11px] font-mono bg-slate-900 text-emerald-300 rounded-lg p-3 whitespace-pre-wrap break-all select-all"></pre>
-        <label class="lbl mt-3">或直接 docker run</label><pre data-c2 class="text-[11px] font-mono bg-slate-900 text-slate-300 rounded-lg p-3 whitespace-pre-wrap break-all select-all"></pre>
-        <div data-wait class="mt-3 text-xs text-blue-600 flex items-center gap-2"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i>等待节点握手注册…</div></div>`,
-    footer: `<button data-close class="btn-ghost">关闭</button><button data-gen class="btn-primary">生成接入令牌</button>` });
-  $('[data-gen]', m.el).onclick = guard(async () => {
-    const b = {}; $$('[data-f]', m.el).forEach(i => b[i.dataset.f] = i.value);
-    const before = (await hub.get('/nodes')).nodes.map(n => n.id);
-    const r = await hub.post('/nodes/enroll', b);
-    $('[data-c1]', m.el).textContent = r.command; $('[data-c2]', m.el).textContent = r.docker;
-    $('[data-cmd]', m.el).classList.remove('hidden'); icons(m.el);
-    for (let k = 0; k < 600 && document.body.contains(m.el); k++) {
-      await sleep(2000);
-      const now = (await hub.get('/nodes')).nodes;
-      const nw = now.find(n => !before.includes(n.id));
-      if (nw) {
-        $('[data-wait]', m.el).innerHTML = `<i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-emerald-600"></i><span class="text-emerald-700">节点 ${esc(nw.name)} (${esc(nw.lan_host)}, ${esc(nw.arch)}) 已接入</span>`;
-        icons(m.el); if (b.note) hub.patch(`/nodes/${nw.id}`, { note: b.note, kind: b.kind }); show('compute'); break;
-      }
+      <div><label class="lbl">备注</label><input class="inp" data-f="note" placeholder="例如: 2 号树莓派"></div>
+      <div><label class="lbl">节点 IP</label><input class="inp font-mono" data-f="ip" placeholder="192.168.1.20" autocomplete="off"></div>
+      <div><label class="lbl">部署端口 (SSH)</label><input class="inp font-mono" data-f="ssh_port" type="number" min="1" max="65535" value="22"></div>
+      <div><label class="lbl">用户名</label><input class="inp font-mono" data-f="username" autocomplete="off"></div>
+      <div><label class="lbl">密码</label><input class="inp font-mono" data-f="password" type="password" autocomplete="new-password"></div></div>
+      <div class="text-[11px] text-slate-500 leading-relaxed mt-3">平台用以上 SSH 信息登录目标设备，安装并启动节点代理，代理随后自动注册到平台。目标设备需要 python3 (3.8 以上)；有 Docker 时仿真实例用 Docker 运行。密码只用于本次登录，平台不保存。</div>
+      <div data-res class="mt-3 text-xs"></div>`,
+    footer: `<button data-close class="btn-ghost">取消</button><button data-ok class="btn-primary">添加节点</button>` });
+  const res = $('[data-res]', m.el), ok = $('[data-ok]', m.el);
+  ok.onclick = async () => {
+    const b = {}; $$('[data-f]', m.el).forEach(i => b[i.dataset.f] = i.value.trim());
+    b.password = $('[data-f=password]', m.el).value;
+    if (!b.ip || !b.username || !b.password) { res.innerHTML = '<div class="text-rose-600">请填写节点 IP、用户名和密码</div>'; return; }
+    ok.disabled = true;
+    res.innerHTML = `<div class="flex items-center gap-2 text-blue-600"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i>正在登录 ${esc(b.ip)}:${esc(b.ssh_port || '22')} 并安装节点代理…</div>`; icons(m.el);
+    try {
+      const r = await hub.post('/nodes/add', b);
+      const n = r.node;
+      res.innerHTML = `<div class="flex items-center gap-2 text-emerald-700"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>节点 ${esc(n.name)} (${esc(n.lan_host)}, ${esc(n.arch || '')}) 已接入</div>`;
+      ok.textContent = '完成'; ok.disabled = false; ok.onclick = () => m.close();
+      show('compute');
+    } catch (e) {
+      res.innerHTML = `<div class="flex gap-2 text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-1.5 whitespace-pre-wrap break-all"><i data-lucide="x-circle" class="w-3.5 h-3.5 mt-px shrink-0"></i>${esc(e.message)}</div>`;
+      ok.disabled = false;
     }
-  });
+    icons(m.el);
+  };
 }
 
 async function openNode(nid) {
@@ -296,25 +274,14 @@ async function openNode(nid) {
         <div class="kv"><span>硬件</span><span>${esc(n.model || '—')}</span></div><div class="kv"><span>架构 / CPU</span><span>${esc(n.arch)} / ${n.cpu_count} 核</span></div>
         <div class="kv"><span>内存</span><span>${bytes(n.mem_total)} (${fmt(n.mem_percent, 0)}%)</span></div><div class="kv"><span>系统</span><span>${esc(n.os)}</span></div>
         <div class="kv"><span>运行时</span><span>${esc(n.runtime?.runtime)} ${esc(n.runtime?.version || '')}</span></div><div class="kv"><span>磁盘剩余</span><span>${bytes(n.disk?.free)}</span></div>
-        <div class="kv"><span>最后心跳</span><span>${ago(n.last_seen)}</span></div><div class="kv"><span>IP</span><span>${esc((n.ips || []).join(', '))}</span></div></div>
-        <div class="card p-4"><div class="panel-title mb-3">节点设置</div><div class="grid grid-cols-2 gap-3">
-          <div><label class="lbl">名称</label><input class="inp" data-f="name" value="${esc(n.name)}"></div>
-          <div><label class="lbl">类型</label><select class="inp" data-f="kind">${KINDS.map(([k, t]) => `<option value="${k}" ${k === n.kind ? 'selected' : ''}>${t.slice(2)}</option>`).join('')}</select></div>
-          <div><label class="lbl">可同时运行实例数</label><input class="inp" type="number" min="1" max="8" data-f="max_instances" value="${n.max_instances}"></div>
-          <div><label class="lbl">备注</label><input class="inp" data-f="note" value="${esc(n.note)}"></div></div>
-          <div class="flex justify-between mt-4"><button data-rm class="btn-danger">移除节点</button><button data-save class="btn-primary">保存</button></div></div></div>
+        <div class="kv"><span>最后心跳</span><span>${ago(n.last_seen)}</span></div><div class="kv"><span>IP</span><span>${esc((n.ips || []).join(', '))}</span></div>
+        <div class="kv"><span>类型</span><span>${esc(n.kind_label || '—')}</span></div><div class="kv"><span>可同时运行实例数</span><span>${n.max_instances}</span></div>
+        ${n.ssh ? `<div class="kv"><span>SSH 部署地址</span><span class="font-mono">${esc(n.ssh.user)}@${esc(n.ssh.ip)}:${n.ssh.port}</span></div>` : ''}
+        ${n.note ? `<div class="kv"><span>备注</span><span>${esc(n.note)}</span></div>` : ''}</div></div>
       <div class="space-y-4"><div class="card p-4"><div class="panel-title">CPU ${fmt(n.cpu_percent, 0)}%</div>${spark(1, '#2563eb')}
         <div class="panel-title mt-2">内存 ${fmt(n.mem_percent, 0)}%</div>${spark(2, '#7c3aed')}${n.temp_c ? `<div class="panel-title mt-2">温度 ${n.temp_c}°C</div>${spark(3, '#dc2626', 90)}` : ''}</div>
         <div class="card p-4"><div class="panel-title mb-2">仿真镜像</div>${n.images.map(i => `<div class="kv"><span class="font-mono">${esc(i.ref)}</span><span>${esc(i.kind)} · ${bytes(i.size)}</span></div>`).join('') || '<div class="text-xs text-slate-400">无</div>'}</div>
         <div class="card p-4"><div class="panel-title mb-2">托管容器</div>${n.containers.map(c => `<div class="kv"><span class="font-mono">${esc(c.name)}</span><span>${esc(c.state)} ${esc(c.status || '')}</span></div>`).join('') || '<div class="text-xs text-slate-400">无</div>'}</div></div></div>` });
-  $('[data-save]', m.el).onclick = guard(async () => {
-    const b = {}; $$('[data-f]', m.el).forEach(i => b[i.dataset.f] = i.value);
-    await hub.patch(`/nodes/${nid}`, b); toast('已保存', 'ok'); m.close(); show('compute');
-  });
-  $('[data-rm]', m.el).onclick = guard(async () => {
-    if (!await confirmBox(`从平台移除节点 ${n.name}？节点代理下次心跳会被拒绝，需要重新接入。`)) return;
-    await hub.del(`/nodes/${nid}`); m.close(); show('compute');
-  });
 }
 
 // ============================================================================ 车辆模型
@@ -387,7 +354,7 @@ async function openModel(mid) {
   let view = null;
   const m = modal({ full: true, title: `车辆模型详情 - ${esc(d.name)}`, icon: 'truck',
     badge: `<span class="text-[11px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-semibold ml-2">${esc(d.vtype || s.chassis_label || '')}</span>`,
-    headExtra: `<div class="seg mr-2"><button data-tab="ov" class="on">概览</button><button data-tab="ed">补全与传感器安装</button><button data-tab="ver">版本</button></div>
+    headExtra: `<div class="seg mr-2"><button data-tab="ov" class="on">概览</button><button data-tab="ed" class="hidden">补全与传感器安装</button><button data-tab="ver">版本</button></div>
       <a class="btn-ghost" href="/api/hub/models/${mid}/cmodel"><i data-lucide="download" class="w-3.5 h-3.5"></i>下载 cmodel 模型包</a>`,
     body: `<div data-pane="ov" class="h-full flex">
       <div class="flex-1 relative bg-slate-900 min-w-0" data-3d>

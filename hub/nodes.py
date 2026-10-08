@@ -87,7 +87,7 @@ class NodeRegistry:
                 "mem_percent": mem.get("percent"), "temp_c": info.get("temp_c"), "model": info.get("model"), "os": info.get("os"),
                 "runtime": info.get("runtime"), "images": info.get("images", []), "containers": info.get("containers", []),
                 "ports_in_use": info.get("ports_in_use", []), "disk": info.get("disk"), "ips": info.get("ips", []),
-                "load": info.get("load"), "max_instances": n.get("max_instances", 1), "note": n.get("note", ""),
+                "load": info.get("load"), "ssh": {k: v for k, v in (n.get("ssh") or {}).items() if k != "password"} or None, "max_instances": n.get("max_instances", 1), "note": n.get("note", ""),
                 "instances": [{"id": i["id"], "name": i.get("name"), "operator": i.get("operator"), "role":
                                "sim+nav" if i.get("sim_node") == i.get("nav_node") else ("sim" if i.get("sim_node") == n["id"] else "nav")}
                               for i in mine],
@@ -111,22 +111,27 @@ class NodeRegistry:
         return self.lan_host(dst)
 
     # ------------------------------------------------------------------ 接入
-    def new_token(self, operator: str = "", note: str = "") -> dict:
+    def new_token(self, operator: str = "", note: str = "", meta: Optional[dict] = None, ttl: float = 24 * 3600) -> dict:
+        """meta: 注册成功后写到节点上的字段 (SSH 接入时的类型/备注/SSH 地址)"""
         tok = "jt-" + secrets.token_urlsafe(10)
-        return self.s.put("tokens", {"id": tok, "operator": operator, "note": note, "used": False, "expires": time.time() + 24 * 3600})
+        return self.s.put("tokens", {"id": tok, "operator": operator, "note": note, "used": False, "expires": time.time() + ttl,
+                                     "meta": meta or {}})
 
     def register(self, body: dict, client_ip: str) -> dict:
         nid, key, tok = body.get("node_id"), body.get("node_key"), body.get("token") or ""
         host = body.get("advertise_host") or client_ip
         n = self.s.get("nodes", nid) if nid else None
+        used_tok = None
         if n and key and secrets.compare_digest(n.get("key", ""), key):
             pass
         else:
             ok = tok and tok == self.s.setting("cluster_token")
             t = self.s.get("tokens", tok) if tok and not ok else None
+            meta = {}
             if t and not t.get("used") and t.get("expires", 0) > time.time():
                 ok = True
-                self.s.update("tokens", tok, used=True, used_by=body.get("name"), used_at=time.time())
+                meta = t.get("meta") or {}
+                used_tok = tok
             if not ok:
                 raise ApiError(401, "接入令牌无效或已过期，请在平台「添加计算节点」重新生成", "bad_token")
             n = next((x for x in self.s.list("nodes") if x.get("name") == body.get("name") and x.get("host") == host), None)
@@ -134,6 +139,9 @@ class NodeRegistry:
                 n = {"id": new_id("n-", {x["id"]: 1 for x in self.s.list("nodes")}), "created": time.time(),
                      "kind": body.get("kind") or "hybrid", "max_instances": 1}
             n["key"] = secrets.token_urlsafe(24)
+            for k in ("kind", "note", "ssh"):
+                if meta.get(k):
+                    n[k] = meta[k]
         info = body.get("info") or {}
         n.update({"name": body.get("name") or n.get("name") or host, "host": host, "api_port": int(body.get("api_port") or 8070),
                   "hub_url": body.get("hub_url"), "arch": info.get("arch") or n.get("arch"), "status": "online",
@@ -141,6 +149,8 @@ class NodeRegistry:
         if info:
             n["info"] = info
         self.s.put("nodes", n)
+        if used_tok:
+            self.s.update("tokens", used_tok, used=True, used_by=body.get("name"), used_at=time.time(), node_id=n["id"])
         return {"node_id": n["id"], "node_key": n["key"], "host": host}
 
     def heartbeat(self, nid: str, key: str, info: dict) -> dict:
