@@ -66,6 +66,8 @@ class NodeRegistry:
 
     def _live(self, n: dict) -> dict:
         n = dict(n)
+        if n.get("status") == "pending":          # 已保存 SSH 账号、还没装运行环境 (首次部署时安装)
+            return n
         if time.time() - (n.get("last_seen") or 0) > OFFLINE_AFTER:
             n["status"] = "offline"
         return n
@@ -78,11 +80,12 @@ class NodeRegistry:
         info = n.get("info") or {}
         mine = [i for i in instances if n["id"] in (i.get("sim_node"), i.get("nav_node")) and i.get("status") in
                 ("deploying", "running", "degraded", "starting")]
-        busy = "offline" if n.get("status") == "offline" else ("running" if mine else "idle")
+        busy = n.get("status") if n.get("status") in ("offline", "pending") else ("running" if mine else "idle")
         mem = info.get("mem") or {}
         return {"id": n["id"], "name": n.get("name"), "host": n.get("host"), "lan_host": self.lan_host(n), "api_port": n.get("api_port"),
                 "kind": n.get("kind", "hybrid"), "kind_label": KIND_LABEL.get(n.get("kind", "hybrid")), "caps": caps(n),
-                "arch": n.get("arch"), "status": busy, "online": n.get("status") != "offline", "last_seen": n.get("last_seen"),
+                "arch": n.get("arch"), "status": busy, "online": n.get("status") not in ("offline", "pending"), "pending": n.get("status") == "pending",
+                "ssh_check": n.get("ssh_check"), "last_seen": n.get("last_seen"),
                 "cpu_count": info.get("cpu_count"), "cpu_percent": info.get("cpu_percent"), "mem_total": mem.get("total"),
                 "mem_percent": mem.get("percent"), "temp_c": info.get("temp_c"), "model": info.get("model"), "os": info.get("os"),
                 "runtime": info.get("runtime"), "images": info.get("images", []), "containers": info.get("containers", []),
@@ -117,6 +120,18 @@ class NodeRegistry:
         return self.s.put("tokens", {"id": tok, "operator": operator, "note": note, "used": False, "expires": time.time() + ttl,
                                      "meta": meta or {}})
 
+    def add_pending(self, ip: str, kind: str, name: str, note: str, ssh: dict, cred: str, check: dict) -> dict:
+        """添加节点时只保存 SSH 信息 (已验证可登录)；同一 IP 已存在则更新"""
+        n = next((x for x in self.s.list("nodes") if (x.get("ssh") or {}).get("ip") == ip or x.get("host") == ip), None)
+        if n and n.get("status") != "pending" and n.get("key"):
+            n.update(ssh=ssh, cred=cred, ssh_check={"at": time.time(), **check}, note=note or n.get("note", ""))
+            return self.s.put("nodes", n)
+        n = n or {"id": new_id("n-", {x["id"]: 1 for x in self.s.list("nodes")}), "created": time.time(), "max_instances": 1}
+        n.update({"name": name or ip, "host": ip, "api_port": 8070, "kind": kind, "note": note, "ssh": ssh, "cred": cred,
+                  "status": "pending", "arch": check.get("arch"), "ssh_check": {"at": time.time(), **check},
+                  "info": {"os": check.get("os"), "arch": check.get("arch"), "ips": [ip]}})
+        return self.s.put("nodes", n)
+
     def register(self, body: dict, client_ip: str) -> dict:
         nid, key, tok = body.get("node_id"), body.get("node_key"), body.get("token") or ""
         host = body.get("advertise_host") or client_ip
@@ -134,7 +149,8 @@ class NodeRegistry:
                 used_tok = tok
             if not ok:
                 raise ApiError(401, "接入令牌无效或已过期，请在平台「添加计算节点」重新生成", "bad_token")
-            n = next((x for x in self.s.list("nodes") if x.get("name") == body.get("name") and x.get("host") == host), None)
+            n = self.s.get("nodes", meta["node_id"]) if meta.get("node_id") else None   # 首次部署: 挂到已保存的节点记录上
+            n = n or next((x for x in self.s.list("nodes") if x.get("name") == body.get("name") and x.get("host") == host), None)
             if not n:
                 n = {"id": new_id("n-", {x["id"]: 1 for x in self.s.list("nodes")}), "created": time.time(),
                      "kind": body.get("kind") or "hybrid", "max_instances": 1}
@@ -143,7 +159,7 @@ class NodeRegistry:
                 if meta.get(k):
                     n[k] = meta[k]
         info = body.get("info") or {}
-        n.update({"name": body.get("name") or n.get("name") or host, "host": host, "api_port": int(body.get("api_port") or 8070),
+        n.update({"name": (n.get("name") if n.get("ssh") else None) or body.get("name") or n.get("name") or host, "host": host, "api_port": int(body.get("api_port") or 8070),
                   "hub_url": body.get("hub_url"), "arch": info.get("arch") or n.get("arch"), "status": "online",
                   "last_seen": time.time()})
         if info:

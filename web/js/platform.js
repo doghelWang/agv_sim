@@ -120,7 +120,7 @@ export async function openDeploy(pre = {}) {
   const [nodes, models, scenes, pkgs] = await Promise.all([hub.get('/nodes'), hub.get('/models'), hub.get('/scenes'), hub.get('/packages')]).catch(e => { toast(e.message, 'err'); return []; });
   if (!nodes) return;
   const N = nodes.nodes, sel = { split: false, ...pre };
-  const nodeOpt = (role) => N.filter(n => n.caps[role]).map(n => `<option value="${n.id}" ${n.online ? '' : 'disabled'}>${esc(n.host)} - ${esc(n.name)} (${n.cpu_count || '?'}核/${n.mem_total ? Math.round(n.mem_total / 1073741824) + 'G' : '?'}, ${n.online ? (n.status === 'idle' ? '🟢 空闲' : '🟡 运行中') : '⚪ 离线'}${n.arch ? ', ' + n.arch : ''})</option>`).join('');
+  const nodeOpt = (role) => N.filter(n => n.caps[role]).map(n => `<option value="${n.id}" ${n.online || n.pending ? '' : 'disabled'}>${esc(n.host)} - ${esc(n.name)} (${n.cpu_count || '?'}核/${n.mem_total ? Math.round(n.mem_total / 1073741824) + 'G' : '?'}, ${n.pending ? '🔵 待部署' : n.online ? (n.status === 'idle' ? '🟢 空闲' : '🟡 运行中') : '⚪ 离线'}${n.arch ? ', ' + n.arch : ''})</option>`).join('');
   const pk = (k) => pkgs.packages.filter(p => p.kind === k).map(p => `<option value="${p.id}">${esc(p.version)} (${esc({ upload: '平台仓库', node: '节点镜像', process: '源码' }[p.source])}${p.tag === 'baseline' ? ' · 基准推荐' : ''}${p.note ? ' · ' + esc(p.note).slice(0, 24) : ''})</option>`).join('');
   const step = (n, t, inner) => `<div class="mb-5"><div class="flex items-center gap-2 mb-2"><span class="w-5 h-5 rounded-full bg-blue-50 text-blue-600 text-[11px] font-bold flex items-center justify-center">${n}</span><span class="text-xs font-bold text-slate-800">${t}</span></div>${inner}</div>`;
   const m = modal({
@@ -209,14 +209,17 @@ const KINDS = [['controller', 'a、实体运行设备 (控制器)', 'bg-blue-600
 async function pCompute() {
   const d = await hub.get('/nodes');
   const card = (n) => {
-    const st = n.status === 'offline' ? badge('offline') : n.status === 'running'
+    const st = n.pending ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">🔵 待部署</span>`
+      : n.status === 'offline' ? badge('offline') : n.status === 'running'
       ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200">🟡 运行中 (${esc(n.instances.map(i => i.operator || i.id).join(','))})</span>`
       : `<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">🟢 空闲 (CPU ${fmt(n.cpu_percent, 0)}%)</span>`;
     return `<div class="card p-4 hover:border-blue-300 cursor-pointer transition-colors" data-node="${n.id}">
       <div class="flex justify-between items-start"><div class="min-w-0"><div class="text-sm font-bold font-mono text-slate-800">${esc(n.lan_host)}</div>
         <div class="text-xs text-slate-600 mt-0.5">${esc(n.name)} (${n.cpu_count || '?'}核/${n.mem_total ? Math.round(n.mem_total / 1073741824) + 'G' : '?'}) · ${esc(n.arch || '')}</div></div>${st}</div>
+      ${n.pending ? `<div class="text-[11px] text-slate-500 mt-2 truncate">SSH ${esc(n.ssh?.user || '')}@${esc(n.ssh?.ip || '')}:${n.ssh?.port || ''} 验证通过 (${ago(n.ssh_check?.at)}) · ${esc(n.ssh_check?.brief || '')}</div>
+      <div class="text-[11px] text-blue-600 mt-1">尚未安装运行环境，第一次部署仿真到该节点时自动安装</div></div>` : `
       <div class="text-[11px] text-slate-400 mt-2 truncate">系统: ${esc(n.os || '—')} | ${esc(n.runtime?.runtime || '—')} ${esc(n.runtime?.version || '')} | 代理端口: ${n.api_port}${n.temp_c ? ` | ${n.temp_c}°C` : ''}</div>
-      <div class="text-[11px] text-slate-400 mt-1">${n.role === 'monitor' ? '<span class="text-blue-600">基础监测 (首次部署时启用运行环境)</span> · ' : ''}镜像: ${n.images.map(i => esc(i.ref)).join(', ') || '无'}${n.agent_error ? ` · <span class="text-rose-500">${esc(n.agent_error)}</span>` : ''}</div></div>`;
+      <div class="text-[11px] text-slate-400 mt-1">镜像: ${n.images.map(i => esc(i.ref)).join(', ') || '无'}${n.agent_error ? ` · <span class="text-rose-500">${esc(n.agent_error)}</span>` : ''}</div></div>`}`;
   };
   main().innerHTML = header('计算资源池', `<button class="btn-primary" data-add><i data-lucide="plus" class="w-3.5 h-3.5"></i>添加计算节点</button>`) +
     KINDS.map(([k, t, c]) => {
@@ -237,20 +240,20 @@ function openAddNode() {
       <div><label class="lbl">部署端口 (SSH)</label><input class="inp font-mono" data-f="ssh_port" type="number" min="1" max="65535" value="22"></div>
       <div><label class="lbl">用户名</label><input class="inp font-mono" data-f="username" autocomplete="off"></div>
       <div><label class="lbl">密码</label><input class="inp font-mono" data-f="password" type="password" autocomplete="new-password"></div></div>
-      <div class="text-[11px] text-slate-500 leading-relaxed mt-3">平台用以上 SSH 信息登录目标设备，检查并安装基础环境 (只做状态监测：CPU、内存、温度、磁盘)，随后节点出现在资源池里。仿真运行环境在第一次部署到该节点时再启用。目标设备需要 python3 (3.8 以上)；有 Docker 时仿真实例用 Docker 运行。密码只用于本次登录，平台不保存。</div>
+      <div class="text-[11px] text-slate-500 leading-relaxed mt-3">只验证 SSH 端口与账号能否登录，验证通过即保存，不在目标设备上安装任何东西。第一次部署仿真到该节点时，平台再用这个账号安装运行环境 (目标设备需要 python3 3.8 以上和 Docker)。密码加密保存在平台本机，不会在页面或接口中显示。</div>
       <div data-res class="mt-3 text-xs"></div>`,
-    footer: `<button data-close class="btn-ghost">取消</button><button data-ok class="btn-primary">添加并安装基础环境</button>` });
+    footer: `<button data-close class="btn-ghost">取消</button><button data-ok class="btn-primary">验证并保存</button>` });
   const res = $('[data-res]', m.el), ok = $('[data-ok]', m.el);
   ok.onclick = async () => {
     const b = {}; $$('[data-f]', m.el).forEach(i => b[i.dataset.f] = i.value.trim());
     b.password = $('[data-f=password]', m.el).value;
     if (!b.ip || !b.username || !b.password) { res.innerHTML = '<div class="text-rose-600">请填写节点 IP、用户名和密码</div>'; return; }
     ok.disabled = true;
-    res.innerHTML = `<div class="flex items-center gap-2 text-blue-600"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i>正在登录 ${esc(b.ip)}:${esc(b.ssh_port || '22')} 并安装基础环境…</div>`; icons(m.el);
+    res.innerHTML = `<div class="flex items-center gap-2 text-blue-600"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i>正在验证 ${esc(b.ip)}:${esc(b.ssh_port || '22')} 的 SSH 登录…</div>`; icons(m.el);
     try {
       const r = await hub.post('/nodes/add', b);
       const n = r.node;
-      res.innerHTML = `<div class="flex items-center gap-2 text-emerald-700"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>节点 ${esc(n.name)} (${esc(n.lan_host)}) 已接入: ${esc(r.agent || '')}</div>`;
+      res.innerHTML = `<div class="flex items-center gap-2 text-emerald-700"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>SSH 验证通过，节点 ${esc(n.name)} 已保存: ${esc(r.check || '')}</div>`;
       ok.textContent = '完成'; ok.disabled = false; ok.onclick = () => m.close();
       show('compute');
     } catch (e) {
@@ -278,6 +281,8 @@ async function openNode(nid) {
         <div class="kv"><span>最后心跳</span><span>${ago(n.last_seen)}</span></div><div class="kv"><span>IP</span><span>${esc((n.ips || []).join(', '))}</span></div>
         <div class="kv"><span>类型</span><span>${esc(n.kind_label || '—')}</span></div><div class="kv"><span>可同时运行实例数</span><span>${n.max_instances}</span></div>
         ${n.ssh ? `<div class="kv"><span>SSH 部署地址</span><span class="font-mono">${esc(n.ssh.user)}@${esc(n.ssh.ip)}:${n.ssh.port}</span></div>` : ''}
+        ${n.ssh_check ? `<div class="kv"><span>SSH 验证</span><span>${dt(n.ssh_check.at)} · ${esc(n.ssh_check.brief || '')}</span></div>` : ''}
+        ${n.pending ? '<div class="text-[11px] text-blue-600 mt-2">尚未安装运行环境，第一次部署仿真到该节点时自动安装；之后才有 CPU / 内存等监测数据。</div>' : ''}
         ${n.note ? `<div class="kv"><span>备注</span><span>${esc(n.note)}</span></div>` : ''}</div></div>
       <div class="space-y-4"><div class="card p-4"><div class="panel-title">CPU ${fmt(n.cpu_percent, 0)}%</div>${spark(1, '#2563eb')}
         <div class="panel-title mt-2">内存 ${fmt(n.mem_percent, 0)}%</div>${spark(2, '#7c3aed')}${n.temp_c ? `<div class="panel-title mt-2">温度 ${n.temp_c}°C</div>${spark(3, '#dc2626', 90)}` : ''}</div>

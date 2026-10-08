@@ -84,6 +84,8 @@ class Deployer:
                 continue
             if n.get("status") == "offline":
                 issues.append(f"节点 {n.get('name')} 离线")
+            if n.get("status") == "pending" and f"节点 {n.get('name')}" not in "".join(warns):
+                warns.append(f"节点 {n.get('name')} 首次部署: 先通过 SSH 安装运行环境 (约 1 分钟)，目标设备需有 python3 与 Docker")
             if not caps(n)[role]:
                 issues.append(f"节点 {n.get('name')} 类型为「{n.get('kind')}」，不能运行{'仿真引擎' if role == 'sim' else '运行程序'}")
             used = [i for i in active if n["id"] in (i.get("sim_node"), i.get("nav_node"))]
@@ -179,11 +181,39 @@ class Deployer:
         with self.lock:
             return self.s.update("instances", iid, **fields)
 
+    def _install_runtime(self, iid: str, nid: str):
+        """首次部署到「添加时只保存了 SSH 账号」的节点: 用保存的账号登录，安装并启动节点程序，等它注册上线"""
+        from hub.sshjoin import install_agent, local_ip_towards, unseal
+        n = self.nodes.get(nid)
+        ssh = n.get("ssh") or {}
+        if not n.get("cred") or not ssh.get("ip"):
+            raise AgentError(f"节点 {n.get('name')} 没有保存 SSH 账号，请重新添加")
+        self._step(iid, "check", "running", f"节点 {n['name']} 首次部署: 通过 SSH 安装运行环境…")
+        me = local_ip_towards(ssh["ip"], ssh.get("port", 22)) or "127.0.0.1"
+        hub_url = f"http://{me}:{self.hub_port}"
+        t = self.nodes.new_token("deploy", f"首次部署 {iid}", meta={"node_id": nid}, ttl=600)
+        try:
+            brief = install_agent(ssh["ip"], int(ssh.get("port", 22)), ssh["user"], unseal(self.s, n["cred"]), hub_url, t["id"],
+                                  n.get("kind", "hybrid"), n.get("name", ""))
+        except ApiError as e:
+            raise AgentError(e.message)
+        t0 = time.time()
+        while time.time() - t0 < 40:
+            nn = self.nodes.get(nid)
+            if nn.get("key") and nn.get("status") != "pending" and (nn.get("last_seen") or 0) >= t0 - 1:
+                self._step(iid, "check", "running", f"节点 {n['name']} 运行环境已安装 ({brief})")
+                return
+            time.sleep(1)
+        raise AgentError(f"节点 {n['name']} 的节点程序已启动 ({brief})，但 40 秒内没有注册到平台；请确认它能访问 {hub_url}")
+
     def _run_deploy(self, iid: str):
         i = self.get(iid)
         started = []
         try:
             self._step(iid, "check", "running")
+            for nid in dict.fromkeys((i["sim_node"], i["nav_node"])):
+                if self.nodes.get(nid).get("status") == "pending":
+                    self._install_runtime(iid, nid)
             sim_n, nav_n = self.nodes.get(i["sim_node"]), self.nodes.get(i["nav_node"])
             ag_s, ag_n = self.nodes.client(sim_n), self.nodes.client(nav_n)
             sim_p, nav_p = self.pk.get(i["sim_pkg"]), self.pk.get(i["nav_pkg"])

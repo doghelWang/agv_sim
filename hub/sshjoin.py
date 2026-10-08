@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-通过 SSH 接入计算节点 (安装基础环境): 平台用用户在「添加计算节点」里填的 IP / SSH 端口 / 用户名 / 密码登录目标设备，
-检查基础环境 (python3、Docker)，把节点程序 (agent + common，纯 Python 标准库) 拷过去，以「基础监测」角色 (AGENT_ROLE=monitor)
-用一次性令牌 (平台内部生成，不给用户看) 在后台启动: 只上报 CPU/内存/温度/磁盘等状态，不接受部署。
-第一次在该节点部署仿真时，平台把它切换为完整运行环境 (POST /api/v1/admin/role)，之后照常部署。
+计算节点的 SSH 接入 (hub)
 
-  - 密码只用于这一次登录，不写入平台数据库
-  - 目标设备需要 python3 (>= 3.8)；有 Docker 时代理用 Docker 运行仿真实例，没有时用进程方式
-  - 代理装在目标设备的 ~/.agv-agent/app，日志 ~/.agv-agent/agent.log，进程号 ~/.agv-agent/agent.pid
+  添加节点 (check_login): 只验证 IP / SSH 端口 / 用户名 / 密码能否登录，读出架构与系统，保存到节点记录；不在目标设备上装任何东西。
+                         密码用平台本机密钥 (数据目录 secret.key，仅本机可读) 加密后保存，接口永不返回。
+  首次部署 (install_agent): 部署仿真到这个节点时，平台再用保存的账号登录，把节点程序 (agent + common，纯 Python 标准库)
+                         拷到 ~/.agv-agent/app 并后台启动；它用一次性令牌注册到这条节点记录上，之后照常心跳、部署。
+  - 目标设备需要 python3 (>= 3.8)；部署仿真实例需要 Docker (镜像由平台分发)
+  - 节点程序日志 ~/.agv-agent/agent.log，进程号 ~/.agv-agent/agent.pid
   - SSH 客户端: 有 paramiko 就用；没有则用系统 ssh (OpenSSH >= 8.4，通过 SSH_ASKPASS 传密码)
 """
 
@@ -34,12 +34,12 @@ cd "$D/app" && rm -rf agent common && base64 -d | tar xzf - || { echo "AGVERR �
 # 停掉之前装的代理 (本方式启动的进程，或 deploy.sh 起的 agv-agent 容器)，避免端口冲突
 if [ -f "$D/agent.pid" ] && kill -0 "$(cat "$D/agent.pid")" 2>/dev/null; then kill "$(cat "$D/agent.pid")"; sleep 1; fi
 command -v docker >/dev/null 2>&1 && docker rm -f agv-agent >/dev/null 2>&1
-export HUB_API=__HUB__ JOIN_TOKEN=__TOKEN__ AGENT_KIND=__KIND__ AGENT_HOST=__HOST__ AGENT_DATA="$D" AGENT_ROLE=monitor PYTHONDONTWRITEBYTECODE=1
+export HUB_API=__HUB__ JOIN_TOKEN=__TOKEN__ AGENT_KIND=__KIND__ AGENT_HOST=__HOST__ AGENT_DATA="$D" AGENT_ROLE=full PYTHONDONTWRITEBYTECODE=1
 __NAME__
 nohup python3 -m agent.server > "$D/agent.log" 2>&1 < /dev/null &
 echo $! > "$D/agent.pid"
 sleep 4
-if ! kill -0 "$(cat "$D/agent.pid")" 2>/dev/null; then echo "AGVERR 基础监测程序启动后退出:"; tail -n 15 "$D/agent.log"; exit 14; fi
+if ! kill -0 "$(cat "$D/agent.pid")" 2>/dev/null; then echo "AGVERR 节点程序启动后退出:"; tail -n 15 "$D/agent.log"; exit 14; fi
 DK="无 Docker"; if command -v docker >/dev/null 2>&1; then V=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -1); DK="Docker ${V:-(当前用户无权访问 Docker 服务)}"; fi
 echo "AGVOK $(uname -m) · $(python3 -V 2>&1) · $DK"
 '''
@@ -121,20 +121,71 @@ def _run_openssh(ip, port, user, password, cmd, data, timeout) -> Tuple[int, str
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _ssh(ip, port, user, password, cmd, data, timeout):
+    try:
+        import paramiko  # noqa: F401
+        return _run_paramiko(ip, port, user, password, cmd, data, timeout)
+    except ImportError:
+        return _run_openssh(ip, port, user, password, cmd, data, timeout)
+
+
+def check_login(ip: str, port: int, user: str, password: str) -> dict:
+    """添加节点: 只验证端口可达、账号能登录；返回 {arch, os, python, docker, brief}"""
+    try:
+        socket.create_connection((ip, port), timeout=6).close()
+    except OSError as e:
+        raise ApiError(502, f"{ip}:{port} 端口不通: {e}", "ssh_connect")
+    script = r'''echo "AGVOK"; uname -m; (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || uname -sr
+python3 -V 2>&1 | head -1 || echo "无 python3"
+if command -v docker >/dev/null 2>&1; then V=$(docker version --format '{{.Server.Version}}' 2>/dev/null | head -1); echo "Docker ${V:-(当前用户无权访问 Docker 服务)}"; else echo "无 Docker"; fi'''
+    rc, out = _ssh(ip, port, user, password, "sh -c " + shlex.quote(script), "", 30)
+    lines = out.splitlines()
+    if "AGVOK" not in lines:
+        raise ApiError(502, f"登录 {ip} 成功但执行命令失败: {out.strip()[-200:]}", "ssh_exec")
+    v = (lines[lines.index("AGVOK") + 1:] + ["", "", "", ""])[:4]
+    arch = {"aarch64": "arm64", "x86_64": "amd64", "armv7l": "arm"}.get(v[0].strip(), v[0].strip())
+    return {"arch": arch, "os": v[1].strip(), "python": v[2].strip(), "docker": v[3].strip(),
+            "brief": " · ".join(x for x in (arch, v[1].strip(), v[2].strip(), v[3].strip()) if x)}
+
+
+# ---------------------------------------------------------------- 密码加密保存 (HMAC-SHA256 流加密 + 校验，密钥只在平台本机)
+def _key(store) -> bytes:
+    p = store.path("secret.key")
+    if not os.path.exists(p):
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(os.urandom(32))
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def seal(store, text: str) -> str:
+    import hmac, hashlib
+    k, nonce, data = _key(store), os.urandom(16), text.encode()
+    stream = b"".join(hmac.new(k, nonce + i.to_bytes(4, "big"), hashlib.sha256).digest() for i in range(len(data) // 32 + 1))
+    ct = bytes(a ^ b for a, b in zip(data, stream))
+    tag = hmac.new(k, b"mac" + nonce + ct, hashlib.sha256).digest()[:16]
+    return base64.b64encode(nonce + tag + ct).decode()
+
+
+def unseal(store, blob: str) -> str:
+    import hmac, hashlib
+    raw = base64.b64decode(blob)
+    k, nonce, tag, ct = _key(store), raw[:16], raw[16:32], raw[32:]
+    if not hmac.compare_digest(tag, hmac.new(k, b"mac" + nonce + ct, hashlib.sha256).digest()[:16]):
+        raise ApiError(500, "保存的 SSH 密码无法解密 (平台密钥已变)，请重新添加该节点", "cred")
+    stream = b"".join(hmac.new(k, nonce + i.to_bytes(4, "big"), hashlib.sha256).digest() for i in range(len(ct) // 32 + 1))
+    return bytes(a ^ b for a, b in zip(ct, stream)).decode()
+
+
 def install_agent(ip: str, port: int, user: str, password: str, hub_url: str, token: str, kind: str, name: str = "",
                   timeout: int = 90) -> str:
-    """登录目标设备安装基础环境 (基础监测)；成功返回目标设备简况，失败抛 ApiError (带中文原因)"""
+    """首次部署: 登录目标设备安装并启动节点程序；成功返回目标设备简况，失败抛 ApiError (带中文原因)"""
     script = (REMOTE.replace("__HUB__", shlex.quote(hub_url)).replace("__TOKEN__", shlex.quote(token))
               .replace("__KIND__", shlex.quote(kind)).replace("__HOST__", shlex.quote(ip))
               .replace("__NAME__", f"export AGENT_NAME={shlex.quote(name)}" if name else ""))
-    cmd = "bash -c " + shlex.quote(script)
-    data = _payload()
-    try:
-        import paramiko  # noqa: F401
-        rc, out = _run_paramiko(ip, port, user, password, cmd, data, timeout)
-    except ImportError:
-        rc, out = _run_openssh(ip, port, user, password, cmd, data, timeout)
+    rc, out = _ssh(ip, port, user, password, "bash -c " + shlex.quote(script), _payload(), timeout)
     if rc != 0 or "AGVOK" not in out:
         msg = "\n".join(l.replace("AGVERR ", "") for l in out.strip().splitlines()[-16:]) or f"退出码 {rc}"
-        raise ApiError(502, f"在 {ip} 上安装基础环境失败: {msg}", "agent_start")
+        raise ApiError(502, f"在 {ip} 上安装运行环境失败: {msg}", "agent_start")
     return next(l for l in reversed(out.splitlines()) if l.startswith("AGVOK ")).replace("AGVOK ", "").strip()

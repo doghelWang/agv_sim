@@ -200,8 +200,9 @@ def build_api(hub: Hub) -> RestServer:
     R("POST", P + "/nodes/enroll", enroll, "生成节点接入令牌与命令")
 
     def add_node(q):
-        """SSH 接入: {kind, note, ip, ssh_port, username, password} → 登录目标设备安装基础环境 (基础监测)，等它注册上来"""
-        from hub.sshjoin import install_agent, local_ip_towards
+        """添加计算节点: {kind, note, name, ip, ssh_port, username, password} → 只验证 SSH 端口与账号可用并保存；
+        不在目标设备上安装任何东西 (运行环境在第一次部署到该节点时安装)。密码加密保存，接口不返回"""
+        from hub.sshjoin import check_login, seal
         b = q.json
         ip, usr, pw = str(b.get("ip", "")).strip(), str(b.get("username", "")).strip(), str(b.get("password", ""))
         try:
@@ -217,20 +218,11 @@ def build_api(hub: Hub) -> RestServer:
             raise ApiError(400, "请填写 SSH 用户名和密码")
         if kind not in KIND_LABEL:
             raise ApiError(400, "计算资源类型无效")
-        me = local_ip_towards(ip, port) or (q.headers.get("Host") or "127.0.0.1").split(":")[0]
-        hub_url = f"http://{me}:{hub.port}"
-        ssh = {"ip": ip, "port": port, "user": usr}
-        t = hub.nodes.new_token(user(q), b.get("note", ""), meta={"kind": kind, "note": b.get("note", ""), "ssh": ssh}, ttl=600)
-        brief = install_agent(ip, port, usr, pw, hub_url, t["id"], kind, str(b.get("name", "")).strip())
-        for _ in range(40):                      # 代理启动后几秒内注册
-            tk = hub.nodes.s.get("tokens", t["id"]) or {}
-            if tk.get("node_id"):
-                n = hub.nodes.get(tk["node_id"])
-                return {"node": hub.nodes.view(n, hub.dep.list()), "agent": brief, "hub_url": hub_url}
-            time.sleep(0.5)
-        raise ApiError(504, f"基础监测已在 {ip} 启动 ({brief})，但 20 秒内没有注册到平台。请确认该设备能访问 {hub_url}"
-                            f" (日志在目标设备 ~/.agv-agent/agent.log)", "agent_no_register")
-    R("POST", P + "/nodes/add", add_node, "SSH 接入计算节点 {kind,note,ip,ssh_port,username,password} (密码不保存)")
+        info = check_login(ip, port, usr, pw)
+        n = hub.nodes.add_pending(ip, kind, str(b.get("name") or "").strip(), str(b.get("note") or ""),
+                                  {"ip": ip, "port": port, "user": usr}, seal(hub.s, pw), info)
+        return {"node": hub.nodes.view(n, hub.dep.list()), "check": info["brief"]}
+    R("POST", P + "/nodes/add", add_node, "添加计算节点 {kind,note,name,ip,ssh_port,username,password}: 验证 SSH 后保存 (首次部署时安装运行环境)")
     R("POST", P + "/nodes/register", lambda q: hub.nodes.register(q.json, (q.client or ("127.0.0.1",))[0]), "节点代理注册")
     R("POST", P + "/nodes/{nid}/heartbeat", lambda q: hub.nodes.heartbeat(q.params["nid"], q.headers.get("X-Node-Key", ""), q.json),
       "节点心跳")
