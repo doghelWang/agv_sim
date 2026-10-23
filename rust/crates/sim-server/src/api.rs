@@ -144,13 +144,21 @@ pub fn build_api(svc: Arc<Service>, port: u16) -> Server {
     R!("GET", "/api/v1/health", "健康检查", |s: &Arc<Service>, _q: &Request| { let g = s.lock(); ok(json!({"service": "sim", "api_version": API_VERSION, "ok": true, "sim_time": g.core.t, "rtf": g.core.rtf, "paused": g.core.paused})) });
     // ---- model
     R!("GET", "/api/v1/model", "机器人模型", |s: &Arc<Service>, _q: &Request| ok(s.model()));
-    R!("GET", "/api/v1/model/urdf", "URDF", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("URDF")) });
-    R!("GET", "/api/v1/model/editor", "补全编辑器数据: 完整度审计/传感器清单/当前覆盖", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("model editor")) });
-    R!("GET", "/api/v1/model/audit", "完整度审计 (参数来源/缺失)", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("model audit")) });
-    R!("GET", "/api/v1/model/overrides", "人工补全覆盖 (model_overrides.json)", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("model overrides")) });
-    R!("PUT", "/api/v1/model/overrides", "保存并应用人工补全 (重建模型/URDF/仿真)", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("model overrides")) });
-    R!("POST", "/api/v1/model/preview", "试算补全结果 (不保存): spec/审计/URDF", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("model preview")) });
-    R!("GET", "/api/v1/model/sensor_template", "新增传感器默认参数 ?type=lidar2d|lidar3d|camera|stereo|tof|photoelectric|codeReader", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("sensor template")) });
+    R!("GET", "/api/v1/model/urdf", "URDF", |s: &Arc<Service>, _q: &Request| -> HResult { Ok(Response::raw(s.urdf().into_bytes(), "application/xml; charset=utf-8")) });
+    R!("GET", "/api/v1/model/editor", "补全编辑器数据: 完整度审计/传感器清单/当前覆盖", |s: &Arc<Service>, _q: &Request| ok(s.model_editor()));
+    R!("GET", "/api/v1/model/audit", "完整度审计 (参数来源/缺失)", |s: &Arc<Service>, _q: &Request| ok(s.model_editor()["audit"].clone()));
+    R!("GET", "/api/v1/model/overrides", "人工补全覆盖 (model_overrides.json)", |s: &Arc<Service>, _q: &Request| ok(s.lock().overrides.clone()));
+    R!("PUT", "/api/v1/model/overrides", "保存并应用人工补全 (重建模型/URDF/仿真)", |s: &Arc<Service>, q: &Request| {
+        let ov = q.json()?;
+        if !ov.is_object() { return Err(ApiError::new(400, "需要 JSON 对象")); }
+        ok(s.apply_overrides(&ov, true).map_err(|e| ApiError::new(400, format!("覆盖参数无效: {e}")))?)
+    });
+    R!("POST", "/api/v1/model/preview", "试算补全结果 (不保存): spec/审计/URDF", |s: &Arc<Service>, q: &Request| {
+        let ov = q.json()?;
+        if !ov.is_object() { return Err(ApiError::new(400, "覆盖参数无效: 需要 JSON 对象")); }
+        ok(s.preview_overrides(&ov))
+    });
+    R!("GET", "/api/v1/model/sensor_template", "新增传感器默认参数 ?type=lidar2d|lidar3d|camera|stereo|tof|photoelectric|codeReader", |_s: &Arc<Service>, q: &Request| ok(model::overrides::sensor_template(&q.q_str("type", "camera")).map_err(|e| ApiError::new(400, e))?));
     R!("PUT", "/api/v1/model/chassis", "切换车型 {type: single_steer|diff_drive|dual_steer|cmodel}", |s: &Arc<Service>, q: &Request| {
         let b = q.json()?;
         let t = b.get("type").and_then(|t| t.as_str());
@@ -159,7 +167,12 @@ pub fn build_api(svc: Arc<Service>, port: u16) -> Server {
         let c = s.set_chassis(t).map_err(|e| ApiError::new(400, e))?;
         ok(json!({"chassis": c}))
     });
-    R!("POST", "/api/v1/model/reload", "重新解析 cmodel 并重建仿真 {cmodel_path, load: full|idle}", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("model reload")) });
+    R!("POST", "/api/v1/model/reload", "重新解析 cmodel 并重建仿真 {cmodel_path, load: full|idle}", |s: &Arc<Service>, q: &Request| -> HResult {
+        let b = q.json()?;
+        if b.get("cmodel_path").map(truthy).unwrap_or(false) { return Err(not_impl("cmodel 解析 (cmodel_path)")); }
+        let save = b.get("save").map(truthy).unwrap_or(true);
+        ok(s.reload_model(save).map_err(|e| ApiError::new(400, e))?)
+    });
     // ---- world
     R!("GET", "/api/v1/world", "场景", |s: &Arc<Service>, _q: &Request| ok(s.world().map_err(|e| ApiError::new(500, e))?));
     R!("PUT", "/api/v1/world/scenario", "切换场景 {id}", |s: &Arc<Service>, q: &Request| {
@@ -173,9 +186,23 @@ pub fn build_api(svc: Arc<Service>, port: u16) -> Server {
         if let Some(sc) = b.get("scene").filter(|v| truthy(v)) {
             let id = s.load_scene(sc).map_err(|e| ApiError::new(400, e))?;
             ok(json!({"scenario": id}))
-        } else if b.get("hub_scene_id").map(truthy).unwrap_or(false) { Err(not_impl("hub scene pull")) } else { Err(ApiError::new(400, "需要 scene (场景定义) 或 hub_scene_id")) }
+        } else if let Some(sid) = b.get("hub_scene_id").filter(|v| truthy(v)).and_then(|v| v.as_str()) {
+            let hub = b.get("hub").and_then(|h| h.as_str()).filter(|h| !h.is_empty()).map(|h| h.to_string()).unwrap_or_else(|| std::env::var("HUB_API").unwrap_or_default());
+            if hub.is_empty() { return Err(ApiError::new(400, "未配置平台地址 HUB_API")); }
+            let data = std::path::Path::new(&s.config_path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let p = crate::boot::pull_scene(hub.trim_end_matches('/'), &data, sid).map_err(|e| ApiError::new(502, e))?;
+            let sc: Value = serde_json::from_str(&std::fs::read_to_string(p).map_err(|e| ApiError::new(500, e.to_string()))?).map_err(|e| ApiError::new(500, e.to_string()))?;
+            let id = s.load_scene(&sc).map_err(|e| ApiError::new(400, e))?;
+            ok(json!({"scenario": id}))
+        } else { Err(ApiError::new(400, "需要 scene (场景定义) 或 hub_scene_id")) }
     });
-    R!("POST", "/api/v1/model/load", "从平台加载模型 {model_id, version}", |_s: &Arc<Service>, _q: &Request| -> HResult { Err(not_impl("hub model pull")) });
+    R!("POST", "/api/v1/model/load", "从平台加载模型 {model_id, version}", |s: &Arc<Service>, q: &Request| -> HResult {
+        let b = q.json()?;
+        let hub = b.get("hub").and_then(|h| h.as_str()).filter(|h| !h.is_empty()).map(|h| h.to_string()).unwrap_or_else(|| std::env::var("HUB_API").unwrap_or_default());
+        let mid = b.get("model_id").and_then(|m| m.as_str()).unwrap_or("");
+        if hub.is_empty() || mid.is_empty() { return Err(ApiError::new(400, "需要 model_id 且配置了平台地址 HUB_API")); }
+        ok(s.load_model_from_hub(hub.trim_end_matches('/'), mid, b.get("version").and_then(|v| v.as_str()).unwrap_or("")).map_err(|e| ApiError::new(502, e))?)
+    });
     R!("GET", "/api/v1/instance", "实例信息 (平台模型/场景)", |s: &Arc<Service>, _q: &Request| ok(s.instance()));
     R!("GET", "/api/v1/world/map", "Nav2 栅格地图 ?part=pgm|yaml&res=0.05", |s: &Arc<Service>, q: &Request| {
         let m = s.occupancy_map(q.q_f64("res", 0.05)?);

@@ -43,6 +43,8 @@ pub struct Inner {
     pub core: SimCore,
     pub scenarios: Map<String, Value>,
     pub spec: Value,
+    pub base_spec: Value,
+    pub overrides: Value,
     pub events: VecDeque<Value>,
     pub event_id: u64,
     pub nav_feedback: Value,
@@ -69,6 +71,8 @@ pub struct Service {
     pub cond: Condvar,
     pub stop: AtomicBool,
     pub config_path: String,
+    pub base_path: String,
+    pub overrides_path: String,
     pub camera_max_hz: f64,
     pub camera_idle_s: f64,
     pub lib: Option<Arc<mujoco_sys::MuJoCo>>,
@@ -96,19 +100,29 @@ pub fn register_scenario(scen: &mut Map<String, Value>, sc: &Value) -> Result<St
 
 impl Service {
     pub fn new(config_path: &str, scenarios: Map<String, Value>, scenario: &str, lib: Option<Arc<mujoco_sys::MuJoCo>>) -> Result<Arc<Service>, String> {
-        let txt = std::fs::read_to_string(config_path).map_err(|e| format!("读取 {config_path} 失败: {e}"))?;
-        let spec = upgrade_spec(serde_json::from_str(&txt).map_err(|e| format!("{config_path}: {e}"))?);
+        let dir = std::path::Path::new(config_path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let base_path = dir.join("robot_config.base.json").to_string_lossy().to_string();
+        let overrides_path = dir.join("model_overrides.json").to_string_lossy().to_string();
+        let rd = |p: &str| -> Result<Value, String> { serde_json::from_str(&std::fs::read_to_string(p).map_err(|e| format!("读取 {p} 失败: {e}"))?).map_err(|e| format!("{p}: {e}")) };
+        let base = if std::path::Path::new(&base_path).exists() { upgrade_spec(rd(&base_path)?) } else {
+            let b = upgrade_spec(rd(config_path)?);
+            let _ = std::fs::write(&base_path, serde_json::to_string_pretty(&b).unwrap());
+            b
+        };
+        let overrides = model::overrides::load_overrides(&overrides_path)?;
+        let mut spec = model::overrides::apply_overrides(&base, &overrides);
+        if let Some(repo) = rd(config_path).ok().and_then(|c| c.get("repo").cloned()).filter(model::overrides::truthy) { spec["repo"] = repo; }
         let env = |k: &str, d: f64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
         let core = SimCore::new(spec.clone(), &scenarios, scenario, None, lib.clone(), Settings::default(), 1)?;
         let svc = Arc::new(Service {
             inner: Mutex::new(Inner {
-                spec, scenarios, events: VecDeque::new(), event_id: 0, nav_feedback: json!({"status": "OFFLINE", "t_wall": 0.0}),
+                spec, base_spec: base, overrides, scenarios, events: VecDeque::new(), event_id: 0, nav_feedback: json!({"status": "OFFLINE", "t_wall": 0.0}),
                 cmd_meta: CmdMeta { source: "none".into(), t_wall: 0.0, vx: 0.0, vy: 0.0, wz: 0.0 },
                 lidar_bufs: vec![], lid_seen: vec![], lid3_seen: vec![], merged: ScanBuf::default(), merged_seen: 0, merged_json: None,
                 state_seq: 0, model_rev: 1, rtf_target: 1.0, cam_bufs: vec![], next_cam: HashMap::new(), cam_req: HashMap::new(),
                 last_discrete: vec![], last_coll: 0, cmd_udp: None, core,
             }),
-            cond: Condvar::new(), stop: AtomicBool::new(false), config_path: config_path.into(),
+            cond: Condvar::new(), stop: AtomicBool::new(false), config_path: config_path.into(), base_path, overrides_path,
             camera_max_hz: env("SIM_CAMERA_MAX_HZ", 10.0), camera_idle_s: env("SIM_CAMERA_IDLE_S", 3.0), lib,
         });
         { let mut g = svc.lock(); Self::reindex(&mut g); }
@@ -594,7 +608,95 @@ impl Service {
         sp["active_chassis"] = json!(g.core.chassis_type);
         sp["active_wheels"] = Value::Array(g.core.wheels_d.clone());
         sp["model_rev"] = json!(g.model_rev);
+        let mut nl = Map::new();
+        for ct in model::limits::CHASSIS_TYPES { match model::limits::effective_limits(&g.spec, ct) { Ok(l) => { nl.insert(ct.to_string(), l); } Err(_) => { nl.clear(); break; } } }
+        if !nl.is_empty() { sp["nav_limits"] = Value::Object(nl); }
         sp
+    }
+
+    pub fn urdf(&self) -> String {
+        let g = self.lock();
+        let mut sp = g.spec.clone();
+        sp["wheels"] = Value::Array(g.core.wheels_d.clone());
+        model::urdf::generate_urdf(&sp)
+    }
+
+    pub fn model_editor(&self) -> Value {
+        let g = self.lock();
+        let photos: Vec<Value> = g.core.photos.iter().map(|p| p.view()).collect();
+        json!({"spec": g.spec, "base_file": std::path::Path::new(&self.base_path).file_name().and_then(|n| n.to_str()).unwrap_or(""), "overrides": g.overrides,
+            "audit": model::overrides::audit(&g.spec, Some(&g.overrides)), "sensors": model::overrides::sensor_list(&g.spec, Some(&photos)), "sensor_types": model::overrides::sensor_types()})
+    }
+
+    pub fn preview_overrides(&self, ov: &Value) -> Value {
+        let g = self.lock();
+        let sp = model::overrides::apply_overrides(&g.base_spec, ov);
+        json!({"spec": sp, "audit": model::overrides::audit(&sp, Some(ov)), "sensors": model::overrides::sensor_list(&sp, None), "urdf": model::urdf::generate_urdf(&sp)})
+    }
+
+    fn write_model_files(&self, sp: &Value) {
+        let dir = std::path::Path::new(&self.config_path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let _ = std::fs::write(&self.config_path, serde_json::to_string_pretty(sp).unwrap());
+        let _ = std::fs::write(dir.join("robot.urdf"), model::urdf::generate_urdf(sp));
+    }
+
+    /// rebuild the core from a spec; keep=true preserves pose and dynamic obstacles
+    fn rebuild(g: &mut Inner, spec: Value, chassis: Option<String>, keep: bool, lib: Option<Arc<mujoco_sys::MuJoCo>>) -> Result<(), String> {
+        let (pose, obs, sid) = ((g.core.x, g.core.y, g.core.th), g.core.world.obstacles.clone(), g.core.scenario_id.clone());
+        let rev = g.model_rev + 1;
+        let core = SimCore::new(spec.clone(), &g.scenarios, &sid, chassis.as_deref(), lib, Settings::default(), rev)?;
+        g.core = core;
+        g.spec = spec;
+        g.model_rev = rev;
+        if keep { let _ = g.core.set_obstacles(obs); g.core.reset_pose(pose.0, pose.1, pose.2); }
+        Self::reindex(g);
+        Ok(())
+    }
+
+    pub fn apply_overrides(&self, ov: &Value, save: bool) -> Result<Value, String> {
+        let mut ov = ov.clone();
+        if ov.get("version").is_none() { ov["version"] = json!(1); }
+        let (mut sp, n_ov) = { let g = self.lock(); let sp = model::overrides::apply_overrides(&g.base_spec, &ov); (sp, g.spec.get("repo").cloned()) };
+        if let Some(r) = n_ov.filter(model::overrides::truthy) { sp["repo"] = r; }
+        if save { model::overrides::save_overrides(&ov, &self.overrides_path)?; self.write_model_files(&sp); }
+        let msg = format!("模型补全已应用: {} 项人工参数，传感器 {} 激光 / {} 相机", sp["provenance"].as_object().map(|o| o.len()).unwrap_or(0),
+            sp["lidars"].as_array().map(|a| a.len()).unwrap_or(0), sp["cameras"].as_array().map(|a| a.len()).unwrap_or(0));
+        {
+            let mut g = self.lock();
+            let ct = g.core.chassis_type.clone();
+            let ch = if Some(ct.as_str()) != sp["chassis"]["type"].as_str() { Some(ct) } else { None };
+            g.overrides = ov;
+            Self::rebuild(&mut g, sp, ch, true, self.lib.clone())?;
+            Self::emit(&mut g, "MODEL_APPLY", "success", &msg, json!({}));
+        }
+        Ok(self.model_editor())
+    }
+
+    /// re-read base + overrides and rebuild (no cmodel parsing)
+    pub fn reload_model(&self, save: bool) -> Result<Value, String> {
+        let (sp, repo) = { let g = self.lock(); (model::overrides::apply_overrides(&g.base_spec, &g.overrides), g.spec.get("repo").cloned()) };
+        let mut sp = sp;
+        if let Some(r) = repo.filter(model::overrides::truthy) { sp["repo"] = r; }
+        if save { self.write_model_files(&sp); }
+        let msg = format!("模型重建完成: {} ({})", sp.get("model_file").map(|v| v.as_str().map(|s| s.to_string()).unwrap_or(v.to_string())).unwrap_or("None".into()), sp["chassis"]["type"].as_str().unwrap_or(""));
+        { let mut g = self.lock(); Self::rebuild(&mut g, sp, None, false, self.lib.clone())?; Self::emit(&mut g, "MODEL_RELOAD", "success", &msg, json!({})); }
+        Ok(self.model())
+    }
+
+    pub fn load_model_from_hub(&self, hub: &str, mid: &str, ver: &str) -> Result<Value, String> {
+        let data = std::path::Path::new(&self.config_path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        crate::boot::pull_model(hub, &data.to_string_lossy(), mid, ver)?;
+        let base = upgrade_spec(serde_json::from_str(&std::fs::read_to_string(&self.base_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?);
+        let ov = model::overrides::load_overrides(&self.overrides_path)?;
+        let mut sp = model::overrides::apply_overrides(&base, &ov);
+        if let Ok(t) = std::fs::read_to_string(&self.config_path) { if let Some(r) = serde_json::from_str::<Value>(&t).ok().and_then(|c| c.get("repo").cloned()) { sp["repo"] = r; } }
+        {
+            let mut g = self.lock();
+            g.base_spec = base; g.overrides = ov;
+            Self::rebuild(&mut g, sp, None, true, self.lib.clone())?;
+            Self::emit(&mut g, "MODEL_RELOAD", "success", &format!("已加载平台模型 {mid} {ver}"), json!({}));
+        }
+        Ok(self.model())
     }
 
     pub fn snapshot(&self, scans: bool) -> Value {

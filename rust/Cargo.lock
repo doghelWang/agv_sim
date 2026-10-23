@@ -279,6 +279,7 @@ name = "sim-server"
 version = "0.1.0"
 dependencies = [
  "jpeg-encoder",
+ "model",
  "mujoco-sys",
  "png",
  "regex",

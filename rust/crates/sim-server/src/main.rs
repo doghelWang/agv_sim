@@ -1,4 +1,5 @@
 mod api;
+mod boot;
 mod scen;
 mod service;
 
@@ -12,6 +13,10 @@ fn arg(args: &[String], k: &str) -> Option<String> { args.iter().position(|a| a 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let env = |k: &str, d: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or(d.to_string());
+    if args.get(1).map(|a| a == "bootstrap").unwrap_or(false) {
+        let scen: Map<String, Value> = serde_json::from_str::<Value>(SCENARIOS).unwrap().as_object().cloned().unwrap();
+        std::process::exit(boot::run(&scen));
+    }
     let config = arg(&args, "--config").unwrap_or_else(|| env("ROBOT_CONFIG", "robot_config.json"));
     let port: u16 = arg(&args, "--port").unwrap_or_else(|| env("SIM_API_PORT", "8090")).parse().expect("port");
     let mut scenario = arg(&args, "--scenario").unwrap_or_else(|| env("SIM_SCENARIO", "grid_9_square"));
