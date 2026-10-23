@@ -135,6 +135,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sim-core",
+]
+
+[[package]]
 name = "mujoco-sys"
 version = "0.1.0"
 dependencies = [
