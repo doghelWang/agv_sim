@@ -70,7 +70,7 @@ impl Request {
     }
 }
 
-pub enum Mount { NotHandled, Handled, HandledClose }
+pub enum Mount { NotHandled, Handled, HandledClose, Reply(Response) }
 pub type Handler = Arc<dyn Fn(&Request) -> HResult + Send + Sync>;
 pub type MountFn = Arc<dyn Fn(&Request, &mut TcpStream) -> Result<Mount, ApiError> + Send + Sync>;
 
@@ -295,6 +295,7 @@ impl Server {
             }
             match handled {
                 Some(Mount::HandledClose) => return,
+                Some(Mount::Reply(r)) => { if self.write_resp(&mut s, &r, method == "HEAD", keep).is_err() { return; } if !keep { return; } continue; }
                 Some(_) => { if !keep { return; } continue; }
                 None => {}
             }
@@ -323,7 +324,7 @@ impl Server {
 }
 
 // ---------------------------------------------------------------------------- client
-pub struct Client { pub host: String, pub port: u16, pub prefix: String, pub timeout: f64 }
+pub struct Client { pub host: String, pub port: u16, pub prefix: String, pub timeout: f64, pub headers: Vec<(String, String)> }
 pub struct ClientResp { pub status: u16, pub headers: HashMap<String, String>, pub body: Vec<u8> }
 
 thread_local! { static CONNS: std::cell::RefCell<HashMap<String, BufReader<TcpStream>>> = std::cell::RefCell::new(HashMap::new()); }
@@ -333,12 +334,17 @@ impl Client {
         let u = base_url.trim_start_matches("http://");
         let (hp, pre) = u.split_once('/').map(|(a, b)| (a, format!("/{}", b.trim_end_matches('/')))).unwrap_or((u, String::new()));
         let (h, p) = hp.rsplit_once(':').map(|(h, p)| (h.to_string(), p.parse().unwrap_or(80))).unwrap_or((hp.to_string(), 80));
-        Client { host: h, port: p, prefix: pre, timeout }
+        Client { host: h, port: p, prefix: pre, timeout, headers: vec![] }
     }
     fn key(&self) -> String { format!("{}:{}", self.host, self.port) }
+    pub fn with_header(mut self, k: &str, v: &str) -> Client { self.headers.push((k.into(), v.into())); self }
     pub fn request(&self, method: &str, path: &str, body: Option<&Value>, timeout: Option<f64>, accept: &str) -> Result<ClientResp, String> {
-        let t = timeout.unwrap_or(self.timeout);
         let data = body.map(|b| serde_json::to_vec(b).unwrap());
+        self.request_raw(method, path, data.as_deref(), "application/json", &[], timeout, accept)
+    }
+    /// Raw-body request with extra headers (used by reverse proxies). Response must carry Content-Length.
+    pub fn request_raw(&self, method: &str, path: &str, data: Option<&[u8]>, ctype: &str, extra: &[(String, String)], timeout: Option<f64>, accept: &str) -> Result<ClientResp, String> {
+        let t = timeout.unwrap_or(self.timeout);
         let mut last = String::new();
         for _ in 0..2 {
             let r = CONNS.with(|c| {
@@ -355,8 +361,9 @@ impl Client {
                 let _ = rd.get_ref().set_read_timeout(Some(d));
                 let _ = rd.get_ref().set_write_timeout(Some(d));
                 let mut req = format!("{method} {}{path} HTTP/1.1\r\nHost: {}:{}\r\nAccept: {accept}\r\nConnection: keep-alive\r\n", self.prefix, self.host, self.port);
-                if let Some(b) = &data { req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len())); }
-                else if method != "GET" { req.push_str("Content-Length: 0\r\n"); }
+                for (k, v) in self.headers.iter().chain(extra.iter()) { req.push_str(&format!("{k}: {v}\r\n")); }
+                if let Some(b) = &data { req.push_str(&format!("Content-Type: {ctype}\r\nContent-Length: {}\r\n", b.len())); }
+                else if method != "GET" && method != "HEAD" { req.push_str("Content-Length: 0\r\n"); }
                 req.push_str("\r\n");
                 let mut out = req.into_bytes();
                 if let Some(b) = &data { out.extend_from_slice(b); }
@@ -372,7 +379,7 @@ impl Client {
                     if h.is_empty() { break; }
                     if let Some((k, v)) = h.split_once(':') { headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string()); }
                 }
-                let n: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let n: usize = if method == "HEAD" || status == 204 || status == 304 { 0 } else { headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0) };
                 let mut body = vec![0u8; n];
                 rd.read_exact(&mut body).map_err(|e| e.to_string())?;
                 if headers.get("connection").map(|v| v.eq_ignore_ascii_case("close")).unwrap_or(false) { c.remove(&key); }

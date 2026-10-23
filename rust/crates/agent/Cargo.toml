@@ -1,0 +1,8 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+rest = { path = "../rest" }
+serde_json = { version = "1", features = ["preserve_order"] }
+libc = "0.2"
