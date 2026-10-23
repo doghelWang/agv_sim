@@ -1,0 +1,12 @@
+[package]
+name = "nav-runtime"
+version = "0.1.0"
+edition = "2021"
+[[bin]]
+name = "nav-runtime"
+path = "src/main.rs"
+[dependencies]
+planning = { path = "../planning" }
+rest = { path = "../rest" }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+libc = "0.2"
