@@ -104,6 +104,8 @@ pub struct SimCore {
     hk_t: f64,
     pub model_rev: u32,
     pub revision: u64,         // bumps on world/model changes (camera prims cache)
+    pub cameras: Vec<crate::cameras::Camera>,
+    pub cam_scene: Option<crate::cameras::CamScene>,
     scratch_v: Vec<f64>, scratch_g: Vec<i32>, scratch_a: Vec<f64>,
 }
 
@@ -143,11 +145,12 @@ impl SimCore {
             lidars, lidars3d, photos, bumpers,
             t: 0.0, x: 0.0, y: 0.0, th: 0.0, vx: 0.0, vy: 0.0, wz: 0.0, cmd: [0.0; 3], cmd_time: -1e9, paused: false, rtf_target: 1.0, rtf: 1.0,
             collisions: 0, overruns: 0, steps: 0, discrete_n: 0, last_contact: None, step_ms: 0.0, lidar_ms: 0.0, mj_step_ms: 0.0,
-            acc: 0.0, last_wall: now, rtf_t0: now, rtf_sim: 0.0, mover_acc: 0.0, hk_t: 0.0, model_rev, revision: 1,
+            acc: 0.0, last_wall: now, rtf_t0: now, rtf_sim: 0.0, mover_acc: 0.0, hk_t: 0.0, model_rev, revision: 1, cameras: vec![], cam_scene: None,
             scratch_v: vec![], scratch_g: vec![], scratch_a: vec![],
             mj: None, lib, mj_version, spec, settings,
         };
         c.merged.ranges = Arc::new(vec![f64::INFINITY; c.merged_bins]);
+        c.set_cameras();
         c.set_scenario(scenarios, scenario_id)?;
         Ok(c)
     }
@@ -166,6 +169,7 @@ impl SimCore {
             json!({"id": 100 + i, "name": s.get("name").or_else(|| s.get("id")).cloned().unwrap_or(Value::Null), "x": s["x"], "y": s["y"], "yaw": s.get("dock_yaw").cloned().unwrap_or(json!(0.0))})
         }).collect()).unwrap_or_default();
         self.scenario = sc;
+        self.cam_scene = None;
         self.rebuild_mj(false)?;
         let o = self.scenario.get("origin").cloned().unwrap_or(json!({"x": 0.0, "y": 0.0, "yaw": 0.0}));
         self.reset_pose(o["x"].as_f64().unwrap_or(0.0), o["y"].as_f64().unwrap_or(0.0), o.get("yaw").and_then(|y| y.as_f64()).unwrap_or(0.0));
@@ -571,6 +575,28 @@ impl SimCore {
         self.lid3_next.iter_mut().for_each(|v| *v = -1.0);
         self.merged_next = -1.0;
         self.lidars_update();
+    }
+
+    pub fn set_cameras(&mut self) {
+        let list = self.spec.get("cameras").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+        self.cameras = list.iter().filter_map(crate::cameras::build_camera).collect();
+    }
+
+    /// capture camera `idx` at the current pose (scene primitives rebuilt lazily when the world revision changes)
+    pub fn capture_camera(&mut self, idx: usize, noise: bool) -> Option<crate::cameras::CamFrames> {
+        if idx >= self.cameras.len() { return None; }
+        if self.cam_scene.as_ref().map(|s| s.revision) != Some(self.revision) {
+            let (st, tg, ln) = self.decor();
+            let keep = self.cam_scene.take();
+            let sc = match keep {
+                Some(mut old) => { let n = crate::cameras::build_scene(&self.world, &st, &tg, &ln, self.revision); old.prims = n.prims; old.rgb = n.rgb; old.revision = self.revision; old }
+                None => crate::cameras::build_scene(&self.world, &st, &tg, &ln, self.revision),
+            };
+            self.cam_scene = Some(sc);
+        }
+        let (x, y, th) = (self.x, self.y, self.th);
+        let sc = self.cam_scene.as_ref().unwrap();
+        Some(self.cameras[idx].capture(sc, x, y, th, noise, 4))
     }
 
     pub fn map_to_odom(&self) -> (f64, f64, f64) {

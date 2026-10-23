@@ -6,3 +6,5 @@ pub mod mj;
 pub mod sensors;
 pub mod io;
 pub mod core;
+pub mod cameras;
+pub mod imgcodec;
