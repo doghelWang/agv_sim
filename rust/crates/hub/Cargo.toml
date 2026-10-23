@@ -5,7 +5,7 @@ edition = "2021"
 [dependencies]
 rest = { path = "../rest" }
 model = { path = "../model" }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"

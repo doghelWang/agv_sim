@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 [dependencies]
 rest = { path = "../rest" }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 libc = "0.2"
