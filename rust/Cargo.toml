@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mujoco-sys", "crates/sim-core", "crates/rest", "crates/model", "crates/sim-server"]
+members = ["crates/mujoco-sys", "crates/sim-core", "crates/rest", "crates/model", "crates/sim-server", "crates/web-gateway"]
 
 [profile.release]
 opt-level = 3

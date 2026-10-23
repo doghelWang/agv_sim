@@ -45,6 +45,7 @@ pub fn problem(status: u16, code: &str, detail: &str, instance: &str) -> Respons
 pub type HResult = Result<Response, ApiError>;
 pub fn ok(v: Value) -> HResult { Ok(Response::json(&v)) }
 
+#[derive(Clone)]
 pub struct Request {
     pub method: String, pub path: String, pub target: String,
     pub params: HashMap<String, String>, pub query: HashMap<String, Vec<String>>,
@@ -77,7 +78,7 @@ struct Route { method: String, segs: Vec<String>, template: String, handler: Opt
 
 pub struct Server {
     pub name: String, pub host: String, pub port: u16, pub base: String, pub title: String, pub description: String,
-    routes: Vec<Route>, mounts: Vec<(String, MountFn)>, pub fallback: Option<Handler>,
+    routes: Vec<Route>, mounts: Vec<(String, MountFn)>, pub fallback: Option<Handler>, pub catch_all: Option<Handler>,
 }
 
 pub fn url_decode(s: &str) -> String {
@@ -136,11 +137,13 @@ fn doc_parts(doc: &str) -> (String, Vec<(String, String)>, Vec<(String, String)>
 fn segs(t: &str) -> Vec<String> { t.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() }
 
 impl Server {
-    pub fn new(name: &str, port: u16, title: &str, description: &str) -> Server {
+    pub fn new(name: &str, port: u16, title: &str, description: &str) -> Server { Server::with_base(name, port, "/api/v1", title, description) }
+    pub fn with_base(name: &str, port: u16, base: &str, title: &str, description: &str) -> Server {
         let host = std::env::var("AGV_BIND").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| "0.0.0.0".into());
-        let mut s = Server { name: name.into(), host, port, base: "/api/v1".into(), title: title.into(), description: description.into(), routes: vec![], mounts: vec![], fallback: None };
-        s.routes.push(Route { method: "GET".into(), segs: segs("/api/v1"), template: "/api/v1".into(), handler: None, doc: "列出全部接口 (响应头 Link 指向 OpenAPI 文档，RFC 8631)".into() });
-        s.routes.push(Route { method: "GET".into(), segs: segs("/api/v1/openapi.json"), template: "/api/v1/openapi.json".into(), handler: None, doc: "本服务的 OpenAPI 3.1 文档 (由路由表生成)".into() });
+        let mut s = Server { name: name.into(), host, port, base: base.into(), title: title.into(), description: description.into(), routes: vec![], mounts: vec![], fallback: None, catch_all: None };
+        s.routes.push(Route { method: "GET".into(), segs: segs(base), template: base.into(), handler: None, doc: "列出全部接口 (响应头 Link 指向 OpenAPI 文档，RFC 8631)".into() });
+        let oj = format!("{base}/openapi.json");
+        s.routes.push(Route { method: "GET".into(), segs: segs(&oj), template: oj, handler: None, doc: "本服务的 OpenAPI 3.1 文档 (由路由表生成)".into() });
         s
     }
     pub fn route(&mut self, method: &str, template: &str, doc: &str, f: impl Fn(&Request) -> HResult + Send + Sync + 'static) {
@@ -206,6 +209,7 @@ impl Server {
     }
 
     pub fn dispatch(&self, req: &mut Request, method: &str) -> Result<Response, ApiError> {
+        if let Some(c) = &self.catch_all { return c(req); }
         let path_segs: Vec<&str> = req.path.split('/').filter(|s| !s.is_empty()).collect();
         let mut allowed: Vec<&str> = vec![];
         for r in &self.routes {
