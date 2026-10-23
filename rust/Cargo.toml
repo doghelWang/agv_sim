@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/mujoco-sys", "crates/sim-core"]
+members = ["crates/mujoco-sys", "crates/sim-core", "crates/rest", "crates/sim-server"]
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 4
-panic = "abort"
+panic = "unwind"

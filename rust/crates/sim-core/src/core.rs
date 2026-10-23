@@ -104,8 +104,8 @@ pub struct SimCore {
     hk_t: f64,
     pub model_rev: u32,
     pub revision: u64,         // bumps on world/model changes (camera prims cache)
-    pub cameras: Vec<crate::cameras::Camera>,
-    pub cam_scene: Option<crate::cameras::CamScene>,
+    pub cameras: Vec<Arc<std::sync::Mutex<crate::cameras::Camera>>>,
+    pub cam_scene: Option<Arc<crate::cameras::CamScene>>,
     scratch_v: Vec<f64>, scratch_g: Vec<i32>, scratch_a: Vec<f64>,
 }
 
@@ -579,24 +579,43 @@ impl SimCore {
 
     pub fn set_cameras(&mut self) {
         let list = self.spec.get("cameras").and_then(|c| c.as_array()).cloned().unwrap_or_default();
-        self.cameras = list.iter().filter_map(crate::cameras::build_camera).collect();
+        self.cameras = list.iter().filter_map(crate::cameras::build_camera).map(|c| Arc::new(std::sync::Mutex::new(c))).collect();
     }
 
-    /// capture camera `idx` at the current pose (scene primitives rebuilt lazily when the world revision changes)
-    pub fn capture_camera(&mut self, idx: usize, noise: bool) -> Option<crate::cameras::CamFrames> {
+    /// Everything needed to image camera `idx` outside the core lock: (camera, scene snapshot, pose, noise).
+    /// The scene primitives are rebuilt lazily when the world revision changes (floor texture is shared).
+    pub fn cam_job(&mut self, idx: usize) -> Option<(Arc<std::sync::Mutex<crate::cameras::Camera>>, Arc<crate::cameras::CamScene>, [f64; 3], bool)> {
         if idx >= self.cameras.len() { return None; }
         if self.cam_scene.as_ref().map(|s| s.revision) != Some(self.revision) {
             let (st, tg, ln) = self.decor();
-            let keep = self.cam_scene.take();
-            let sc = match keep {
-                Some(mut old) => { let n = crate::cameras::build_scene(&self.world, &st, &tg, &ln, self.revision); old.prims = n.prims; old.rgb = n.rgb; old.revision = self.revision; old }
-                None => crate::cameras::build_scene(&self.world, &st, &tg, &ln, self.revision),
-            };
-            self.cam_scene = Some(sc);
+            let n = crate::cameras::build_scene(&self.world, &st, &tg, &ln, self.revision, self.cam_scene.as_ref().map(|o| o.tex.clone()));
+            self.cam_scene = Some(Arc::new(n));
         }
-        let (x, y, th) = (self.x, self.y, self.th);
-        let sc = self.cam_scene.as_ref().unwrap();
-        Some(self.cameras[idx].capture(sc, x, y, th, noise, 4))
+        Some((self.cameras[idx].clone(), self.cam_scene.clone().unwrap(), [self.x, self.y, self.th], self.settings.noise))
+    }
+
+    pub fn capture_camera(&mut self, idx: usize, noise: bool) -> Option<crate::cameras::CamFrames> {
+        let (cam, sc, p, _) = self.cam_job(idx)?;
+        let mut c = cam.lock().unwrap();
+        Some(c.capture(&sc, p[0], p[1], p[2], noise, 4))
+    }
+
+    pub fn status(&self) -> Value {
+        let r = |x: f64, n: i32| { let m = 10f64.powi(n); (x * m).round_ties_even() / m };
+        let mut lid: Vec<Value> = self.lidars.iter().map(|l| json!({"name": l.name, "beams": l.n, "res_deg": r(l.angle_inc.to_degrees(), 3), "fov_deg": r(l.fov.to_degrees(), 1),
+            "range_max": l.range_max, "freq_hz": l.freq_hz, "z": l.mz, "inverted": l.sign < 0.0})).collect();
+        lid.extend(self.lidars3d.iter().map(|l| json!({"name": l.name, "type": "3d", "beams": l.n, "real_points_per_frame": l.real_points, "fov_deg": 360.0,
+            "vfov_deg": [r(l.vmin.to_degrees(), 1), r(l.vmax.to_degrees(), 1)], "range_max": l.range_max, "freq_hz": l.freq_hz, "z": l.mz, "model": l.cfg.get("vendor_model")})));
+        let engine = match &self.mj {
+            Some(m) => json!({"name": "mujoco", "version": self.mj_version, "ngeom": m.ngeom(), "compile_ms": r(self.compile_ms, 2), "mj_step_ms": r(self.mj_step_ms, 4),
+                "ray_threads": 1, "gpu_cast": {"available": false}, "rays_total": 0, "ray_ms_total": 0.0}),
+            None => json!({"name": "kinematic", "note": "未安装 mujoco，兜底模式"}),
+        };
+        let cams: Vec<Value> = self.cameras.iter().map(|c| { let c = c.lock().unwrap(); json!({"name": c.name, "type": c.kind_name(), "res": format!("{}x{}", c.w, c.h), "fps": c.fps, "ms": r(c.last_ms, 2), "render": "ray"}) }).collect();
+        json!({"backend": self.backend_name(), "chassis": self.chassis_type, "scenario": self.scenario_id, "sim_time": r(self.t, 3), "dt": self.settings.dt, "rtf": r(self.rtf, 3),
+            "overruns": self.overruns, "step_ms": r(self.step_ms, 3), "lidar_ms": r(self.lidar_ms, 3), "collisions": self.collisions,
+            "odom_drift_m": r((self.x - self.odom.x).hypot(self.y - self.odom.y), 4), "odom_drift_deg": r(wrap(self.th - self.odom.th).to_degrees(), 3),
+            "lidars": lid, "kinematics": self.chassis.telemetry(), "engine": engine, "cameras": cams, "camera_gl_error": Value::Null, "native": {"runtime": "rust"}})
     }
 
     pub fn map_to_odom(&self) -> (f64, f64, f64) {

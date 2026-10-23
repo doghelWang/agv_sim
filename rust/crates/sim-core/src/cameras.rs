@@ -13,14 +13,14 @@ pub struct CamScene {
     pub rgb: Vec<[f32; 3]>,
     pub floor_gid: i32,
     pub ceil_gid: i32,
-    pub tex: Vec<f32>,
+    pub tex: std::sync::Arc<Vec<f32>>,
     pub tex_h: usize,
     pub tex_w: usize,
     pub tex_org: (f64, f64, f64),
 }
 
 
-pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lanes: &[[f64; 4]], revision: u64) -> CamScene {
+pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lanes: &[[f64; 4]], revision: u64, reuse_tex: Option<std::sync::Arc<Vec<f32>>>) -> CamScene {
     let mut prims: Vec<Prim> = vec![];
     let mut rgb: Vec<[f32; 3]> = vec![CAT_COLORS[0], CAT_COLORS[4]];
     for s in &world.static_segments {
@@ -60,8 +60,19 @@ pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lane
         p[16] = gid;
         prims.push(p);
     }
-    let (tex, th, tw, org) = make_floor_texture(world, stations, tags, lanes);
-    CamScene { revision, prims, rgb, floor_gid: 0, ceil_gid: 1, tex, tex_h: th, tex_w: tw, tex_org: org }
+    match reuse_tex {
+        Some(t) => {
+            let b = world.bounds;
+            let (x0, y0) = (b[0] - 1.0, b[1] - 1.0);
+            let w = ((b[2] - b[0] + 2.0) / 0.02).ceil() as usize;
+            let h = ((b[3] - b[1] + 2.0) / 0.02).ceil() as usize;
+            CamScene { revision, prims, rgb, floor_gid: 0, ceil_gid: 1, tex: t, tex_h: h, tex_w: w, tex_org: (x0, y0, 0.02) }
+        }
+        None => {
+            let (tex, th, tw, org) = make_floor_texture(world, stations, tags, lanes);
+            CamScene { revision, prims, rgb, floor_gid: 0, ceil_gid: 1, tex: std::sync::Arc::new(tex), tex_h: th, tex_w: tw, tex_org: org }
+        }
+    }
 }
 
 fn make_floor_texture(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lanes: &[[f64; 4]]) -> (Vec<f32>, usize, usize, (f64, f64, f64)) {

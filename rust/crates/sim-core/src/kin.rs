@@ -253,6 +253,23 @@ impl Chassis {
     }
     pub fn stop_now(&mut self) { self.reset(); }
 
+    pub fn telemetry(&self) -> serde_json::Value {
+        use serde_json::{json, Map, Value};
+        let r = |x: f64, n: i32| { let m = 10f64.powi(n); (x * m).round_ties_even() / m };
+        let mut wheels = Map::new();
+        for w in &self.wheels {
+            if w.kind == Kind::Caster { continue; }
+            let mut d = json!({"kind": w.kind.name(), "speed_mps": r(w.speed, 3), "rpm": r(w.motor_rpm, 1), "current_a": r(w.current_a, 2), "torque_nm": r(w.torque_nm, 2), "rad": r(w.angle, 2)});
+            if w.kind == Kind::Steer {
+                d["steer_angle_deg"] = json!(r(w.steer.to_degrees(), 1));
+                d["target_steer_deg"] = json!(r(w.steer_target.to_degrees(), 1));
+                d["steer_current_a"] = json!(r(w.steer_current_a, 2));
+            }
+            wheels.insert(w.name.clone(), d);
+        }
+        json!({"type": self.kind, "holonomic": self.holonomic, "saturation": r(self.saturation, 3), "slip_residual": r(self.slip_residual, 4), "wheels": Value::Object(wheels)})
+    }
+
     pub fn joint_state(&self) -> (Vec<String>, Vec<f64>, Vec<f64>, Vec<f64>) {
         let (mut names, mut pos, mut vel, mut eff) = (vec![], vec![], vec![], vec![]);
         for w in &self.wheels {

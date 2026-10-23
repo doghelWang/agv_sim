@@ -1,0 +1,12 @@
+[package]
+name = "sim-server"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+sim-core = { path = "../sim-core" }
+mujoco-sys = { path = "../mujoco-sys" }
+rest = { path = "../rest" }
+serde_json = { version = "1", features = ["preserve_order"] }
+png = "0.18"
+regex = "1"
+jpeg-encoder = "0.7"
