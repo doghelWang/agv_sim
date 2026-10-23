@@ -62,7 +62,7 @@ impl ProcessRuntime {
         if role == "sim" {
             for n in ["sim_entrypoint_rs2.sh", "sim_entrypoint_rs.sh"] { if d.join(n).exists() && std::env::var("AGENT_SIM_PYTHON").is_err() { return d.join(n); } }
             d.join("sim_entrypoint.sh")
-        } else { d.join("nav_entrypoint.sh") }
+        } else if d.join("nav_entrypoint_rs.sh").exists() && std::env::var("AGENT_NAV_PYTHON").is_err() { d.join("nav_entrypoint_rs.sh") } else { d.join("nav_entrypoint.sh") }
     }
     pub fn run(&self, spec: &Value) -> Result<Value, String> {
         let name = spec["name"].as_str().ok_or("缺少 name")?.to_string();
