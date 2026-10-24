@@ -16,7 +16,7 @@ for planner in ["Dijkstra","AStar","None"]:
 def run(station,planner,obst,label):
     r("PUT",S+"/world/obstacles",obst)
     try: r("PUT",N+"/nav/planner",{"type":planner})
-    except Exception as e: print("planner",planner,"n/a",e); return None
+    except Exception as e: chk(f"{label} [{planner}] planner available",False,str(e)); return None
     r("POST",N+"/missions",{"station":station})
     t0=time.time(); st=None
     while time.time()-t0<150:
@@ -25,7 +25,7 @@ def run(station,planner,obst,label):
     s=g(S+"/state"); col=s.get("collisions",s.get("collision",0))
     chk(f"{label} [{planner}] reached ({st})",st in("SUCCEEDED","DONE","SUCCESS"),f"t={time.time()-t0:.0f}s pose=({s.get('x'):.2f},{s.get('y'):.2f}) col={col}")
     return s
-for p in ["Dijkstra"]:
+for p in ["dijkstra","nav2"]:
     run("S1",p,[],"free S1")
     run("S3",p,[{"x":0,"y":-3,"w":0.8,"h":0.8}],"blocked corridor S3")
     run("P0",p,[{"x":0,"y":-0.5,"w":0.6,"h":0.6}],"obstacle near goal path")
