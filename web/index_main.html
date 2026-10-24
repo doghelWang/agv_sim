@@ -324,6 +324,12 @@
                 <button data-cargo="box" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-emerald-50 text-[11px]">+ 车前货箱</button>
                 <button data-cargo="clear" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-rose-50 text-[11px]">清空货物</button>
               </div>
+              <div class="flex gap-1 flex-wrap">
+                <button data-fork-auto="pick" class="px-2 py-0.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-[11px] font-semibold">自动叉取托盘</button>
+                <button data-fork-auto="place" class="px-2 py-0.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-[11px] font-semibold">自动放置到前方</button>
+                <button data-fork-auto="stop_flow" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-rose-50 text-[11px]">停止任务</button>
+              </div>
+              <div id="hud-fork-msg" class="text-[10px] text-amber-700 min-h-[14px]"></div>
               <div class="text-[10px] text-slate-400">托盘放在车前 3.3 m：手动对中后降到底 → 向前插入 → 升起即可叉取。</div>
             </div>
           </div>
@@ -3831,6 +3837,14 @@
 (function () {
   const post = (u, b) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).catch(() => {});
   document.addEventListener('click', (e) => {
+    const a = e.target.closest('[data-fork-auto]');
+    if (a) {
+      const msg = document.getElementById('hud-fork-msg');
+      fetch('/api/fork/' + a.dataset.forkAuto, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        .then(r => r.json()).then(j => { if (msg) msg.textContent = j.status === 'ok' ? (a.dataset.forkAuto === 'stop_flow' ? '已停止' : '任务已下发 (见右侧事件/工步)') : (j.message || '失败'); })
+        .catch(() => { if (msg) msg.textContent = '请求失败'; });
+      return;
+    }
     const b = e.target.closest('[data-fork],[data-cargo]'); if (!b) return;
     if (b.dataset.fork) return void post('/api/fork', { action: b.dataset.fork });
     const k = b.dataset.cargo;
