@@ -6,3 +6,5 @@ edition = "2021"
 rest = { path = "../rest" }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 libc = "0.2"
+tar = { version = "0.4", default-features = false }
+flate2 = "1"

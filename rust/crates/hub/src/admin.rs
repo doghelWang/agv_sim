@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-pub struct Admin { pub s: Arc<Store>, dir: PathBuf, tokens: Mutex<Map<String, Value>>, pub started: f64, pub root: String }
+pub struct Admin { pub s: Arc<Store>, pub dir: PathBuf, pub job: Mutex<Option<Value>>, tokens: Mutex<Map<String, Value>>, pub started: f64, pub root: String }
 fn b64(b: &[u8]) -> String { base64::engine::general_purpose::STANDARD.encode(b) }
 fn sha(t: &str) -> String { hex(&Sha256::digest(t.as_bytes())) }
 
@@ -16,7 +16,7 @@ impl Admin {
         for d in ["updates", "backups", "jobs", "apps"] { let _ = std::fs::create_dir_all(dir.join(d)); }
         let t = Store::read_json(&dir.join("tokens.json")).and_then(|v| v.as_object().cloned()).unwrap_or_default();
         let t: Map<String, Value> = t.into_iter().filter(|(_, v)| v.as_f64().unwrap_or(0.0) > now()).collect();
-        Admin { s, dir, tokens: Mutex::new(t), started: now(), root: root.into() }
+        Admin { s, dir, job: Mutex::new(None), tokens: Mutex::new(t), started: now(), root: root.into() }
     }
     fn save(&self, t: &Map<String, Value>) {
         let p = self.dir.join("tokens.json");

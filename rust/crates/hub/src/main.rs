@@ -1,6 +1,7 @@
 mod admin;
 mod deployer;
 mod models;
+mod ops;
 mod nodes;
 mod scenes;
 mod store;
@@ -44,7 +45,6 @@ fn reexec_later() {
         eprintln!("[restart] exec 失败: {e}");
     });
 }
-fn not_avail(what: &str) -> ApiError { ApiError::coded(501, format!("Rust 平台暂不支持{what}"), "not_implemented") }
 
 impl Hub {
     fn insts(&self) -> Vec<Value> { self.dep.list(false) }
@@ -134,7 +134,7 @@ fn build(hub: Arc<Hub>) -> Server {
         j(json!({"token": t["id"], "expires": t["expires"], "hub_url": hub_url, "command": format!("bash deploy.sh agent --hub {hub_url} --token {} --kind {kind}", sget(&t, "id")),
             "docker": format!("docker run -d --name agv-agent --restart unless-stopped --network host -v /var/run/docker.sock:/var/run/docker.sock -v $HOME/.agv-agent:$HOME/.agv-agent -e AGENT_DATA=$HOME/.agv-agent -e HUB_API={hub_url} -e JOIN_TOKEN={} -e AGENT_KIND={kind} agv-platform:latest agent", sget(&t, "id"))}))
     });
-    R!("POST", pp("/nodes/add"), "添加计算节点 {kind,note,name,ip,ssh_port,username,password}: 验证 SSH 后保存 (首次部署时安装运行环境)", h, q => Err::<Response, _>(not_avail(" SSH 添加节点 (请在设备上启动节点代理并用令牌接入)")));
+    R!("POST", pp("/nodes/add"), "添加计算节点 {kind,note,name,ip,ssh_port,username,password}: 验证 SSH 后保存 (首次部署时安装运行环境)", h, q => j(ops::nodes_add(&h, &q.json()?)?));
     R!("POST", pp("/nodes/register"), "节点代理注册 {name, token, node_id, node_key, api_port, advertise_host, kind, hub_url, info} (节点代理调用)", h, q => {
         let ip = q.client.rsplit_once(':').map(|x| x.0).unwrap_or("127.0.0.1").to_string();
         j(h.nodes.register(&q.json()?, &ip)?)
@@ -199,15 +199,26 @@ fn build(hub: Arc<Hub>) -> Server {
     R!("POST", format!("{a}/restart"), "重启 {target: hub|agent}", h, q => { h.admin.check(&token(q), true)?; 
         match q.json().ok().and_then(|b| b.get("target").and_then(|t| t.as_str().map(|s| s.to_string()))).as_deref() {
             Some("hub") => { reexec_later(); j(json!({"ok": true, "msg": "平台将在 2 秒后重启，约 10 秒后恢复"})) }
-            Some("agent") => Err::<Response, _>(err(400, "请在节点上重启 agent (POST 节点 /api/v1/admin/restart)")),
+            Some("agent") => j(ops::restart_agent_job(&h, &user(q))?),
             _ => Err::<Response, _>(err(400, "未知的重启目标")),
         } });
-    R!("GET", format!("{a}/logs"), "日志文件列表", h, q => { h.admin.check(&token(q), true)?; j(json!({"logs": []})) });
-    R!("GET", format!("{a}/logs/{{name}}"), "下载日志", h, q => { h.admin.check(&token(q), true)?; Err::<Response, _>(err(404, "没有这个日志")) });
-    R!("GET", format!("{a}/updates"), "更新包列表", h, q => { h.admin.check(&token(q), true)?; j(json!({"updates": [], "current": h.admin.version()})) });
-    R!("POST", format!("{a}/updates/upload"), "上传更新包 (请求体为 .tgz)", h, q => { h.admin.check(&token(q), true)?; Err::<Response, _>(not_avail("更新包")) });
-    R!("GET", format!("{a}/jobs"), "运维任务", h, q => { h.admin.check(&token(q), true)?; j(json!({"jobs": [], "current": null})) });
-    R!("GET", format!("{a}/apps"), "App 列表与安装状态", h, q => { h.admin.check(&token(q), true)?; Err::<Response, _>(not_avail(" App 管理")) });
+    R!("GET", format!("{a}/logs"), "日志文件列表", h, q => { h.admin.check(&token(q), true)?; j(ops::logs(&h)) });
+    R!("GET", format!("{a}/logs/{{name}}"), "下载日志", h, q => { h.admin.check(&token(q), true)?; let n = q.params["name"].clone(); Ok(Response::binary(ops::log_file(&h, &n)?, vec![("Content-Disposition".into(), format!("attachment; filename=\"{n}\""))], "text/plain; charset=utf-8")) });
+    R!("GET", format!("{a}/updates"), "更新包列表", h, q => { h.admin.check(&token(q), true)?; j(json!({"updates": ops::updates(&h), "current": h.admin.version()})) });
+    R!("POST", format!("{a}/updates/upload"), "上传更新包 (请求体为 .tgz)", h, q => { h.admin.check(&token(q), true)?; j(ops::upload(&h, &q.body, &user(q))?) });
+    R!("GET", format!("{a}/updates/{{uid}}"), "更新包详情与预览", h, q => { h.admin.check(&token(q), true)?; j(ops::view(&h, &q.params["uid"])?) });
+    R!("POST", format!("{a}/updates/{{uid}}/apply"), "应用更新 {restart_instances}", h, q => { h.admin.check(&token(q), true)?; j(ops::apply(&h, &q.params["uid"], &q.json().unwrap_or(json!({})), &user(q))?) });
+    R!("POST", format!("{a}/updates/{{uid}}/rollback"), "回滚最近一次更新 {restart_instances}", h, q => { h.admin.check(&token(q), true)?; j(ops::rollback(&h, &q.params["uid"], &q.json().unwrap_or(json!({})), &user(q))?) });
+    R!("DELETE", format!("{a}/updates/{{uid}}"), "删除更新包", h, q => { h.admin.check(&token(q), true)?; j(ops::delete_update(&h, &q.params["uid"])?) });
+    R!("GET", format!("{a}/jobs"), "运维任务", h, q => { h.admin.check(&token(q), true)?; j(ops::jobs(&h)) });
+    R!("GET", format!("{a}/jobs/{{jid}}"), "运维任务详情", h, q => { h.admin.check(&token(q), true)?; j(ops::job_view(&h, &q.params["jid"])?) });
+    R!("GET", format!("{a}/apps"), "App 列表与安装状态", h, q => { h.admin.check(&token(q), true)?; j(ops::apps(&h)) });
+    R!("POST", format!("{a}/apps/upload"), "上传 APK (请求体为文件)", h, q => { h.admin.check(&token(q), true)?; j(ops::app_upload(&h, &q.body, &rest::url_decode(&q.q_str("filename", "")), &user(q))?) });
+    R!("GET", format!("{a}/apps/{{aid}}/download"), "下载 APK", h, q => { h.admin.check(&token(q), true)?; let id = q.params["aid"].clone(); Ok(Response::binary(ops::app_download(&h, &id)?, vec![("Content-Disposition".into(), format!("attachment; filename=\"{id}.apk\""))], "application/vnd.android.package-archive")) });
+    R!("DELETE", format!("{a}/apps/{{aid}}"), "删除 APK", h, q => { h.admin.check(&token(q), true)?; j(ops::app_delete(&h, &q.params["aid"])?) });
+    R!("POST", format!("{a}/apps/{{aid}}/install"), "安装 APK {mode: adb, serial}", h, q => { h.admin.check(&token(q), true)?; let b = q.json().unwrap_or(json!({})); j(ops::app_install(&h, &q.params["aid"], if truthy(b.get("mode")) { sget(&b, "mode") } else { "adb" }, sget(&b, "serial"))?) });
+    R!("POST", format!("{a}/adb/{{action}}"), "无线调试 adb (pair|connect|disconnect|mdns) {host, port, code}", h, q => { h.admin.check(&token(q), true)?; j(ops::adb_action(&q.params["action"], &q.json().unwrap_or(json!({})))?) });
+    R!("POST", format!("{a}/panel"), "外屏面板 open|close (需要安卓助手，Linux 平台没有外屏)", h, q => { h.admin.check(&token(q), true)?; Err::<Response, _>(err(400, "外屏面板只在带安卓助手的手机上可用")) });
 
     // ---- models
     R!("GET", pp("/models"), "车辆模型", h, q => j(json!({"models": h.models.list()})));
@@ -256,8 +267,8 @@ fn build(hub: Arc<Hub>) -> Server {
     R!("PATCH", pp("/packages/{pid}"), "修改程序包 {version, note, tag}", h, q => j(h.packages.update(&q.params["pid"], &q.json()?)?));
     R!("DELETE", pp("/packages/{pid}"), "删除程序包", h, q => { h.packages.delete(&q.params["pid"])?; j(json!({"ok": true})) });
     R!("GET", pp("/packages/{pid}/image"), "下载镜像包 (节点代理导入用)", h, q => { let p = h.packages.get(&q.params["pid"])?; let f = h.packages.file(&p).ok_or_else(|| err(404, "该程序包没有镜像文件 (节点镜像需先入库)"))?; file_resp(&f, "application/x-tar", &format!("{}.tar", sget(&p, "id"))) });
-    R!("POST", pp("/packages/from_node"), "节点镜像入库 (导出上传到平台) {node_id, ref, kind, version, note}", h, q => Err::<Response, _>(not_avail(" Docker 镜像入库")));
-    R!("POST", pp("/packages/upload"), "上传程序包 (请求体为文件)", h, q => Err::<Response, _>(not_avail(" Docker 镜像上传")));
+    R!("POST", pp("/packages/from_node"), "节点镜像入库 (导出上传到平台) {node_id, ref, kind, version, note}", h, q => j(ops::package_from_node(&h, q)?));
+    R!("POST", pp("/packages/upload"), "上传程序包 (请求体为 tar/tar.gz: docker save 镜像或含 bin/ 的程序包)", h, q => j(ops::package_upload(&h, q)?));
 
     // ---- instances
     R!("POST", pp("/deployments/check"), "部署前校验 {sim_node, nav_node, model_id, model_ver, scene_id, sim_pkg, nav_pkg}", h, q => j(h.dep.check(&q.json()?)));

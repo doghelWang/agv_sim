@@ -161,7 +161,21 @@ fn build(ag: Arc<Agent>) -> Server {
         if a.rt.image(r).is_some() { return ok(a.job("ensure", r, "done", "镜像已存在")); }
         Err(ApiError::coded(404, format!("本机没有镜像 {r}，process 运行时不支持导入镜像"), "error"))
     });
-    R!("POST", "/api/v1/images/export", "导出本机镜像并上传到平台", a, q => { a.check(q)?; Err(ApiError::coded(501, "process 运行时不支持导出镜像", "not_implemented")) });
+    R!("POST", "/api/v1/images/export", "导出本机程序包 (bin/ 下的 Rust 程序打成 tar.gz) 并上传到平台 {ref, upload_url}", a, q => {
+        a.check(q)?;
+        let b = q.json()?;
+        let r = b.get("ref").and_then(|r| r.as_str()).unwrap_or("").to_string();
+        let url = b.get("upload_url").and_then(|u| u.as_str()).ok_or_else(|| ApiError::coded(400, "缺少 upload_url", "bad_request"))?.to_string();
+        if a.rt.image(&r).is_none() { return Err(ApiError::coded(404, format!("本机没有镜像 {r}"), "error")); }
+        let job = a.job("export", &r, "running", "打包中");
+        let (a2, jid) = (a.clone(), job["id"].as_str().unwrap_or("").to_string());
+        std::thread::spawn(move || {
+            let res = export_bundle(&a2.rt.code_dir, &url, &a2, &jid);
+            let mut jobs = a2.jobs.lock().unwrap();
+            if let Some(j) = jobs.get_mut(&jid) { match res { Ok(n) => { j["status"] = json!("done"); j["bytes"] = json!(n); j["total"] = json!(n); j["message"] = json!("已上传到平台"); } Err(e) => { j["status"] = json!("error"); j["message"] = json!(e); } } j["ended"] = json!(now()); }
+        });
+        ok(job)
+    });
     R!("GET", "/api/v1/jobs/{jid}", "任务进度", a, q => { a.check(q)?; a.jobs.lock().unwrap().get(&q.params["jid"]).cloned().map(|j| Response::json(&j)).ok_or_else(|| ApiError::new(404, "无此任务")) });
     R!("GET", "/api/v1/containers", "托管容器", a, q => { a.check(q)?; ok(json!({"containers": a.rt.list()})) });
     R!("POST", "/api/v1/containers/run", "启动容器 {name,image,role,instance,env}", a, q => {
@@ -203,6 +217,30 @@ fn build(ag: Arc<Agent>) -> Server {
     api
 }
 
+fn export_bundle(code: &std::path::Path, url: &str, a: &Agent, jid: &str) -> Result<u64, String> {
+    let mut buf = Vec::new();
+    {
+        let gz = flate2::write::GzEncoder::new(&mut buf, flate2::Compression::fast());
+        let mut tb = tar::Builder::new(gz);
+        let mut n = 0;
+        for sub in ["bin"] {
+            let d = code.join(sub);
+            for e in std::fs::read_dir(&d).map_err(|e| format!("读取 {} 失败: {e}", d.display()))?.flatten() {
+                if e.path().is_file() { tb.append_path_with_name(e.path(), format!("{sub}/{}", e.file_name().to_string_lossy())).map_err(|e| e.to_string())?; n += 1; }
+            }
+        }
+        if let Ok(v) = std::fs::read_to_string(code.join(".agv_version")) { let mut h = tar::Header::new_gnu(); h.set_size(v.len() as u64); h.set_mode(0o644); h.set_cksum(); tb.append_data(&mut h, ".agv_version", v.as_bytes()).map_err(|e| e.to_string())?; }
+        if n == 0 { return Err("bin/ 下没有程序文件".into()); }
+        tb.into_inner().map_err(|e| e.to_string())?.finish().map_err(|e| e.to_string())?;
+    }
+    { let mut jobs = a.jobs.lock().unwrap(); if let Some(j) = jobs.get_mut(jid) { j["message"] = json!("上传中"); j["total"] = json!(buf.len()); } }
+    let u = url.trim_start_matches("http://");
+    let (hp, path) = match u.find('/') { Some(i) => (&u[..i], &u[i..]), None => (u, "/") };
+    let c = rest::Client::new(&format!("http://{hp}"), 600.0).with_header("x-node-key", &a.node_key());
+    let r = c.request_raw("POST", path, Some(&buf), "application/gzip", &[], Some(600.0), "application/json")?;
+    if r.status >= 400 { return Err(format!("平台拒绝: HTTP {} {}", r.status, String::from_utf8_lossy(&r.body[..r.body.len().min(200)]))); }
+    Ok(buf.len() as u64)
+}
 fn reexec_later() {
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_secs(2));

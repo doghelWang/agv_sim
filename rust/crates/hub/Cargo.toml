@@ -14,3 +14,5 @@ hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 base64 = "0.22"
 libc = "0.2"
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
