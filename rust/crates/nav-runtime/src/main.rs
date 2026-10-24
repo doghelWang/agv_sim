@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 const SCENARIOS: &str = include_str!("../../../data/scenarios.json");
 
-extern "C" fn on_term(_: libc::c_int) { unsafe { libc::_exit(0) } }
+extern "C" fn on_term(_: libc::c_int) { nav2::kill_all_children(); unsafe { libc::_exit(0) } }
 
 fn f(b: &Value, k: &str, d: f64) -> Result<f64, ApiError> {
     match b.get(k) {

@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 const MAGIC: &[u8] = b"AGV1";
+/// process-group ids of children (signal-handler safe), killed on SIGTERM so Nav2 never outlives nav-runtime
+pub static PGIDS: [std::sync::atomic::AtomicI32; 4] = [std::sync::atomic::AtomicI32::new(0), std::sync::atomic::AtomicI32::new(0), std::sync::atomic::AtomicI32::new(0), std::sync::atomic::AtomicI32::new(0)];
+pub fn reg_pgid(slot: usize, pid: i32) { PGIDS[slot].store(pid, Ordering::SeqCst); }
+pub fn kill_all_children() { for p in PGIDS.iter() { let g = p.load(Ordering::SeqCst); if g > 0 { unsafe { libc::kill(-g, libc::SIGKILL); } } } }
 const T_ROUTE: u8 = 3;
 const T_CANCEL: u8 = 4;
 const T_CONFIG: u8 = 5;
@@ -105,7 +109,9 @@ impl Nav2 {
         }
         for (k, v) in env { c.env(k, v); }
         unsafe { use std::os::unix::process::CommandExt; c.pre_exec(|| { libc::setpgid(0, 0); Ok(()) }); }
-        c.spawn().map_err(|e| format!("启动 {name} 失败: {e}"))
+        let ch = c.spawn().map_err(|e| format!("启动 {name} 失败: {e}"))?;
+        reg_pgid(if name == "bridge" { 0 } else { 1 }, ch.id() as i32);
+        Ok(ch)
     }
 
     /// Start bridge + Nav2 (idempotent).
@@ -152,6 +158,7 @@ impl Nav2 {
             let _ = c.wait();
         }
         *self.n2_launched.lock().unwrap() = None;
+        reg_pgid(1, 0);
     }
 
     /// bridge up → launch Nav2; Nav2 not active 75 s after launch → relaunch (max 3 tries)
