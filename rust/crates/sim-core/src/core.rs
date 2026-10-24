@@ -110,6 +110,7 @@ pub struct SimCore {
     pub fork: Option<crate::fork::Fork>,
     pub fork_events: Vec<crate::fork::ForkEvent>,
     pub fork_stall: u32,
+    pub fork_evt_t: f64,
     scratch_v: Vec<f64>, scratch_g: Vec<i32>, scratch_a: Vec<f64>,
 }
 
@@ -149,7 +150,7 @@ impl SimCore {
             lidars, lidars3d, photos, bumpers,
             t: 0.0, x: 0.0, y: 0.0, th: 0.0, vx: 0.0, vy: 0.0, wz: 0.0, cmd: [0.0; 3], cmd_time: -1e9, paused: false, rtf_target: 1.0, rtf: 1.0,
             collisions: 0, overruns: 0, steps: 0, discrete_n: 0, last_contact: None, step_ms: 0.0, lidar_ms: 0.0, mj_step_ms: 0.0,
-            acc: 0.0, last_wall: now, rtf_t0: now, rtf_sim: 0.0, mover_acc: 0.0, hk_t: 0.0, model_rev, revision: 1, cameras: vec![], cam_scene: None, fork: crate::fork::ForkSpec::from_spec(&spec).map(crate::fork::Fork::new), fork_events: vec![], fork_stall: 0,
+            acc: 0.0, last_wall: now, rtf_t0: now, rtf_sim: 0.0, mover_acc: 0.0, hk_t: 0.0, model_rev, revision: 1, cameras: vec![], cam_scene: None, fork: crate::fork::ForkSpec::from_spec(&spec).map(crate::fork::Fork::new), fork_events: vec![], fork_stall: 0, fork_evt_t: -1e9,
             scratch_v: vec![], scratch_g: vec![], scratch_a: vec![],
             mj: None, lib, mj_version, spec, settings,
         };
@@ -264,7 +265,7 @@ impl SimCore {
             self.vx = 0.0; self.vy = 0.0; self.wz = 0.0;
             self.chassis.stop_now();
             if let Some(mj) = self.mj.as_mut() { mj.reset_pose(g[0], g[1], g[2]); }
-            if self.fork_stall == 0 { self.fork_events.push(crate::fork::ForkEvent { kind: "FORK_COLLISION", level: "warning", msg: "货叉/货物与障碍物接触，底盘已停止".into(), data: json!({"x": round3(g[0]), "y": round3(g[1])}) }); }
+            if self.fork_stall == 0 && self.t - self.fork_evt_t > 2.0 { self.fork_evt_t = self.t; self.fork_events.push(crate::fork::ForkEvent { kind: "FORK_COLLISION", level: "warning", msg: "货叉/货物与障碍物接触，底盘已停止".into(), data: json!({"x": round3(g[0]), "y": round3(g[1])}) }); }
             self.fork_stall += 1;
         }
         f.step(self.settings.dt, [self.x, self.y, self.th], &mut self.world, &mut self.io, brake);
@@ -431,7 +432,7 @@ impl SimCore {
                     cvx = 0.0; cvy = 0.0; cwz = 0.0;
                     self.chassis.stop_now();
                     self.fork_stall += 1;
-                    if self.fork_stall == 1 { self.fork_events.push(crate::fork::ForkEvent { kind: "FORK_COLLISION", level: "warning", msg: "货叉/货物与障碍物接触，底盘已停止".into(), data: json!({"x": round3(self.x), "y": round3(self.y)}) }); }
+                    if self.fork_stall == 1 && self.t - self.fork_evt_t > 2.0 { self.fork_evt_t = self.t; self.fork_events.push(crate::fork::ForkEvent { kind: "FORK_COLLISION", level: "warning", msg: "货叉/货物与障碍物接触，底盘已停止".into(), data: json!({"x": round3(self.x), "y": round3(self.y)}) }); }
                 } else { self.fork_stall = 0; }
             }
         }
