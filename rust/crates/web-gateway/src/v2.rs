@@ -61,6 +61,8 @@ impl Locks {
 struct Active { id: String, t0: f64, flow: Value, ev_from: u64, traj: Vec<Value>, inj: Vec<Value>, info: Value, scene: Value, topo: Value, spec: Value }
 struct Rec { on: bool, active: Option<Active>, records: Vec<Value> }
 
+fn light(mut b: Value) -> Value { if let Some(o) = b.as_object_mut() { o.remove("trajectory"); o.remove("events"); } b }
+
 pub struct V2 { pub gw: Arc<Gateway>, pub locks: Locks, rec: Mutex<Rec>, dir: String, info: Mutex<(f64, Value)>, api: Mutex<Option<Arc<Server>>> }
 
 impl V2 {
@@ -71,7 +73,11 @@ impl V2 {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             let mut fs: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|f| f.ends_with(".json")).collect();
             fs.sort(); fs.reverse(); fs.truncate(50);
-            for f in fs { if let Some(b) = std::fs::read_to_string(format!("{dir}/{f}")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) { records.push(b); } }
+            for f in fs {
+                // 超大记录(>8MB)不整体解析进内存，留在磁盘；其余只保留轻量字段，完整 bundle 按需从磁盘读取
+                if std::fs::metadata(format!("{dir}/{f}")).map(|m| m.len() > 8_000_000).unwrap_or(true) { continue; }
+                if let Some(b) = std::fs::read_to_string(format!("{dir}/{f}")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) { records.push(light(b)); }
+            }
             records.sort_by(|a, b| s(&b["metadata"], "recordedAt").cmp(s(&a["metadata"], "recordedAt")));
         }
         let v = Arc::new(V2 { gw, locks: Locks { h: Mutex::new(None) }, rec: Mutex::new(Rec { on: true, active: None, records }), dir, info: Mutex::new((0.0, json!({}))), api: Mutex::new(None) });
@@ -207,7 +213,7 @@ impl V2 {
                 "wheelbase": if xs.len() > 1 { jr(xs.iter().cloned().fold(f64::MIN, f64::max) - xs.iter().cloned().fold(f64::MAX, f64::min), 3) } else { Value::Null }, "modelId": model.get("model_id"), "version": model.get("version"),
                 "chassis": spec.get("active_chassis"), "footprint": ch.get("footprint").filter(|v| truthy(v)).cloned().or_else(|| spec.get("footprint").cloned()), "length": ch.get("length_m"), "width": ch.get("width_m")},
             "injectedElements": a.inj, "events": events, "trajectory": a.traj});
-        r.records.insert(0, bundle.clone());
+        r.records.insert(0, light(bundle.clone()));
         r.records.truncate(50);
         let _ = std::fs::write(format!("{}/{}.json", self.dir, rid), serde_json::to_vec(&bundle).unwrap_or_default());
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
@@ -219,6 +225,11 @@ impl V2 {
         let b2 = bundle.clone();
         std::thread::spawn(move || { me.archive(&b2); });
         Some(bundle)
+    }
+    /// 按需从磁盘读取完整 bundle（内存里只保留轻量记录）
+    fn full(&self, b: &Value) -> Value {
+        let id = s(&b["metadata"], "recordId");
+        std::fs::read_to_string(format!("{}/{}.json", self.dir, id)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or_else(|| b.clone())
     }
     fn me(&self) -> Arc<V2> { GLOBAL.get().cloned().expect("v2") }
 
@@ -376,7 +387,7 @@ impl V2 {
         let evs = self.gw.events.get_events(0, None, 5000)["events"].as_array().cloned().unwrap_or_default();
         let tagged: Vec<Value> = evs.into_iter().map(|mut e| { e["tag"] = json!(tag_of(&e)); e }).collect();
         let mut files = vec![("events.evt.json".to_string(), serde_json::to_vec_pretty(&tagged).unwrap_or_default())];
-        for b in self.rec().records.iter().take(20) { files.push((format!("records/sim_bundle_{}.rcd.json", s(&b["metadata"], "recordId")), serde_json::to_vec(b).unwrap_or_default())); }
+        for b in self.rec().records.iter().take(20) { files.push((format!("records/sim_bundle_{}.rcd.json", s(&b["metadata"], "recordId")), serde_json::to_vec(&self.full(b)).unwrap_or_default())); }
         files.push(("instance.json".into(), serde_json::to_vec_pretty(&self.info()).unwrap_or_default()));
         Self::zip(files)
     }
@@ -425,16 +436,18 @@ impl V2 {
         R!("GET", "/api/v2/records/{rid}/bundle", "下载 sim_bundle", |v: &Arc<V2>, q: &Request| {
             let rid = &q.params["rid"];
             let b = v.rec().records.iter().find(|b| s(&b["metadata"], "recordId") == rid).cloned().ok_or_else(|| ApiError::new(404, "记录不存在"))?;
+            let b = v.full(&b);
             Ok(Response::raw(serde_json::to_vec(&b).unwrap_or_default(), "application/json; charset=utf-8").header("Content-Disposition", &format!("attachment; filename=sim_bundle_{}_{}.json", s(&b["metadata"], "taskId"), rid)))
         });
         R!("GET", "/api/v2/records/bundle_all", "打包下载全部记录", |v: &Arc<V2>, _q: &Request| {
-            let files = v.rec().records.iter().map(|b| (format!("sim_bundle_{}_{}.json", s(&b["metadata"], "taskId"), s(&b["metadata"], "recordId")), serde_json::to_vec(b).unwrap_or_default())).collect();
+            let recs: Vec<Value> = v.rec().records.clone();
+            let files = recs.iter().map(|b| (format!("sim_bundle_{}_{}.json", s(&b["metadata"], "taskId"), s(&b["metadata"], "recordId")), serde_json::to_vec(&v.full(b)).unwrap_or_default())).collect();
             Ok(Response::raw(V2::zip(files), "application/zip").header("Content-Disposition", "attachment; filename=sim_bundles_all.zip"))
         });
         R!("POST", "/api/v2/records/archive", "归档全部记录到平台", |v: &Arc<V2>, _q: &Request| {
             if v.rec().active.is_some() { v.rec_end("STOPPED"); }
             let todo: Vec<Value> = v.rec().records.iter().filter(|b| !b["metadata"].get("archived").map(truthy).unwrap_or(false)).cloned().collect();
-            ok(json!({"archived": todo.iter().filter(|b| v.archive(b)).count()}))
+            ok(json!({"archived": todo.iter().filter(|b| v.archive(&v.full(b))).count()}))
         });
         R!("POST", "/api/v2/recording", "开关录制", |v: &Arc<V2>, q: &Request| {
             let on = q.json()?.get("on").map(truthy).unwrap_or(true);
