@@ -406,6 +406,15 @@ impl Gateway {
         g.telemetry.insert("lidar_config".into(), lc.clone());
         lc
     }
+    pub fn fork_cmd(&self, b: &Value) -> Value { safe(&self.sim, "PUT", "/api/v1/fork", Some(b)).unwrap_or(json!({"error": "sim 不可用或车型无货叉"})) }
+    pub fn cargo_add(&self, b: &Value) -> Result<Value, String> { self.sim.json("POST", "/api/v1/world/cargo", Some(b), None).map_err(|e| e.to_string()) }
+    pub fn cargo_clear(&self) -> usize {
+        let list = safe(&self.sim, "GET", "/api/v1/world/cargo", None);
+        let items: Vec<Value> = list.as_ref().and_then(|v| v.as_array().cloned().or_else(|| v.get("cargo").and_then(|c| c.as_array().cloned()))).unwrap_or_default();
+        let mut n = 0;
+        for it in &items { if let Some(id) = it.get("id").and_then(|i| i.as_str()) { if safe(&self.sim, "DELETE", &format!("/api/v1/world/cargo/{id}"), None).is_some() { n += 1; } } }
+        n
+    }
     pub fn set_io(&self, key: &str, v: bool) { safe(&self.sim, "PUT", &format!("/api/v1/io/di/{key}"), Some(&json!({"value": v}))); }
 
     pub fn broadcast_obstacles(&self) {

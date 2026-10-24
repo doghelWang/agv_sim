@@ -309,6 +309,23 @@
               <span>货叉机构高度:</span>
               <span id="hud-fork-height" class="font-mono-num text-slate-800 font-semibold">0 mm</span>
             </div>
+            <div id="hud-fork-panel" class="hidden mt-1 pt-1.5 border-t border-slate-100 space-y-1.5">
+              <div class="flex justify-between items-center"><span>货叉状态:</span><span id="hud-fork-state" class="font-mono-num font-semibold text-amber-700">—</span></div>
+              <input id="hud-fork-slider" type="range" min="0" max="3000" step="10" value="0" class="w-full accent-amber-500">
+              <div class="flex gap-1 flex-wrap">
+                <button data-fork="up" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-amber-50 text-[11px]">▲ 升</button>
+                <button data-fork="down" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-amber-50 text-[11px]">▼ 降</button>
+                <button data-fork="stop" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-amber-50 text-[11px]">■ 停</button>
+                <button data-fork="bottom" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-amber-50 text-[11px]">到底</button>
+                <button data-fork="top" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-amber-50 text-[11px]">到顶</button>
+              </div>
+              <div class="flex gap-1 flex-wrap">
+                <button data-cargo="pallet" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-emerald-50 text-[11px]">+ 车前托盘</button>
+                <button data-cargo="box" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-emerald-50 text-[11px]">+ 车前货箱</button>
+                <button data-cargo="clear" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-rose-50 text-[11px]">清空货物</button>
+              </div>
+              <div class="text-[10px] text-slate-400">托盘放在车前 3.3 m：手动对中后降到底 → 向前插入 → 升起即可叉取。</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1339,8 +1356,22 @@
         }
       }
 
-      const forkH = (data.io_states && data.io_states.fork_height_mm !== undefined) ? data.io_states.fork_height_mm : 0;
+      const forkH = (data.fork && data.fork.height_m !== undefined) ? Math.round(data.fork.height_m * 1000) : ((data.io_states && data.io_states.fork_height_mm !== undefined) ? data.io_states.fork_height_mm : 0);
       if (hudFork) hudFork.textContent = `${forkH} mm`;
+      {
+        const pan = document.getElementById('hud-fork-panel');
+        if (pan) {
+          pan.classList.toggle('hidden', !data.fork);
+          if (data.fork) {
+            const f = data.fork, st = document.getElementById('hud-fork-state'), sl = document.getElementById('hud-fork-slider');
+            const names = { IDLE: '空闲', MOVING: '升降中', UP: '上升', DOWN: '下降', LOADED: '带载' };
+            const ld = f.loaded ? ` · 带载 ${f.load_id || ''}` : '';
+            if (st) st.textContent = `${names[f.state] || f.state || '—'}${ld}${f.blocked ? ' · 受阻:' + f.blocked : ''}`;
+            if (sl) { sl.max = Math.round((f.mast_max_m || 3) * 1000); if (!window.__forkDrag) sl.value = Math.round((f.height_m || 0) * 1000); }
+            window.__lastPose = { x: data.x, y: data.y, yaw: data.yaw };
+          }
+        }
+      }
 
       if (hudStatus) {
         if (data.is_paused) {
@@ -3795,5 +3826,25 @@
     }
   </script>
 <script>try{document.getElementById("hdr-node-addr").textContent=location.host}catch(e){}</script>
+
+<script>
+(function () {
+  const post = (u, b) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).catch(() => {});
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-fork],[data-cargo]'); if (!b) return;
+    if (b.dataset.fork) return void post('/api/fork', { action: b.dataset.fork });
+    const k = b.dataset.cargo;
+    if (k === 'clear') return void post('/api/cargo/clear');
+    const p = window.__lastPose; if (!p) return;
+    const yaw = Number(p.yaw) || 0, d = 3.3;
+    post('/api/cargo/add', { kind: k, x: p.x + Math.cos(yaw) * d, y: p.y + Math.sin(yaw) * d, yaw, id: (k === 'pallet' ? 'P' : 'B') + Date.now().toString(36).slice(-4) });
+  });
+  const sl = document.getElementById('hud-fork-slider');
+  if (sl) {
+    sl.addEventListener('input', () => { window.__forkDrag = true; });
+    sl.addEventListener('change', () => { post('/api/fork', { height: Number(sl.value) / 1000 }); setTimeout(() => { window.__forkDrag = false; }, 800); });
+  }
+})();
+</script>
 </body>
 </html>

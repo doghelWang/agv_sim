@@ -257,7 +257,7 @@ export class Viewer3D {
       this._forkSig = sig;
       while (this.forkGroup.children.length) { const c = this.forkGroup.children[0]; this.forkGroup.remove(c); disposeTree(c); }
       const rx = f.tine.root_x, H = Math.min(f.mast_max_m + 0.3, 3.4);
-      const steel = new THREE.MeshLambertMaterial({ color: 0x475569 }), fork = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
+      const steel = new THREE.MeshLambertMaterial({ color: 0x1e293b, emissive: 0x1e293b }), fork = new THREE.MeshBasicMaterial({ color: 0xff9800 });
       [-0.3, 0.3].forEach(y => { const m = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, H), steel); m.position.set(rx - 0.06, y, H / 2); this.forkGroup.add(m); });
       const cross = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.66, 0.08), steel); cross.position.set(rx - 0.06, 0, H); this.forkGroup.add(cross);
       const car = new THREE.Group(); car.name = 'carriage';

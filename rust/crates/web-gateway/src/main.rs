@@ -122,6 +122,9 @@ fn handle(gw: &Arc<Gateway>, v2: &Arc<v2::V2>, perf: &Arc<perf::PerfMonitor>, ro
                 "/api/set_io" => gw.set_io(b.get("key").and_then(|s| s.as_str()).unwrap_or(""), b.get("value").map(truthy).unwrap_or(false)),
                 "/api/obstacles/random" => gw.generate_random_obstacles(getf(&b, "count", 3.0) as usize),
                 "/api/obstacles/clear" => gw.clear_obstacles(),
+                "/api/fork" => res = gw.fork_cmd(&b),
+                "/api/cargo/add" => match gw.cargo_add(&b) { Ok(v) => res = v, Err(m) => return Ok(jresp(json!({"status": "error", "message": m})).with_status(400)) },
+                "/api/cargo/clear" => { let n = gw.cargo_clear(); res = json!({"status": "ok", "removed": n}); }
                 "/api/obstacles/add" => {
                     match gw.add_obstacle(getf(&b, "x", 0.0), getf(&b, "y", 0.0), getf(&b, "w", 0.8), getf(&b, "h", 0.8), b.get("type").and_then(|s| s.as_str()).unwrap_or("box")) {
                         Ok(()) => res = json!({"status": "ok", "message": "扰动模块已添加，将在恢复仿真时生效"}),
