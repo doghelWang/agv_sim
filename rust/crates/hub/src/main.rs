@@ -343,6 +343,7 @@ fn main() {
     let models = Arc::new(ModelRepo { s: s.clone() });
     let scenes = Arc::new(SceneRepo { s: s.clone() });
     scenes.seed_builtins();
+    models.seed_builtins(&root.join("models"));
     let dep = Deployer::new(s.clone(), nodes.clone(), packages.clone(), models.clone(), scenes.clone(), port);
     let admin = admin::Admin::new(s.clone(), &root.to_string_lossy());
     let hub = Arc::new(Hub { port, root, s: s.clone(), packages, nodes, models, scenes, dep, admin, srv: OnceLock::new() });

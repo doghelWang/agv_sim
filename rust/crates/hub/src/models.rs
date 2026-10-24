@@ -76,6 +76,24 @@ impl ModelRepo {
         ms.sort_by(|a, b| fnum(a.get("created"), 0.0).partial_cmp(&fnum(b.get("created"), 0.0)).unwrap_or(std::cmp::Ordering::Equal));
         ms.iter().map(|m| self.view(m)).collect()
     }
+    /// built-in library: every <AGV_HOME>/models/*.cmodel not yet in the library (matched by file name) is imported once
+    pub fn seed_builtins(&self, dir: &std::path::Path) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let fname = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string();
+            if !fname.to_lowercase().ends_with(".cmodel") { continue; }
+            if self.s.list("models").iter().any(|m| m.get("file").and_then(|f| f.as_str()) == Some(fname.as_str())) { continue; }
+            let Ok(data) = std::fs::read(&p) else { continue };
+            let (name, vtype) = match fname.as_str() {
+                "forklift_4steer.cmodel" => ("四舵轮叉车 AMR", "叉车 AMR"),
+                _ => ("", ""),
+            };
+            let mut meta = json!({"project": "示例项目", "note": "平台内置示例模型", "operator": "builtin"});
+            if !name.is_empty() { meta["name"] = json!(name); meta["vtype"] = json!(vtype); }
+            match self.add_cmodel(&fname, &data, &meta) { Ok(_) => eprintln!("[hub] 内置模型已入库: {fname}"), Err(e) => eprintln!("[hub] 内置模型 {fname} 入库失败: {}", e.message) }
+        }
+    }
     pub fn update_meta(&self, mid: &str, f: &Value) -> R<Value> {
         let mut m = self.get(mid)?;
         for k in ["name", "project", "vtype", "material_no", "note"] { if let Some(v) = f.get(k) { m[k] = v.clone(); } }
