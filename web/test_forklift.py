@@ -5,6 +5,7 @@ import json, math, sys, time, urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:18100").rstrip("/") + "/api/v1"
 FAILS = []
+TIP = 2.25
 
 def req(m, p, b=None):
     r = urllib.request.Request(BASE + p, method=m, data=None if b is None else json.dumps(b).encode(), headers={"Content-Type": "application/json"})
@@ -49,6 +50,8 @@ def reset(x, y, yaw=0.0):
 def main():
     print("backend:", req("GET", "/sim")["backend"], " chassis:", req("GET", "/state")["chassis"])
     f = fork()
+    global TIP
+    TIP = f["tine"]["root_x"] + f["tine"]["length"]
     check("fork present", isinstance(f, dict) and f.get("mast_max_m") == 3.0, str(f)[:80])
     for c in list(cargo()): req("DELETE", f"/world/cargo/{c}")
 
@@ -61,16 +64,16 @@ def main():
 
     # --- misaligned approach must be blocked by pallet runners
     reset(0.0, 0.17, 0.0)
-    p = drive_to_x(3.2, timeout=15)
+    p = drive_to_x(5.45 - TIP, timeout=15)
     ev = [e["kind"] for e in req("GET", "/events?limit=30")] if isinstance(req("GET", "/events?limit=30"), list) else []
-    check("misaligned insertion stopped by runner", p["x"] < 2.3, f"x={p['x']:.2f} (tine tip would be at {p['x']+2.25:.2f}, pallet edge 4.4)")
+    check("misaligned insertion stopped by runner", p["x"] < 4.55 - TIP, f"x={p['x']:.2f} (tine tip would be at {p['x']+TIP:.2f}, pallet edge 4.4)")
     check("pallet not moved by collision", abs(cargo()["P1"]["x"] - 5.0) < 0.01)
 
     # --- aligned approach, insert, lift
     reset(0.0, 0.0, 0.0)
     time.sleep(0.2)
-    p = drive_to_x(3.1, vmax=0.4, tol=0.03)
-    check("aligned insertion reaches depth", abs(p["x"] - 3.1) < 0.08, f"x={p['x']:.3f} y={p['y']:.3f}")
+    p = drive_to_x(5.35 - TIP, vmax=0.4, tol=0.03)
+    check("aligned insertion reaches depth", abs(p["x"] - (5.35 - TIP)) < 0.08, f"x={p['x']:.3f} y={p['y']:.3f}")
     check("pallet-detect DI on", req("GET", "/io")["inputs"].get("di_pallet_detect") is True)
     req("PUT", "/fork", {"height": 0.5}); f = wait_fork(0.5)
     check("fork reached 0.5 m", abs(f["height_m"] - 0.5) < 0.01, f"h={f['height_m']}")
@@ -121,7 +124,7 @@ def main():
     reset(-8.0, 0.0, 0.0)
     req("POST", "/world/cargo", {"kind": "box", "id": "WALLBOX", "x": -3.5, "y": 0.0, "size": [0.6, 1.2, 2.0]})
     p = drive_to_x(-4.0, vmax=0.6, timeout=14)
-    check("tines stop before solid box", p["x"] < -5.9 and cargo()["WALLBOX"]["x"] == -3.5, f"x={p['x']:.2f}")
+    check("tines stop before solid box", p["x"] < -3.75 - TIP and cargo()["WALLBOX"]["x"] == -3.5, f"x={p['x']:.2f}")
 
     # --- cleanup
     for c in list(cargo()): req("DELETE", f"/world/cargo/{c}")
