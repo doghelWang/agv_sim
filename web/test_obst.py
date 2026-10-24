@@ -17,13 +17,14 @@ def run(station,planner,obst,label):
     r("PUT",S+"/world/obstacles",obst)
     try: r("PUT",N+"/nav/planner",{"type":planner})
     except Exception as e: chk(f"{label} [{planner}] planner available",False,str(e)); return None
+    c0=g(S+"/state")["collision"]["count"]
     r("POST",N+"/missions",{"station":station})
     t0=time.time(); st=None
     while time.time()-t0<150:
         time.sleep(2); m=g(N+"/missions/current"); st=m.get("status")
-        if st in("SUCCEEDED","DONE","SUCCESS","FAILED","ABORTED","NO_PATH","REJECTED","CANCELED"): break
-    s=g(S+"/state"); col=s.get("collisions",s.get("collision",0))
-    chk(f"{label} [{planner}] reached ({st})",st in("SUCCEEDED","DONE","SUCCESS"),f"t={time.time()-t0:.0f}s pose=({s.get('x'):.2f},{s.get('y'):.2f}) col={col}")
+        if st in("ARRIVED","SUCCEEDED","DONE","SUCCESS","FAILED","ABORTED","NO_PATH","REJECTED","CANCELED"): break
+    s=g(S+"/state"); tr=s["truth"]; col=s["collision"]["count"]-c0
+    chk(f"{label} [{planner}] reached ({st})",st=="ARRIVED" and col==0,f"t={time.time()-t0:.0f}s pose=({tr['x']:.2f},{tr['y']:.2f}) new_collisions={col}")
     return s
 for p in ["dijkstra","nav2"]:
     run("S1",p,[],"free S1")
