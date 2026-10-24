@@ -183,6 +183,7 @@ pub fn build_api(svc: Arc<Service>, port: u16) -> Server {
         let sid = b.get("id").filter(|v| !v.is_null()).or_else(|| b.get("scenario")).and_then(|v| v.as_str()).map(|s| s.to_string());
         match sid { Some(id) if s.set_scenario(&id).is_ok() => ok(json!({"scenario": id})), other => Err(ApiError::new(404, format!("未知场景 {}", other.unwrap_or("None".into())))) }
     });
+    R!("GET", "/api/v1/gpu", "GPU 射线求交服务 (gpucastd) 状态", |_s: &Arc<Service>, _q: &Request| ok(sim_core::gpu::info()));
     R!("GET", "/api/v1/world/obstacles", "动态障碍物", |s: &Arc<Service>, _q: &Request| ok(s.world().map_err(|e| ApiError::new(500, e))?["obstacles"].clone()));
     R!("POST", "/api/v1/scene/load", "加载场景定义 {scene} 或平台场景 {hub_scene_id}", |s: &Arc<Service>, q: &Request| {
         let b = q.json()?;

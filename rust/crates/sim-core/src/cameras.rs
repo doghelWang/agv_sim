@@ -210,6 +210,11 @@ pub struct CastResult { pub dist: Vec<f64>, pub gid: Vec<i32>, pub nrm: Option<V
 /// Single-origin multi-ray cast against primitives + floor/ceiling planes (port of sc_cast_prims)
 pub fn cast_prims(scene: &CamScene, origin: [f64; 3], dirs: &[f64], max_range: f64, want_normal: bool, threads: usize) -> CastResult {
     let n = dirs.len() / 3;
+    if n >= crate::gpu::min_rays() {
+        if let Some((dist, gid, nrm)) = crate::gpu::cast((scene.revision, scene.prims.len(), scene.prims.as_ptr() as usize), &scene.prims, CEILING_HEIGHT, scene.floor_gid, scene.ceil_gid, origin, dirs, max_range, want_normal) {
+            return CastResult { dist, gid, nrm };
+        }
+    }
     let mut sel: Vec<(Prim, [f64; 4])> = vec![];
     for p in &scene.prims {
         let r = &p[3..12];
