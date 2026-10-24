@@ -415,6 +415,36 @@ impl Gateway {
         for it in &items { if let Some(id) = it.get("id").and_then(|i| i.as_str()) { if safe(&self.sim, "DELETE", &format!("/api/v1/world/cargo/{id}"), None).is_some() { n += 1; } } }
         n
     }
+    fn veh_pose(&self) -> Option<(f64, f64, f64)> {
+        let st = safe(&self.sim, "GET", "/api/v1/state", None)?;
+        let t = st.get("truth")?;
+        Some((t.get("x")?.as_f64()?, t.get("y")?.as_f64()?, t.get("yaw")?.as_f64()?))
+    }
+    /// one-click fork pick: nearest floor pallet (or b.cargo) → nav taskflow {pick}
+    pub fn fork_pick(&self, b: &Value) -> Result<Value, String> {
+        let (px, py, _) = self.veh_pose().ok_or("仿真进程不可用")?;
+        let list = safe(&self.sim, "GET", "/api/v1/world/cargo", None).unwrap_or(json!([]));
+        let items: Vec<Value> = list.as_array().cloned().or_else(|| list.get("cargo").and_then(|c| c.as_array().cloned())).unwrap_or_default();
+        let want = b.get("cargo").and_then(|c| c.as_str()).map(|s| s.to_string());
+        let pick = items.iter().filter(|c| c.get("kind").and_then(|k| k.as_str()) == Some("pallet") && !c.get("carried").and_then(|v| v.as_bool()).unwrap_or(false)
+                && want.as_deref().map(|w| c.get("id").and_then(|i| i.as_str()) == Some(w)).unwrap_or(true))
+            .min_by(|a, b2| {
+                let d = |c: &Value| { let (x, y) = (c["x"].as_f64().unwrap_or(0.0), c["y"].as_f64().unwrap_or(0.0)); (x - px).hypot(y - py) };
+                d(a).partial_cmp(&d(b2)).unwrap_or(std::cmp::Ordering::Equal)
+            }).ok_or("场景里没有可叉取的托盘 (先点「+ 车前托盘」)")?;
+        let id = pick["id"].as_str().unwrap_or("").to_string();
+        let flow = json!({"id": "ui_pick", "name": "叉取托盘", "steps": [{"type": "pick", "cargo": id, "height": b.get("height").and_then(|h| h.as_f64()).unwrap_or(0.25)}]});
+        self.nav.json("POST", "/api/v1/taskflows/run", Some(&flow), None).map_err(|e| e.to_string())
+    }
+    /// one-click place: put the carried pallet on the floor ~3.5 m ahead of the vehicle, same heading
+    pub fn fork_place(&self, b: &Value) -> Result<Value, String> {
+        let (px, py, yaw) = self.veh_pose().ok_or("仿真进程不可用")?;
+        let d = b.get("distance").and_then(|v| v.as_f64()).unwrap_or(3.5);
+        let (x, y) = (b.get("x").and_then(|v| v.as_f64()).unwrap_or(px + yaw.cos() * d), b.get("y").and_then(|v| v.as_f64()).unwrap_or(py + yaw.sin() * d));
+        let flow = json!({"id": "ui_place", "name": "放置托盘", "steps": [{"type": "place", "x": x, "y": y, "yaw": b.get("yaw").and_then(|v| v.as_f64()).unwrap_or(yaw), "z": b.get("z").and_then(|v| v.as_f64()).unwrap_or(0.0)}]});
+        self.nav.json("POST", "/api/v1/taskflows/run", Some(&flow), None).map_err(|e| e.to_string())
+    }
+    pub fn fork_stop_flow(&self) { safe(&self.nav, "POST", "/api/v1/taskflows/stop", Some(&json!({}))); }
     pub fn set_io(&self, key: &str, v: bool) { safe(&self.sim, "PUT", &format!("/api/v1/io/di/{key}"), Some(&json!({"value": v}))); }
 
     pub fn broadcast_obstacles(&self) {
