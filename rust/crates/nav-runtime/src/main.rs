@@ -1,5 +1,6 @@
 mod events;
 mod guidance;
+mod nav2;
 mod navigator;
 mod simlink;
 mod taskflow;
@@ -26,8 +27,8 @@ fn build_api(nav: Arc<Navigator>, link: Arc<SimLink>, port: u16) -> Server {
     {
         let (l, n) = (link.clone(), nav.clone());
         api.route("GET", "/api/v1/health", "健康检查", move |_| {
-            let _ = &n;
-            ok(json!({"service": "nav", "ok": true, "sim_link": l.is_online(), "ros": false, "nav2_ready": false}))
+            let (on, rdy) = n.nav2.get().map(|x| (x.started(), x.ready())).unwrap_or((false, false));
+            ok(json!({"service": "nav", "ok": true, "sim_link": l.is_online(), "ros": on, "nav2_ready": rdy}))
         });
     }
     {
@@ -201,6 +202,7 @@ fn main() {
     let nav = Navigator::new(link.clone(), &scen);
     link.start();
     std::thread::sleep(std::time::Duration::from_secs(1));
+    if std::env::var("NAV_NAV2").map(|v| v == "1").unwrap_or(false) { if let Some(n2) = nav.nav2.get() { if let Err(e) = n2.start() { eprintln!("[nav_runtime] Nav2 启动失败: {e}"); } } }
     let api = Arc::new(build_api(nav, link, port));
     println!("[nav_runtime] REST API http://0.0.0.0:{port}/api/v1 (Rust, 纯导引模式)");
     use std::io::Write;

@@ -46,6 +46,7 @@ impl Navigator {
             s.tele.plan_path.clear();
             s.tele.nav_dist_rem = 0.0;
         }
+        if let Some(n) = self.nav2.get() { if n.started() { n.cancel(); } }
         let canceled = self.s().cur_mid - 1;
         self.mission_end("CANCELED");
         for _ in 0..4 { self.publish_cmd_vel(0.0, 0.0, 0.0); sleep(20); }
@@ -356,11 +357,7 @@ impl Navigator {
         let obs: Vec<Obs> = self.dyn_obstacles();
 
         let mut raw: Vec<Pt>;
-        if planner == "nav2" {
-            self.set_status("FAILED");
-            self.mission_end("FAILED");
-            return;
-        } else if planner == "direct" || planner == "straight" {
+        if planner == "direct" || planner == "straight" {
             raw = vec![(cur_x, cur_y), (x, y)];
         } else if planner == "astar" {
             let (mut walls, boxes) = { let s = self.s(); (s.walls.clone(), s.dyn_obs.iter().map(|o| (o["x"].as_f64().unwrap_or(0.0), o["y"].as_f64().unwrap_or(0.0), o["w"].as_f64().unwrap_or(0.8), o["h"].as_f64().unwrap_or(0.8))).collect::<Vec<_>>()) };
@@ -379,7 +376,7 @@ impl Navigator {
             return;
         }
         let lr0 = self.pl().last_route.clone();
-        let dir_plan = planner == "dijkstra" && lr0.dir && lr0.points.len() == raw.len();
+        let dir_plan = (planner == "dijkstra" || planner == "nav2") && lr0.dir && lr0.points.len() == raw.len();
         if planner == "dijkstra" && raw.len() >= 3 && self.pl().footprint.is_some() {
             let mut bad: Vec<Pt> = vec![];
             if dir_plan {
@@ -438,8 +435,31 @@ impl Navigator {
         self.ev("navigation", "MISSION_DISPATCH", "info", &format!("下发调度导航任务 #{mid}"),
             &format!("目标工位: ({x:.2}, {y:.2}) | 目标航向: {:.1}° | 规划算法: {} | 规划航点: {} 个", deg(target_dock_yaw), planner.to_uppercase(), raw.len()),
             json!({"mission_id": mid, "target_x": x, "target_y": y, "target_yaw": target_dock_yaw, "waypoints_count": raw.len()}));
+        if planner == "nav2" { self.dispatch_nav2(mid, raw, target_dock_yaw, seg_rev); return; }
         let me = self.clone();
         std::thread::Builder::new().name("guidance".into()).spawn(move || me.guidance_loop(mid, raw, target_dock_yaw, replan_left, seg_rev)).unwrap();
+    }
+
+    fn dispatch_nav2(self: &Arc<Self>, mid: u64, raw: Vec<Pt>, yaw: f64, rev: Option<Vec<bool>>) {
+        let me = self.clone();
+        std::thread::Builder::new().name("nav2-dispatch".into()).spawn(move || {
+            let Some(n2) = me.nav2.get().cloned() else { me.set_status("FAILED"); me.mission_end("FAILED"); return };
+            let t0 = Instant::now();
+            while !n2.ready() {
+                if me.s().cur_mid != mid { return; }
+                if el(&t0) > 120.0 {
+                    me.set_status("FAILED"); me.mission_end("FAILED");
+                    me.ev("navigation", "MISSION_FAILED", "danger", &format!("任务 #{mid} 导航失败"), "Nav2 120 s 内未就绪", json!({"mission_id": mid}));
+                    return;
+                }
+                sleep(500);
+            }
+            if me.s().cur_mid != mid { return; }
+            if n2.active() { n2.cancel(); sleep(800); }
+            let last = *raw.last().unwrap_or(&(0.0, 0.0));
+            me.set_status("NAVIGATING");
+            n2.route(mid, &raw, [last.0, last.1, yaw], rev.as_deref());
+        }).ok();
     }
 
     // ------------------------------------------------------------------ guidance

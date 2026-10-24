@@ -82,6 +82,7 @@ pub struct Navigator {
     pub planner: Mutex<Planner>,
     pub running: AtomicBool,
     pub taskflow: OnceLock<Arc<crate::taskflow::TaskFlow>>,
+    pub nav2: OnceLock<Arc<crate::nav2::Nav2>>,
 }
 
 pub fn sleep(ms: u64) { std::thread::sleep(Duration::from_millis(ms)); }
@@ -104,7 +105,8 @@ impl Navigator {
             pts: None, scan_body: None, track_l: 0.6, mission_corners: (0, vec![]), estop_resume: None, runtime_prot: false, zone_info: (None, None, None),
             astar: AStar::new(0.1, 0.5), walls, lib, last_state_t: 0.0,
         };
-        let nav = Arc::new(Navigator { link: link.clone(), events: EventHub::new(1000), st: Mutex::new(st), planner: Mutex::new(planner), running: AtomicBool::new(true), taskflow: OnceLock::new() });
+        let nav = Arc::new(Navigator { link: link.clone(), events: EventHub::new(1000), st: Mutex::new(st), planner: Mutex::new(planner), running: AtomicBool::new(true), taskflow: OnceLock::new(), nav2: OnceLock::new() });
+        let _ = nav.nav2.set(crate::nav2::Nav2::new(Arc::downgrade(&nav)));
         link.set_sink(nav.clone());
         let n2 = nav.clone();
         std::thread::Builder::new().name("nav-safety".into()).spawn(move || n2.safety_loop()).unwrap();
@@ -431,8 +433,14 @@ impl Navigator {
     pub fn set_planner_type(&self, t: &str) -> bool {
         if !PLANNERS.contains(&t) { return false; }
         if t == "nav2" {
-            self.ev("navigation", "PLANNER_SWITCH", "danger", "Nav2 不可用", "执行进程未连接 ROS 2 Nav2", json!({}));
-            return false;
+            match self.nav2.get().map(|n| n.start()) {
+                Some(Ok(())) => {}
+                other => {
+                    let why = match other { Some(Err(e)) => e, _ => "Nav2 后端未初始化".into() };
+                    self.ev("navigation", "PLANNER_SWITCH", "danger", "Nav2 不可用", &why, json!({}));
+                    return false;
+                }
+            }
         }
         self.s().active_planner = t.to_string();
         self.ev("navigation", "PLANNER_SWITCH", "info", "导航规划引擎切换", &format!("执行进程规划器 → {t}"), json!({"planner_type": t}));
@@ -449,6 +457,24 @@ impl Navigator {
         s.mission = Some(m.clone());
         s.missions.push_back(m);
         if s.missions.len() > 50 { s.missions.pop_front(); }
+    }
+    pub fn nav2_result(&self, mid: u64, res: &str) {
+        if self.s().cur_mid != mid { return; }
+        if let Some(n) = self.nav2.get() { n.set_active(false); }
+        match res {
+            "SUCCEEDED" => {
+                let (x, y, yaw) = { let mut s = self.s(); s.tele.nav_status = "ARRIVED".into(); s.tele.plan_path.clear(); s.tele.nav_dist_rem = 0.0; (s.tele.x, s.tele.y, s.tele.yaw) };
+                self.mission_end("ARRIVED");
+                self.ev("navigation", "MISSION_ARRIVED", "success", &format!("任务 #{mid} 停靠到位完成"), &format!("Nav2 导航完成，位置: ({x:.2}, {y:.2})"),
+                    json!({"mission_id": mid, "x": x, "y": y, "yaw": yaw}));
+            }
+            "CANCELED" => {}
+            _ => {
+                self.s().tele.nav_status = "FAILED".into();
+                self.mission_end("FAILED");
+                self.ev("navigation", "MISSION_FAILED", "danger", &format!("任务 #{mid} 导航失败"), &format!("Nav2 返回 {res}"), json!({"mission_id": mid}));
+            }
+        }
     }
     pub fn mission_set_title(&self, title: &str) {
         let mut s = self.s();
@@ -520,7 +546,8 @@ impl Navigator {
         let mut loc = self.localization();
         let _ = &mut loc;
         fb["localization"] = loc;
-        fb["nav2"] = json!({"msgs": false, "server_ready": false, "process": false, "autostart": false, "chassis": null, "localization": null});
+        { let (on, rdy) = self.nav2.get().map(|x| (x.started(), x.ready())).unwrap_or((false, false));
+          fb["nav2"] = json!({"msgs": on, "server_ready": rdy, "process": on, "autostart": false, "chassis": null, "localization": if on { json!("ground_truth") } else { Value::Null }}); }
         fb["mission"] = self.mission_view(None).unwrap_or(Value::Null);
         fb["safety"] = self.safety_state();
         if let Some(tf) = self.taskflow.get() { fb["taskflow"] = tf.view(); }
@@ -594,6 +621,7 @@ impl crate::simlink::Sink for Navigator {
             s.steer = st.steer.clone();
             if !st.chassis.is_empty() { s.chassis_type = st.chassis.clone(); }
             s.last_state_t = st.t;
+            if let Some(n2) = self.nav2.get() { n2.feed([tr[0], tr[1], tr[2]], [st.odom[0], st.odom[1], st.odom[2]]); }
             let active = s.active_planner != "nav2";
             if active {
                 if let Some(gl) = s.tele.target_goal {
