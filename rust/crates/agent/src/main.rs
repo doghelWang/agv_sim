@@ -188,7 +188,7 @@ fn build(ag: Arc<Agent>) -> Server {
         let ms = |t: Instant| ((t.elapsed().as_secs_f64() * 1000.0) * 10.0).round() / 10.0;
         ok(match c.request("GET", &path, None, Some(tmo), "*/*") { Ok(r) => json!({"ok": r.status < 500, "status": r.status, "ms": ms(t0)}), Err(e) => json!({"ok": false, "error": e, "ms": ms(t0)}) })
     });
-    R!("POST", "/api/v1/admin/restart", "重启节点代理 (平台运维)", a, q => { a.check(q)?; Err(ApiError::coded(501, "Rust 节点代理请通过设备上的启动脚本重启", "not_implemented")) });
+    R!("POST", "/api/v1/admin/restart", "重启节点代理 (平台运维)", a, q => { a.check(q)?; reexec_later(); ok(json!({"ok": true, "msg": "节点代理将在 2 秒后重启"})) });
     R!("POST", "/api/v1/admin/role", "切换节点角色 {role: monitor|full} (平台部署前启用运行环境)", a, q => {
         a.check(q)?;
         let r = q.json()?.get("role").and_then(|r| r.as_str()).unwrap_or("").to_string();
@@ -203,6 +203,15 @@ fn build(ag: Arc<Agent>) -> Server {
     api
 }
 
+fn reexec_later() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe().unwrap_or_else(|_| "/proc/self/exe".into());
+        let e = std::process::Command::new(exe).args(std::env::args().skip(1)).exec();
+        eprintln!("[restart] exec 失败: {e}");
+    });
+}
 fn main() {
     let root = std::env::var("AGV_HOME").unwrap_or_else(|_| ".".into());
     let ag = Arc::new(Agent::new(&root));

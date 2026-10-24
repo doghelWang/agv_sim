@@ -35,6 +35,15 @@ fn file_resp(path: &Path, ctype_: &str, filename: &str) -> HResult {
     Ok(Response::binary(data, vec![("Content-Disposition".into(), format!("attachment; filename=\"{filename}\""))], ctype_))
 }
 fn token(q: &Request) -> String { q.header("x-admin-token").map(|s| s.to_string()).or_else(|| qd(q, "token")).unwrap_or_default() }
+fn reexec_later() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe().unwrap_or_else(|_| "/proc/self/exe".into());
+        let e = std::process::Command::new(exe).args(std::env::args().skip(1)).exec();
+        eprintln!("[restart] exec 失败: {e}");
+    });
+}
 fn not_avail(what: &str) -> ApiError { ApiError::coded(501, format!("Rust 平台暂不支持{what}"), "not_implemented") }
 
 impl Hub {
@@ -187,7 +196,12 @@ fn build(hub: Arc<Hub>) -> Server {
         j(json!({"hub": {"version": v["version"], "title": v["title"], "pid": std::process::id(), "started": h.admin.started, "root": h.root.to_string_lossy(), "python": "rust", "host": std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim()},
             "nodes": nodes, "instances": insts, "helper": null, "termux": false, "job": null}))
     });
-    R!("POST", format!("{a}/restart"), "重启 {target: hub|agent}", h, q => { h.admin.check(&token(q), true)?; Err::<Response, _>(not_avail("从界面重启服务")) });
+    R!("POST", format!("{a}/restart"), "重启 {target: hub|agent}", h, q => { h.admin.check(&token(q), true)?; 
+        match q.json().ok().and_then(|b| b.get("target").and_then(|t| t.as_str().map(|s| s.to_string()))).as_deref() {
+            Some("hub") => { reexec_later(); j(json!({"ok": true, "msg": "平台将在 2 秒后重启，约 10 秒后恢复"})) }
+            Some("agent") => Err::<Response, _>(err(400, "请在节点上重启 agent (POST 节点 /api/v1/admin/restart)")),
+            _ => Err::<Response, _>(err(400, "未知的重启目标")),
+        } });
     R!("GET", format!("{a}/logs"), "日志文件列表", h, q => { h.admin.check(&token(q), true)?; j(json!({"logs": []})) });
     R!("GET", format!("{a}/logs/{{name}}"), "下载日志", h, q => { h.admin.check(&token(q), true)?; Err::<Response, _>(err(404, "没有这个日志")) });
     R!("GET", format!("{a}/updates"), "更新包列表", h, q => { h.admin.check(&token(q), true)?; j(json!({"updates": [], "current": h.admin.version()})) });
