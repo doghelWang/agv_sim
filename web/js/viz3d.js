@@ -112,6 +112,8 @@ export class Viewer3D {
     const THREE = this.THREE;
     this.robotGroup = new THREE.Group(); this.scene.add(this.robotGroup);
     this.obsGroup = new THREE.Group(); this.scene.add(this.obsGroup);
+    this.cargoGroup = new THREE.Group(); this.scene.add(this.cargoGroup); this._cargo = new Map();
+    this.forkGroup = new THREE.Group(); this.robotGroup.add(this.forkGroup); this._forkSig = '';
     const band = (color, op) => { const m = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op, side: THREE.DoubleSide, depthWrite: false })); this.scene.add(m); return m; };
     this.pathDone = band(0x94a3b8, .35);        // 已走过
     this.pathNext = band(0x06b6d4, .55);        // 后续路段
@@ -227,6 +229,48 @@ export class Viewer3D {
     }
     for (let j = k; j < G.children.length; j++) G.children[j].visible = false;
   }
+  // 货物 (托盘/箱子, 含被货叉举起的)
+  _drawCargo(t) {
+    const THREE = T(), list = t.cargo || [], seen = new Set();
+    list.forEach(c => {
+      seen.add(c.id);
+      const sig = [c.kind, c.w, c.h, c.z].join('|');
+      let e = this._cargo.get(c.id);
+      if (!e || e.sig !== sig) {
+        if (e) { this.cargoGroup.remove(e.m); disposeTree(e.m); }
+        const o = Object.assign({}, c, { type: c.kind === 'box' ? 'box' : 'pallet' });
+        const m = obstacleMesh(o);
+        m.traverse(n => { if (n.isSprite) n.visible = false; });
+        if (c.kind === 'box') { const top = m.children[0]; if (top && top.material) top.material.color.setHex(0xc08457); }
+        e = { m, sig }; this._cargo.set(c.id, e); this.cargoGroup.add(m);
+      }
+      e.m.position.set(c.x, c.y, c.z0 || 0); e.m.rotation.z = c.yaw || 0;
+    });
+    for (const [id, e] of this._cargo) if (!seen.has(id)) { this.cargoGroup.remove(e.m); disposeTree(e.m); this._cargo.delete(id); }
+  }
+  // 门架 + 货叉 (随车体, 高度随 fork.height_m)
+  _drawFork(t) {
+    const THREE = T(), f = t.fork;
+    if (!f || !f.tine) { if (this.forkGroup.children.length) { while (this.forkGroup.children.length) { const c = this.forkGroup.children[0]; this.forkGroup.remove(c); disposeTree(c); } this._forkSig = ''; } return; }
+    const sig = [f.mast_max_m, f.tine.root_x, f.tine.length, f.tine.spacing, f.tine.width, f.tine.thickness].join('|');
+    if (sig !== this._forkSig) {
+      this._forkSig = sig;
+      while (this.forkGroup.children.length) { const c = this.forkGroup.children[0]; this.forkGroup.remove(c); disposeTree(c); }
+      const rx = f.tine.root_x, H = Math.min(f.mast_max_m + 0.3, 3.4);
+      const steel = new THREE.MeshLambertMaterial({ color: 0x475569 }), fork = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
+      [-0.3, 0.3].forEach(y => { const m = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, H), steel); m.position.set(rx - 0.06, y, H / 2); this.forkGroup.add(m); });
+      const cross = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.66, 0.08), steel); cross.position.set(rx - 0.06, 0, H); this.forkGroup.add(cross);
+      const car = new THREE.Group(); car.name = 'carriage';
+      const plate = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 0.32), steel); plate.position.set(rx - 0.02, 0, 0.16); car.add(plate);
+      [-1, 1].forEach(sd => {
+        const tn = new THREE.Mesh(new THREE.BoxGeometry(f.tine.length, f.tine.width, f.tine.thickness), fork);
+        tn.position.set(rx + f.tine.length / 2, sd * f.tine.spacing / 2, f.tine.thickness / 2); car.add(tn);
+      });
+      this.forkGroup.add(car);
+    }
+    const car = this.forkGroup.getObjectByName('carriage');
+    if (car) car.position.z = f.height_m || 0;
+  }
   _drawPath(t) {
     const THREE = this.THREE, path = t.plan_path || [], labels = t.path_labels || [];
     const active = path.length >= 2 && !['ARRIVED', 'CANCELED', 'FAILED', 'NO_PATH', 'IDLE'].includes(t.nav_status);
@@ -332,6 +376,8 @@ export class Viewer3D {
       while (this.obsGroup.children.length) { const c = this.obsGroup.children[0]; this.obsGroup.remove(c); disposeTree(c); }
       obs.forEach(o => this.obsGroup.add(obstacleMesh(o)));
     }
+    this._drawCargo(t);
+    this._drawFork(t);
     // 规划路径: 已走过 (灰) / 当前路段 (高亮 + 流动箭头) / 后续路段 (青) / 下一航点标记
     this._drawPath(t);
     // 融合扫描回退点云 (无分激光数据时) + 着色模式

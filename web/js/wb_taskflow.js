@@ -165,7 +165,7 @@ export function tab31(el) {
   return {
     onTel(t) {
       ensureScene();
-      map.robot = { x: t.x, y: t.y, yaw: t.yaw }; map.plan = ['ARRIVED', 'CANCELED', 'FAILED', 'NO_PATH', 'IDLE'].includes(t.nav_status) ? [] : (t.plan_path || []); map.planIndex = t.path_index; map.planLabels = t.path_labels; map.planCurve = t.plan_curve; map.protection = t.protection; map.obstacles = t.dynamic_obstacles || [];
+      map.robot = { x: t.x, y: t.y, yaw: t.yaw }; map.plan = ['ARRIVED', 'CANCELED', 'FAILED', 'NO_PATH', 'IDLE'].includes(t.nav_status) ? [] : (t.plan_path || []); map.planIndex = t.path_index; map.planLabels = t.path_labels; map.planCurve = t.plan_curve; map.protection = t.protection; map.obstacles = t.dynamic_obstacles || []; map.cargo = t.cargo || []; map.fork = t.fork || null;
       map.draw();
     },
     show() { ensureScene(); renderAll(); },

@@ -243,7 +243,7 @@ impl Gateway {
                 ("joint_states", json!({"names": joints.get("names").cloned().unwrap_or(json!([])), "positions": rnd_arr(joints.get("position"), 4), "velocities": rnd_arr(joints.get("velocity"), 4)})),
                 ("sim_status", sim.clone()), ("actuators", sim.get("kinematics").cloned().unwrap_or(Value::Null)), ("timestamp", json!(now())), ("last_update", json!(now())),
                 ("dynamic_obstacles", dyn_obs.clone()), ("obstacles", dyn_obs), ("photoelectric", snap.get("photoelectric").cloned().unwrap_or(json!([]))), ("cameras", snap.get("cameras").cloned().unwrap_or(json!([]))),
-                ("bumpers", snap.get("bumpers").cloned().unwrap_or(json!({})))];
+                ("bumpers", snap.get("bumpers").cloned().unwrap_or(json!({}))), ("cargo", snap.get("cargo").cloned().unwrap_or(json!([]))), ("fork", snap.get("fork").cloned().unwrap_or(Value::Null))];
             for (k, v) in upd { tel.insert(k.into(), v); }
             let mut sim_paused = st.get("paused").and_then(|p| p.as_bool()).unwrap_or(false);
             match g.pause_override {

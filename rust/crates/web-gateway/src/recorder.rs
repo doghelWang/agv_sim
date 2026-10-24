@@ -55,6 +55,10 @@ impl FlightRecorder {
         let (d, mx, av, md) = stats(&frames);
         s["total_distance_m"] = json!(d); s["max_speed_mps"] = json!(mx); s["avg_speed_mps"] = json!(av); s["min_obstacle_dist_m"] = json!(md);
         let out = sess.full();
+        // a mission that was rejected / superseded within seconds without moving is noise, not a record
+        let trivial = sess.head["type"] == "mission" && ["FAILED", "REJECTED", "NO_PATH", "ABORTED", "CANCELED", "SUPERSEDED"].contains(&status)
+            && f(&sess.head, "duration_s", 99.0) < 5.0 && f(&sess.head, "total_distance_m", 99.0) < 0.2;
+        if trivial { return Some(out); }
         g.completed.insert(0, sess);
         if g.completed.len() > max { g.completed.pop(); }
         Some(out)

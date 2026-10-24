@@ -28,6 +28,8 @@ impl IoSim {
         if set(&mut self.di, k, v) { self.interlock(); }
     }
     pub fn set_do(&mut self, k: &str, v: bool) { set(&mut self.do_, k, v); }
+    /// set an input without running the safety interlock (sensor-sourced values); creates it when missing
+    pub fn set_di_raw(&mut self, k: &str, v: bool) { if !set(&mut self.di, k, v) { self.di.push((k.to_string(), v)); } }
     fn interlock(&mut self) {
         let bump = self.di.iter().any(|(k, v)| k.starts_with("di_bumper") && *v);
         let estop = self.di("di_estop");

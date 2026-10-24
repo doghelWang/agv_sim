@@ -194,6 +194,10 @@ impl Service {
                 let old = std::mem::replace(&mut g.last_discrete, ds.clone());
                 Self::discrete_events(&mut g, &old, &ds);
             }
+            if !g.core.fork_events.is_empty() {
+                let evs = std::mem::take(&mut g.core.fork_events);
+                for e in evs { Self::emit(&mut g, e.kind, e.level, &e.msg, e.data); }
+            }
             if g.core.collisions != g.last_coll {
                 g.last_coll = g.core.collisions;
                 let (n, c) = (g.last_coll, g.core.last_contact);
@@ -345,7 +349,7 @@ impl Service {
             "map_to_odom": {"x": mx, "y": my, "yaw": mth}, "imu": imu,
             "joints": {"names": names, "position": pos, "velocity": vel, "effort": eff},
             "collision": {"count": c.collisions, "bumper_front": c.io.di("di_bumper_front"), "bumper_rear": c.io.di("di_bumper_rear"), "last_contact": c.last_contact.map(|p| json!([p.0, p.1]))},
-            "paused": c.paused, "chassis": c.chassis_type, "scenario": c.scenario_id, "model_rev": g.model_rev})
+            "paused": c.paused, "chassis": c.chassis_type, "scenario": c.scenario_id, "model_rev": g.model_rev, "fork": c.fork_view()})
     }
 
     /// stream state frame: returns (frame bytes, meta frame, key)
@@ -559,6 +563,40 @@ impl Service {
         Self::emit(&mut g, "OBSTACLES", "info", &format!("动态障碍物更新: {n} 个"), json!({"count": n}));
         Ok(())
     }
+    // ---- fork / cargo
+    pub fn fork(&self) -> Value { self.lock().core.fork_view() }
+    pub fn fork_cmd(&self, height: Option<f64>, action: Option<&str>) -> Result<Value, String> {
+        let mut g = self.lock();
+        let Some(f) = g.core.fork.as_mut() else { return Err("当前车型没有货叉/门架 (cmodel 缺少 lifter 模块)".into()) };
+        match action {
+            Some("up") => { f.jog = 1; f.target = None; }
+            Some("down") => { f.jog = -1; f.target = None; }
+            Some("stop") => f.stop(),
+            Some("top") => f.set_target(f.sp.mast_max),
+            Some("bottom") => f.set_target(0.0),
+            Some(a) => return Err(format!("未知动作 {a}")),
+            None => {}
+        }
+        if let Some(h) = height { if !h.is_finite() { return Err("height 无效".into()); } f.set_target(h); }
+        Ok(g.core.fork_view())
+    }
+    pub fn cargo_list(&self) -> Value { Value::Array(self.lock().core.cargo_list()) }
+    pub fn cargo_add(&self, b: &Value) -> Result<Value, String> {
+        let mut g = self.lock();
+        let f = |k: &str, d: f64| b.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
+        let size = b.get("size").and_then(|s| s.as_array()).filter(|a| a.len() == 3).map(|a| [a[0].as_f64().unwrap_or(0.6), a[1].as_f64().unwrap_or(0.4), a[2].as_f64().unwrap_or(0.4)]);
+        let kind = b.get("kind").and_then(|k| k.as_str()).unwrap_or("pallet").to_string();
+        let id = g.core.add_cargo(&kind, b.get("id").and_then(|v| v.as_str()), f("x", 0.0), f("y", 0.0), f("yaw", 0.0), b.get("z0").and_then(|v| v.as_f64()), size)?;
+        Self::emit(&mut g, "CARGO", "info", &format!("新增货物 {id} ({kind})"), json!({"id": id}));
+        Ok(json!({"id": id, "cargo": g.core.cargo_list()}))
+    }
+    pub fn cargo_remove(&self, id: &str) -> Result<(), String> {
+        let mut g = self.lock();
+        g.core.remove_cargo(id)?;
+        Self::emit(&mut g, "CARGO", "info", &format!("移除货物 {id}"), json!({"id": id}));
+        Ok(())
+    }
+
     pub fn set_chassis(&self, ct: Option<&str>) -> Result<String, String> {
         let mut g = self.lock();
         let c = g.core.set_chassis(ct)?;
@@ -713,7 +751,7 @@ impl Service {
 
     pub fn snapshot(&self, scans: bool) -> Value {
         let mut snap = json!({"state": self.state(), "io": self.io(), "codes": self.codes(), "sim": self.sim_status(), "photoelectric": self.photoelectric()["sensors"],
-            "bumpers": self.bumpers(), "cameras": self.cameras(), "control": self.control(), "nav": self.get_nav_feedback()});
+            "bumpers": self.bumpers(), "cameras": self.cameras(), "control": self.control(), "nav": self.get_nav_feedback(), "cargo": self.cargo_list(), "fork": self.fork()});
         let mut g = self.lock();
         if let Some(Scan::D2(m)) = g.merged.data.clone() {
             let cached = match &g.merged_json { Some((s, v)) if *s == m.seq => v.clone(), _ => { let v = ranges_json(&m.ranges, 3); g.merged_json = Some((m.seq, v.clone())); v } };

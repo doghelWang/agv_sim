@@ -48,6 +48,7 @@ impl World {
     pub fn rebuild_dynamic(&mut self) {
         let mut segs = vec![];
         for o in &self.obstacles {
+            if o.get("carried").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
             let (ox, oy) = (onum(o, "x", 0.0), onum(o, "y", 0.0));
             let (hw, hh) = (onum(o, "w", 0.8) / 2.0, onum(o, "h", 0.8) / 2.0);
             let z = o.get("z").and_then(|v| v.as_f64()).or_else(|| o.get("height").and_then(|v| v.as_f64())).unwrap_or(OBSTACLE_HEIGHT);

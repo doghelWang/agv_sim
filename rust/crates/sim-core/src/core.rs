@@ -6,6 +6,7 @@ use crate::mj::*;
 use crate::rng::Rng;
 use crate::sensors::*;
 use crate::world::*;
+use crate::fork::round3;
 use mujoco_sys as ms;
 use serde_json::{json, Map, Value};
 use std::f64::consts::PI;
@@ -106,6 +107,9 @@ pub struct SimCore {
     pub revision: u64,         // bumps on world/model changes (camera prims cache)
     pub cameras: Vec<Arc<std::sync::Mutex<crate::cameras::Camera>>>,
     pub cam_scene: Option<Arc<crate::cameras::CamScene>>,
+    pub fork: Option<crate::fork::Fork>,
+    pub fork_events: Vec<crate::fork::ForkEvent>,
+    pub fork_stall: u32,
     scratch_v: Vec<f64>, scratch_g: Vec<i32>, scratch_a: Vec<f64>,
 }
 
@@ -145,7 +149,7 @@ impl SimCore {
             lidars, lidars3d, photos, bumpers,
             t: 0.0, x: 0.0, y: 0.0, th: 0.0, vx: 0.0, vy: 0.0, wz: 0.0, cmd: [0.0; 3], cmd_time: -1e9, paused: false, rtf_target: 1.0, rtf: 1.0,
             collisions: 0, overruns: 0, steps: 0, discrete_n: 0, last_contact: None, step_ms: 0.0, lidar_ms: 0.0, mj_step_ms: 0.0,
-            acc: 0.0, last_wall: now, rtf_t0: now, rtf_sim: 0.0, mover_acc: 0.0, hk_t: 0.0, model_rev, revision: 1, cameras: vec![], cam_scene: None,
+            acc: 0.0, last_wall: now, rtf_t0: now, rtf_sim: 0.0, mover_acc: 0.0, hk_t: 0.0, model_rev, revision: 1, cameras: vec![], cam_scene: None, fork: crate::fork::ForkSpec::from_spec(&spec).map(crate::fork::Fork::new), fork_events: vec![], fork_stall: 0,
             scratch_v: vec![], scratch_g: vec![], scratch_a: vec![],
             mj: None, lib, mj_version, spec, settings,
         };
@@ -163,6 +167,7 @@ impl SimCore {
         let sc = scenarios.get(id).ok_or_else(|| format!("unknown scenario {id}"))?.clone();
         self.scenario_id = id.to_string();
         self.world.load_scenario(&sc);
+        if let Some(f) = self.fork.take() { self.fork = Some(crate::fork::Fork::new(f.sp)); }
         let nodes = sc.get("nodes").and_then(|n| n.as_object()).cloned().unwrap_or_default();
         self.ground_tags = nodes.iter().map(|(k, v)| json!({"id": format!("QR_{k}"), "name": k, "x": v[0], "y": v[1], "yaw": 0.0})).collect();
         self.station_tags = sc.get("stations").and_then(|s| s.as_array()).map(|a| a.iter().enumerate().map(|(i, s)| {
@@ -210,7 +215,8 @@ impl SimCore {
 
     pub fn set_obstacles(&mut self, obs: Vec<Map<String, Value>>) -> Result<(), String> {
         let t = self.t;
-        let mut obs = obs;
+        let mut obs: Vec<Map<String, Value>> = obs.into_iter().filter(|o| !crate::fork::is_cargo(o)).collect();
+        obs.extend(self.world.obstacles.iter().filter(|o| crate::fork::is_cargo(o)).cloned());
         for o in obs.iter_mut() {
             let (x, y) = (o.get("x").cloned().unwrap_or(json!(0.0)), o.get("y").cloned().unwrap_or(json!(0.0)));
             if let Some(m) = o.get_mut("motion").and_then(|m| m.as_object_mut()) {
@@ -249,6 +255,57 @@ impl SimCore {
             if let Some(mj) = self.mj.as_mut() { for (i, x, y, yaw) in poses { mj.move_obstacle(i, x, y, yaw); } }
         }
     }
+
+    fn fork_update(&mut self, brake: bool) {
+        let Some(mut f) = self.fork.take() else { return };
+        if let Some(g) = f.post_check(&self.world, self.x, self.y, self.th) {
+            // tines / load penetrated something: snap back to the last free pose
+            self.x = g[0]; self.y = g[1]; self.th = g[2];
+            self.vx = 0.0; self.vy = 0.0; self.wz = 0.0;
+            self.chassis.stop_now();
+            if let Some(mj) = self.mj.as_mut() { mj.reset_pose(g[0], g[1], g[2]); }
+            if self.fork_stall == 0 { self.fork_events.push(crate::fork::ForkEvent { kind: "FORK_COLLISION", level: "warning", msg: "货叉/货物与障碍物接触，底盘已停止".into(), data: json!({"x": round3(g[0]), "y": round3(g[1])}) }); }
+            self.fork_stall += 1;
+        }
+        f.step(self.settings.dt, [self.x, self.y, self.th], &mut self.world, &mut self.io, brake);
+        let moved = std::mem::take(&mut f.moved);
+        let toggles = std::mem::take(&mut f.collide_toggle);
+        let dirty = std::mem::replace(&mut f.dirty_world, false);
+        self.fork_events.extend(f.take_events());
+        self.fork = Some(f);
+        if let Some(mj) = self.mj.as_mut() {
+            for (i, on) in toggles { mj.set_obstacle_collide(i, on); }
+            for (i, x, y, yaw, z0) in &moved { mj.move_obstacle_z(*i, *x, *y, *yaw, *z0); }
+        }
+        if dirty { self.world.rebuild_dynamic(); }
+        if dirty || !moved.is_empty() { self.revision += 1; }
+    }
+
+    /// add cargo (pallet / box). `z0` None → rest on whatever is below (floor / other cargo / platform)
+    pub fn add_cargo(&mut self, kind: &str, id: Option<&str>, x: f64, y: f64, yaw: f64, z0: Option<f64>, size: Option<[f64; 3]>) -> Result<String, String> {
+        let id = match id { Some(i) if !i.is_empty() => i.to_string(), _ => { let n = self.world.obstacles.iter().filter(|o| crate::fork::is_cargo(o)).count() + 1; format!("{kind}_{n}") } };
+        if self.world.obstacles.iter().any(|o| crate::fork::is_cargo(o) && o.get("id").and_then(|v| v.as_str()) == Some(id.as_str())) { return Err(format!("cargo id exists: {id}")); }
+        let z0 = z0.unwrap_or_else(|| crate::fork::Fork::support_under(&self.world, &[], x, y, 1e3).0);
+        self.world.obstacles.push(crate::fork::make_cargo(kind, &id, x, y, yaw, z0, size));
+        crate::fork::Fork::settle_parents(&mut self.world);
+        self.world.rebuild_dynamic();
+        self.rebuild_mj(true)?;
+        Ok(id)
+    }
+
+    pub fn remove_cargo(&mut self, id: &str) -> Result<(), String> {
+        if let Some(f) = self.fork.as_ref() { if f.load.iter().any(|l| l.id == id) { return Err("cargo is on the fork".into()); } }
+        let n = self.world.obstacles.len();
+        self.world.obstacles.retain(|o| !(crate::fork::is_cargo(o) && o.get("id").and_then(|v| v.as_str()) == Some(id)));
+        if self.world.obstacles.len() == n { return Err(format!("no such cargo: {id}")); }
+        crate::fork::Fork::settle_parents(&mut self.world);
+        self.world.rebuild_dynamic();
+        self.rebuild_mj(true)
+    }
+
+    pub fn cargo_list(&self) -> Vec<Value> { self.world.obstacles.iter().filter(|o| crate::fork::is_cargo(o)).map(|o| Value::Object(o.clone())).collect() }
+
+    pub fn fork_view(&self) -> Value { match &self.fork { Some(f) => f.view(&self.world), None => Value::Null } }
 
     pub fn reset_pose(&mut self, x: f64, y: f64, th: f64) {
         self.x = x; self.y = y; self.th = th;
@@ -363,6 +420,21 @@ impl SimCore {
             match b.side { 0 if cvx > 0.0 => cvx = 0.0, 1 if cvx < 0.0 => cvx = 0.0, 2 if cvy > 0.0 => cvy = 0.0, 3 if cvy < 0.0 => cvy = 0.0, _ => {} }
         }
         if self.any_pressed() { cwz = 0.0; }
+        if let Some(f) = self.fork.as_ref() {
+            if !f.load.is_empty() { cvx *= f.sp.loaded_factor; cvy *= f.sp.loaded_factor; cwz *= f.sp.loaded_factor; }
+            if cvx != 0.0 || cvy != 0.0 || cwz != 0.0 || self.chassis.vx != 0.0 || self.chassis.vy != 0.0 || self.chassis.wz != 0.0 {
+                let la = 0.06;
+                let (vx, vy, w) = (self.chassis.vx, self.chassis.vy, self.chassis.wz);
+                let (c, s) = (self.th.cos(), self.th.sin());
+                let (nx, ny, nth) = (self.x + (c * vx - s * vy) * la, self.y + (s * vx + c * vy) * la, self.th + w * la);
+                if f.blocks_motion(&self.world, nx, ny, nth, &self.world.static_segments) {
+                    cvx = 0.0; cvy = 0.0; cwz = 0.0;
+                    self.chassis.stop_now();
+                    self.fork_stall += 1;
+                    if self.fork_stall == 1 { self.fork_events.push(crate::fork::ForkEvent { kind: "FORK_COLLISION", level: "warning", msg: "货叉/货物与障碍物接触，底盘已停止".into(), data: json!({"x": round3(self.x), "y": round3(self.y)}) }); }
+                } else { self.fork_stall = 0; }
+            }
+        }
         self.chassis.step(cvx, cvy, cwz, dt, brake);
         let mut v = [self.chassis.vx, self.chassis.vy, self.chassis.wz];
         if self.settings.noise { slip(&mut self.slip_prev, &mut v, dt, &mut self.rng); }
@@ -393,6 +465,7 @@ impl SimCore {
             } else { self.x = nx; self.y = ny; self.th = nth; }
             self.vx = v[0]; self.vy = v[1]; self.wz = v[2];
         }
+        self.fork_update(brake);
         self.discrete_update();
         if self.settings.noise { let ch = &self.chassis; self.odom.update_noisy(ch, dt, &mut self.rng); } else { let ch = &self.chassis; self.odom.update_ideal(ch, dt); }
         self.imu_sample = self.imu.sample(self.vx, self.vy, self.wz, dt, &mut self.rng);
@@ -533,7 +606,7 @@ impl SimCore {
         for (di, v) in sync { if self.io.di(&di) != v { self.io.set_di(&di, v); } }
         if self.t > self.hk_t {
             let d = self.t - self.hk_t;
-            self.io.update_lift(d);
+            if self.fork.is_none() { self.io.update_lift(d); }
             self.mover_acc += d;
             if self.mover_acc >= 0.05 {
                 self.mover_acc = 0.0;
@@ -615,7 +688,7 @@ impl SimCore {
         json!({"backend": self.backend_name(), "chassis": self.chassis_type, "scenario": self.scenario_id, "sim_time": r(self.t, 3), "dt": self.settings.dt, "rtf": r(self.rtf, 3),
             "overruns": self.overruns, "step_ms": r(self.step_ms, 3), "lidar_ms": r(self.lidar_ms, 3), "collisions": self.collisions,
             "odom_drift_m": r((self.x - self.odom.x).hypot(self.y - self.odom.y), 4), "odom_drift_deg": r(wrap(self.th - self.odom.th).to_degrees(), 3),
-            "lidars": lid, "kinematics": self.chassis.telemetry(), "engine": engine, "cameras": cams, "camera_gl_error": Value::Null, "native": {"runtime": "rust"}})
+            "fork": self.fork_view(), "lidars": lid, "kinematics": self.chassis.telemetry(), "engine": engine, "cameras": cams, "camera_gl_error": Value::Null, "native": {"runtime": "rust"}})
     }
 
     pub fn map_to_odom(&self) -> (f64, f64, f64) {

@@ -207,7 +207,7 @@ export function tab32(el) {
       pickMap = new MapCanvas($('[data-pick]', P), { onClick: ({ x, y }) => { sel.x = +x.toFixed(2); sel.y = +y.toFixed(2); $('[data-x]', P).value = sel.x; $('[data-y]', P).value = sel.y; pickMap.pickPoint = { x, y }; pickMap.draw(); } });
       pickMap.layers.labels = false;
       if (W.tel.scenario_metadata) pickMap.setScene(W.tel.scenario_metadata, W.tel.topo_graph);
-      pickMap.robot = { x: W.tel.x, y: W.tel.y, yaw: W.tel.yaw }; pickMap.footprint = W.tel.robot_spec?.footprint; pickMap.obstacles = obs; pickMap.plan = W.tel.plan_path || []; pickMap.planIndex = W.tel.path_index; pickMap.planLabels = W.tel.path_labels; pickMap.planCurve = W.tel.plan_curve; pickMap.protection = W.tel.protection;
+      pickMap.robot = { x: W.tel.x, y: W.tel.y, yaw: W.tel.yaw }; pickMap.footprint = W.tel.robot_spec?.footprint; pickMap.obstacles = obs; pickMap.cargo = W.tel.cargo || []; pickMap.fork = W.tel.fork || null; pickMap.plan = W.tel.plan_path || []; pickMap.planIndex = W.tel.path_index; pickMap.planLabels = W.tel.path_labels; pickMap.planCurve = W.tel.plan_curve; pickMap.protection = W.tel.protection;
       if (sel.x != null) pickMap.pickPoint = { x: sel.x, y: sel.y };
       pickMap.draw();
     }

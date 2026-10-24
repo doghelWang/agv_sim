@@ -222,6 +222,21 @@ pub fn build_api(svc: Arc<Service>, port: u16) -> Server {
         s.set_obstacles(obs).map_err(|e| ApiError::new(400, e))?;
         ok(json!({"count": n}))
     });
+    // ---- fork / cargo
+    R!("GET", "/api/v1/fork", "货叉状态 (高度/速度/载货/受阻)", |s: &Arc<Service>, _q: &Request| ok(s.fork()));
+    R!("PUT", "/api/v1/fork", "货叉控制 {height: m} 或 {action: up|down|stop|top|bottom}", |s: &Arc<Service>, q: &Request| {
+        let b = q.json()?;
+        ok(s.fork_cmd(opt_f(&b, "height"), b.get("action").and_then(|a| a.as_str())).map_err(|e| ApiError::new(400, e))?)
+    });
+    R!("GET", "/api/v1/world/cargo", "货物列表 (托盘/箱子)", |s: &Arc<Service>, _q: &Request| ok(s.cargo_list()));
+    R!("POST", "/api/v1/world/cargo", "新增货物 {kind: pallet|box, id, x, y, yaw, z0?, size?: [长,宽,高]}", |s: &Arc<Service>, q: &Request| {
+        let b = q.json()?;
+        ok(s.cargo_add(&b).map_err(|e| ApiError::new(400, e))?)
+    });
+    R!("DELETE", "/api/v1/world/cargo/{id}", "移除货物", |s: &Arc<Service>, q: &Request| {
+        s.cargo_remove(&q.params["id"]).map_err(|e| ApiError::new(404, e))?;
+        ok(json!({"removed": q.params["id"]}))
+    });
     // ---- sim control
     R!("GET", "/api/v1/sim", "仿真状态/性能", |s: &Arc<Service>, _q: &Request| ok(s.sim_status()));
     R!("PUT", "/api/v1/sim", "暂停/实时因子 {paused, rtf}", |s: &Arc<Service>, q: &Request| {

@@ -240,7 +240,7 @@ impl Nav2 {
                 }
                 "result" if m["mid"].as_i64() == Some(self.token.load(Ordering::Relaxed)) => {
                     let res = m["result"].as_str().unwrap_or("ABORTED");
-                    let retry = if res == "ABORTED" {
+                    let retry = if res == "ABORTED" || res == "REJECTED" {
                         let mut l = self.last.lock().unwrap();
                         match l.as_mut() { Some(x) if x.4.elapsed().as_secs_f64() < 6.0 && x.5 < 3 => { x.5 += 1; Some((x.0, x.1.clone(), x.2, x.3.clone(), x.5)) } _ => None }
                     } else { None };

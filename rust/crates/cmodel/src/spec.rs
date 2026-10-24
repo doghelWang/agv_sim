@@ -435,6 +435,17 @@ pub fn extract_robot_spec(comp_desc: &Value, model_filename: &str, load: &str, o
         assumptions.push("cmodel 无激光模块，默认车头 1 个 270° 激光".into());
     }
 
+    // lifter / fork mast (main_type "lifter": sub "forkMast" = counterbalance mast + pallet tines)
+    let fork: Value = comps.iter().find(|c| c.main_type == "lifter" && (c.sub_type == "forkMast" || c.sub_type == "fork")).map(|c| {
+        let p = c.pose();
+        let pos = |k: &str, d: f64| { let v = c.num(k); if v > 0.0 { v } else { d } };
+        json!({"name": s2(&c.name), "cmodel_name": c.name, "x": r4(p[0]), "y": r4(p[1]), "z": r4(p[2]),
+            "mast_max_m": r4(pos("mastMaxHeight", 3000.0) / 1000.0), "lift_speed_mps": r4(pos("liftSpeed", 300.0) / 1000.0), "lift_accel_mps2": r4(pos("liftAccel", 400.0) / 1000.0),
+            "tine_length_m": r4(pos("tineLength", 1100.0) / 1000.0), "tine_width_m": r4(pos("tineWidth", 120.0) / 1000.0), "tine_thickness_m": r4(pos("tineThickness", 60.0) / 1000.0),
+            "tine_spacing_m": r4(pos("tineSpacing", 350.0) / 1000.0), "max_load_kg": pos("maxLoad", 1000.0), "tilt_deg": c.num("tiltRange"), "tine_root_x_m": r4(p[0]),
+            "load_speed_factor": pos("loadedSpeedFactor", 0.6)})
+    }).unwrap_or(Value::Null);
+
     let buttons: Vec<Value> = comps.iter().filter(|c| c.main_type == "button").map(|c| { let t = c.get("buttonType"); json!({"name": c.name, "type": if truthy(&t) { t } else { json!("") }, "self_lock": truthy(&c.get("selfLock"))}) }).collect();
     let battery = comps.iter().find(|c| c.main_type == "battery").map(|c| json!({"name": c.name, "voltage_v": c.num("voltage"), "capacity_ah": c.num("capacity"),
         "max_discharge_a": c.num("maxDischargeCurrent"), "std_discharge_a": c.num("stdDischargeCurrent"), "max_power_w": c.num("maxPower")})).unwrap_or(Value::Null);
@@ -460,7 +471,11 @@ pub fn extract_robot_spec(comp_desc: &Value, model_filename: &str, load: &str, o
     let mut spec = json!({"schema_version": SCHEMA_VERSION, "model_file": model_filename, "robot_name": "cmodel_agv", "load_state": load, "chassis": chassis, "wheels": wheels_all,
         "drive_wheels": {"radius_m": drive_ref["radius_m"], "track_width_m": rd(legacy_track, 4), "wheel_width_m": drive_ref.get("width_m").cloned().unwrap_or(json!(0.05)), "x_offset_m": drive_ref["x"]},
         "lidars": lidars, "cameras": cameras, "imu": imus[0].clone(), "io": {"inputs": io_in, "outputs": io_out, "buttons": buttons}, "battery": battery,
-        "other_actuators": actuators, "assumptions": assumptions, "warnings": warnings});
+        "other_actuators": actuators, "fork": fork, "assumptions": assumptions, "warnings": warnings});
+    if fork.is_object() {
+        let fx = fork["x"].as_f64().unwrap_or(head) + fork["tine_length_m"].as_f64().unwrap_or(1.1) + 0.35;
+        spec["protection"] = json!({"payload": {"enabled": true, "head": rd(fx, 3), "tail": rd(tail, 3), "left": rd(left, 3), "right": rd(right, 3), "note": "叉车: 货叉+托盘外形 (自动)"}});
+    }
     if let Some(ov) = overrides { apply_overrides(&mut spec, ov); }
     let _ = &comps.iter().map(|c| &c.group).count();
     spec

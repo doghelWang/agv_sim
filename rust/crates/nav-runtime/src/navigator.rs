@@ -45,6 +45,7 @@ pub struct St {
     pub prot: Prot,
     pub body_v: Value,
     pub loaded: bool,
+    pub has_fork: bool,
     pub head_offset: f64, pub tail_offset: f64, pub left_off: f64, pub right_off: f64, pub half_width: f64,
     pub max_decel: f64,
     pub chassis_cfg: Value,
@@ -98,7 +99,7 @@ impl Navigator {
         let walls = planner.walls();
         let st = St {
             tele: Tele { nav_status: "IDLE".into(), ..Default::default() }, prot, body_v: json!({"head_offset_m": 0.6, "tail_offset_m": 0.6, "left_offset_m": 0.4, "right_offset_m": 0.4}),
-            loaded: false, head_offset: 0.6, tail_offset: 0.6, left_off: 0.4, right_off: 0.4, half_width: 0.4, max_decel: 0.5, chassis_cfg: json!({}),
+            loaded: false, has_fork: false, head_offset: 0.6, tail_offset: 0.6, left_off: 0.4, right_off: 0.4, half_width: 0.4, max_decel: 0.5, chassis_cfg: json!({}),
             active_planner: "dijkstra".into(), active_scenario: "grid_9_square".into(), chassis_type: "single_steer".into(), paused: false, dyn_obs: vec![],
             mission: None, missions: VecDeque::new(), cur_mid: 0,
             obs: ObsState { zone: "clear".into(), ..Default::default() }, speed_cap: None, approach_left: None, in_arc: false, steer: vec![], rot_left: -1.0,
@@ -614,8 +615,10 @@ impl crate::simlink::Sink for Navigator {
         let (loaded, changed, outline_msg) = {
             let io = self.link.io();
             let di = &io["inputs"];
-            let loaded = di["di_lift_top"].as_bool().unwrap_or(false) && !di["di_lift_bottom"].as_bool().unwrap_or(false);
+            let loaded_di = di["di_lift_top"].as_bool().unwrap_or(false) && !di["di_lift_bottom"].as_bool().unwrap_or(false);
             let mut s = self.s();
+            // forklift: the protective outline always covers tines + pallet (the fork sticks out ahead of the chassis)
+            let loaded = loaded_di || s.has_fork;
             let tr = &st.truth;
             s.tele.x = tr[0]; s.tele.y = tr[1]; s.tele.yaw = tr[2];
             s.tele.truth = [tr[0], tr[1], tr[2]];
@@ -708,6 +711,7 @@ impl crate::simlink::Sink for Navigator {
             let ch = m["chassis"].clone();
             s.max_decel = { let d = g(&ch, "max_decel_mps2", g(&ch, "max_accel_mps2", 0.5)); d };
             s.body_v = ch.clone();
+            s.has_fork = m.get("fork").map(|f| f.is_object()).unwrap_or(false);
             s.chassis_cfg = ch;
             s.prot = protection::effective(m, None);
             s.runtime_prot = false;

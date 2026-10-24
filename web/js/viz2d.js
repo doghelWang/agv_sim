@@ -321,7 +321,7 @@ export class MapCanvas {
       }
     });
     // 障碍物/注入元素
-    this.obstacles.forEach(o => {
+    (this.cargo && this.cargo.length ? this.obstacles.concat(this.cargo) : this.obstacles).forEach(o => {
       const [x, y] = this.w2s(o.x, o.y);
       const c = { person: '#e11d48', pallet: '#b45309', shelf: '#2563eb', box: '#d97706' }[o.type] || '#f59e0b';
       g.save(); g.translate(x, y); g.rotate(-(o.yaw || 0));
@@ -339,6 +339,14 @@ export class MapCanvas {
       path(Pg.stop); g.fillStyle = col + (pv.zone === 'stop' ? '44' : '1a'); g.fill(); g.strokeStyle = col; g.lineWidth = 1.5; g.stroke();
       g.setLineDash([5, 4]); path(Pg.slow); g.strokeStyle = col + 'aa'; g.lineWidth = 1; g.stroke(); g.setLineDash([]);
       if (pv.loaded && Pg.payload) { path(Pg.payload); g.strokeStyle = '#7c3aed'; g.lineWidth = 2; g.stroke(); }
+    }
+    // 货叉 (俯视: 两根叉齿, 举起时更亮)
+    if (this.robot && this.fork && this.fork.tine) {
+      const r = this.robot, tn = this.fork.tine, [x, y] = this.w2s(r.x, r.y);
+      g.save(); g.translate(x, y); g.rotate(-r.yaw);
+      g.fillStyle = this.fork.height_m > 0.05 ? '#f59e0b' : '#d97706'; g.strokeStyle = '#78350f'; g.lineWidth = 1;
+      [-1, 1].forEach(sd => { const w = tn.length * this.view.s, h = tn.width * this.view.s; g.fillRect(tn.root_x * this.view.s, -sd * tn.spacing / 2 * this.view.s - h / 2, w, h); g.strokeRect(tn.root_x * this.view.s, -sd * tn.spacing / 2 * this.view.s - h / 2, w, h); });
+      g.restore();
     }
     // 车体
     if (this.robot) {

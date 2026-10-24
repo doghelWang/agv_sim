@@ -48,10 +48,11 @@ pub fn build_mjcf(world: &World, robot: &RobotBody, dt: f64, decor: &Decor) -> S
         let typ = o.get("type").and_then(|t| t.as_str());
         let rgb = obstacle_color(typ);
         let (w, h) = (gf("w", 0.8), gf("h", 0.8));
+        let z0 = gf("z0", 0.0);
         let shape = if typ == Some("person") { format!("type=\"cylinder\" size=\"{} {}\"", q(w.max(h) / 2.0), q(z / 2.0)) }
             else { format!("type=\"box\" size=\"{} {} {}\"", q(w / 2.0), q(h / 2.0), q(z / 2.0)) };
-        g.push(format!("<body name=\"ob{i}\" mocap=\"true\" pos=\"{} {} 0\" euler=\"0 0 {}\"><geom name=\"o{i}\" {shape} pos=\"0 0 {}\" rgba=\"{} {} {} 1\" group=\"0\"/></body>",
-            q(gf("x", 0.0)), q(gf("y", 0.0)), q(gf("yaw", 0.0)), q(z / 2.0), rgb[0], rgb[1], rgb[2]));
+        g.push(format!("<body name=\"ob{i}\" mocap=\"true\" pos=\"{} {} {}\" euler=\"0 0 {}\"><geom name=\"o{i}\" {shape} pos=\"0 0 {}\" rgba=\"{} {} {} 1\" group=\"0\"{}/></body>",
+            q(gf("x", 0.0)), q(gf("y", 0.0)), q(z0), q(gf("yaw", 0.0)), q(z / 2.0), rgb[0], rgb[1], rgb[2], if o.get("carried").and_then(|v| v.as_bool()).unwrap_or(false) { " contype=\"0\" conaffinity=\"0\"" } else { "" }));
     }
     for (i, s) in decor.stations.iter().enumerate() {
         g.push(format!("<geom name=\"st{i}\" type=\"cylinder\" pos=\"{} {} 0.0005\" size=\"0.35 0.0005\" rgba=\"0.10 0.70 0.35 1\" contype=\"0\" conaffinity=\"0\" group=\"2\"/>", q(s[0]), q(s[1])));
@@ -170,13 +171,23 @@ impl MjCtx {
         self.forward();
     }
 
-    pub fn move_obstacle(&mut self, idx: usize, x: f64, y: f64, yaw: f64) {
+    pub fn set_obstacle_collide(&mut self, idx: usize, on: bool) {
+        // geom "o{idx}" -> contype/conaffinity (runtime switch for carried cargo)
+        let c = CString::new(format!("o{idx}")).unwrap();
+        let g = unsafe { self.lib.mj_name2id(self.m, ms::mjtObj_mjOBJ_GEOM as i32, c.as_ptr() as *const _) };
+        if g < 0 { return; }
+        unsafe { *(*self.m).geom_contype.add(g as usize) = on as i32; *(*self.m).geom_conaffinity.add(g as usize) = on as i32; }
+    }
+
+    pub fn move_obstacle(&mut self, idx: usize, x: f64, y: f64, yaw: f64) { self.move_obstacle_z(idx, x, y, yaw, 0.0) }
+
+    pub fn move_obstacle_z(&mut self, idx: usize, x: f64, y: f64, yaw: f64, z0: f64) {
         let Some(&mid) = self.mocap.get(idx) else { return };
         if mid < 0 { return; }
         unsafe {
             let mid = mid as usize;
             let p = (*self.d).mocap_pos.add(3 * mid);
-            *p = x; *p.add(1) = y; *p.add(2) = 0.0;
+            *p = x; *p.add(1) = y; *p.add(2) = z0;
             let qd = (*self.d).mocap_quat.add(4 * mid);
             *qd = (yaw / 2.0).cos(); *qd.add(1) = 0.0; *qd.add(2) = 0.0; *qd.add(3) = (yaw / 2.0).sin();
         }

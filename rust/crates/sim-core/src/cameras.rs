@@ -48,7 +48,7 @@ pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lane
         let gid = rgb.len() as f64;
         rgb.push(obstacle_color(typ));
         let mut p = [0.0f64; 18];
-        p[0] = g("x", 0.0); p[1] = g("y", 0.0); p[2] = z / 2.0;
+        p[0] = g("x", 0.0); p[1] = g("y", 0.0); p[2] = g("z0", 0.0) + z / 2.0;
         p[3..12].copy_from_slice(&rot_z(g("yaw", 0.0)));
         if typ == Some("person") {
             let r = w.max(h) / 2.0;
