@@ -138,7 +138,7 @@ impl Nav2 {
         let nav = self.nav.upgrade().ok_or("navigator gone")?;
         let home = std::env::var("AGV_HOME").unwrap_or("/opt/agv".into());
         let (chassis, scenario) = { let s = nav.s(); (s.chassis_type.clone(), s.active_scenario.clone()) };
-        let chassis = if ["diff_drive", "single_steer", "dual_steer"].contains(&chassis.as_str()) { chassis } else { "dual_steer".into() };
+        let chassis = if ["diff_drive", "single_steer", "dual_steer"].contains(&chassis.as_str()) { chassis } else { "single_steer".into() };
         let (x, y, yaw) = { let p = self.pose.lock().unwrap(); (p.0[0], p.0[1], p.0[2]) };
         let c = self.spawn("nav2", &["ros2".into(), "launch".into(), format!("{home}/nav2/nav2_launch.py"), format!("chassis:={chassis}"),
             format!("map:={home}/maps/{scenario}.yaml"), "localization:=ground_truth".into(), "use_sim_time:=false".into(), "map_source:=map_server".into(),
