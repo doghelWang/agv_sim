@@ -130,6 +130,7 @@ impl Nav2 {
             let _ = c.wait();
         }
         self.nav2_active.store(false, Ordering::Relaxed);
+        self.started.store(false, Ordering::SeqCst);
     }
 
     fn config(&self, nav: &Navigator) -> Value {
@@ -157,6 +158,7 @@ impl Nav2 {
         let mut n = 0u64;
         loop {
             std::thread::sleep(Duration::from_millis(200));
+            if !self.started() { return; }
             let Some(nav) = self.nav.upgrade() else { return };
             if n % 25 == 0 || !self.bridge_up() { let c = serde_json::to_vec(&self.config(&nav)).unwrap_or_default(); self.send(T_CONFIG, &c); }
             let m = serde_json::to_vec(&self.mode(&nav)).unwrap_or_default();

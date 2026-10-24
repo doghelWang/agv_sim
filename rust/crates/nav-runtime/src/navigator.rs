@@ -442,6 +442,9 @@ impl Navigator {
                 }
             }
         }
+        if t != "nav2" {
+            if let Some(n) = self.nav2.get() { if n.started() { n.cancel(); n.stop(); } }
+        }
         self.s().active_planner = t.to_string();
         self.ev("navigation", "PLANNER_SWITCH", "info", "导航规划引擎切换", &format!("执行进程规划器 → {t}"), json!({"planner_type": t}));
         true
