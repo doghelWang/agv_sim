@@ -36,6 +36,8 @@ pub struct Nav2 {
     pose: Mutex<([f64; 3], [f64; 3])>, // (truth, odom)
     tag: String,
     pub safety: Mutex<Value>,
+    last: Mutex<Option<(u64, Vec<(f64, f64)>, [f64; 3], Option<Vec<bool>>, std::time::Instant, u8)>>,
+    ready_since: Mutex<Option<std::time::Instant>>,
 }
 
 fn pack(t: u8, body: &[u8]) -> Vec<u8> {
@@ -68,12 +70,18 @@ impl Nav2 {
             nav, started: AtomicBool::new(false), nav2_active: AtomicBool::new(false), bridge_up: AtomicBool::new(false), active: AtomicBool::new(false),
             token: AtomicI64::new(-1), seq: AtomicI64::new(0), tx, rx: Mutex::new(Some(rx)),
             to: SocketAddr::from_abstract_name(format!("{tag}_cpp").as_bytes()).unwrap(),
-            kids: Mutex::new(vec![]), pose: Mutex::new(([0.0; 3], [0.0; 3])), tag, safety: Mutex::new(Value::Null),
+            kids: Mutex::new(vec![]), pose: Mutex::new(([0.0; 3], [0.0; 3])), tag, safety: Mutex::new(Value::Null), last: Mutex::new(None), ready_since: Mutex::new(None),
         })
     }
 
     pub fn started(&self) -> bool { self.started.load(Ordering::Relaxed) }
-    pub fn ready(&self) -> bool { self.started() && self.nav2_active.load(Ordering::Relaxed) }
+    /// lifecycle active AND stable for 6 s (right after bring-up goals get ABORTED)
+    pub fn ready(&self) -> bool {
+        let up = self.started() && self.nav2_active.load(Ordering::Relaxed);
+        let mut rs = self.ready_since.lock().unwrap();
+        if !up { *rs = None; return false; }
+        rs.get_or_insert_with(std::time::Instant::now).elapsed().as_secs_f64() > 6.0
+    }
     pub fn active(&self) -> bool { self.active.load(Ordering::Relaxed) }
     pub fn set_active(&self, v: bool) { self.active.store(v, Ordering::Relaxed); }
     pub fn bridge_up(&self) -> bool { self.bridge_up.load(Ordering::Relaxed) }
@@ -184,6 +192,16 @@ impl Nav2 {
                     nav.s().tele.nav_dist_rem = (m["dist"].as_f64().unwrap_or(0.0) * 100.0).round() / 100.0;
                 }
                 "result" if m["mid"].as_i64() == Some(self.token.load(Ordering::Relaxed)) => {
+                    let res = m["result"].as_str().unwrap_or("ABORTED");
+                    let retry = if res == "ABORTED" {
+                        let mut l = self.last.lock().unwrap();
+                        match l.as_mut() { Some(x) if x.4.elapsed().as_secs_f64() < 6.0 && x.5 < 3 => { x.5 += 1; Some((x.0, x.1.clone(), x.2, x.3.clone(), x.5)) } _ => None }
+                    } else { None };
+                    if let Some((mid, r, g, rv, k)) = retry {
+                        let me = self.clone();
+                        std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(3)); if me.token.load(Ordering::Relaxed) < 0 { return; } me.route_inner(mid, &r, g, rv.as_deref(), k); });
+                        continue;
+                    }
                     nav.nav2_result((self.token.load(Ordering::Relaxed) / 1000) as u64, m["result"].as_str().unwrap_or("ABORTED"));
                 }
                 "plan" => {
@@ -196,7 +214,9 @@ impl Nav2 {
         }
     }
 
-    pub fn route(&self, mid: u64, route: &[(f64, f64)], goal: [f64; 3], rev: Option<&[bool]>) {
+    pub fn route(&self, mid: u64, route: &[(f64, f64)], goal: [f64; 3], rev: Option<&[bool]>) { self.route_inner(mid, route, goal, rev, 0) }
+    fn route_inner(&self, mid: u64, route: &[(f64, f64)], goal: [f64; 3], rev: Option<&[bool]>, tries: u8) {
+        *self.last.lock().unwrap() = Some((mid, route.to_vec(), goal, rev.map(|r| r.to_vec()), std::time::Instant::now(), tries));
         let home = std::env::var("AGV_HOME").unwrap_or("/opt/agv".into());
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         let tok = mid as i64 * 1000 + seq % 1000;
