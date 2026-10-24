@@ -6,15 +6,15 @@
 
 | 部件 | 说明 |
 |---|---|
-| 底盘 | 1.7 × 0.9 m，自重 1800 kg，额载 1000 kg，空载 1.5 m/s，带载 0.9 m/s |
+| 底盘 | 1.70 × 1.10 × 2.15 m（车头 0.85 / 车尾 0.85，对标 AGILOX OCF / KUKA KMF / IntraBot），自重 3200 kg，额载 1500 kg，空载 1.5 m/s，带载 1.0 m/s，转弯直径 3.0 m |
 | 四舵轮 | 4 个 verticalSteerWheel（±120° 舵角，各自 walk + steer 电机）→ `multi_steer`：前进/横移(蟹行)/斜行/原地旋转 |
-| 门架 + 货叉 | `lifter/forkMast`：行程 3.0 m，起升速度 0.3 m/s，加速度 0.4 m/s²，叉齿 1.1 m × 0.12 m × 0.06 m，叉间距 0.35 m（中心距） |
-| 3D 激光 | Livox Mid-360S，护顶架上方 z=2.12 m |
-| 安全激光 ×2 | MR-LS-07H 270°，对角布置 (前左 / 后右) z=0.32 m |
-| 双目相机 | cam_left / cam_right，y=±0.12 m，z=1.95 m，俯角 20° |
+| 门架 + 货叉 | `lifter/forkMast`：行程 3.0 m，起升速度 0.25 m/s，叉齿 1.15 m × 0.16 m × 0.06 m，叉间距 0.35 m（中心距），门架位于车头前缘，叉尖距车体中心 2.06 m |
+| 3D 激光 | Livox Mid-360S，护顶架上方 z=2.22 m |
+| 安全激光 ×2 | MR-LS-07H 270°，对角布置 (前左 / 后右) z=0.28 m |
+| 双目相机 | cam_left / cam_right，y=±0.15 m，z=2.0 m，俯角 25° |
 | 读码相机 | 朝下 codeReader |
 | 光电 ×2 | 叉尖 pallet_tip_l / pallet_tip_r |
-| 其它 | 陀螺仪、主控、IO 模块、急停按钮、48 V/200 Ah 电池 |
+| 其它 | 陀螺仪、主控、IO 模块、急停按钮、48 V/300 Ah 电池 |
 
 cmodel 中 `main_type = lifter, sub_type = forkMast` 的模块会被解析为 `spec["fork"]`，同时自动生成带载保护外形 `spec["protection"]["payload"]`（货叉 + 托盘外形）。
 
