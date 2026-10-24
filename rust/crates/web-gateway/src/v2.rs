@@ -150,6 +150,7 @@ impl V2 {
     fn rec_end(&self, result: &str) -> Option<Value> { let mut r = self.rec(); self.finish(&mut r, result) }
 
     fn sample(&self) {
+        if self.rec().active.is_none() { return; }   // don't clone the whole telemetry map (scan etc.) 10x/s when nothing is recording
         let (fr, tf) = {
             let g = self.gw.lock();
             let t = Value::Object(g.telemetry.clone());
