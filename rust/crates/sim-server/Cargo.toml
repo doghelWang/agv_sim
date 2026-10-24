@@ -7,6 +7,7 @@ sim-core = { path = "../sim-core" }
 mujoco-sys = { path = "../mujoco-sys" }
 rest = { path = "../rest" }
 model = { path = "../model" }
+cmodel = { path = "../cmodel" }
 serde_json = { version = "1", features = ["preserve_order"] }
 png = "0.18"
 regex = "1"

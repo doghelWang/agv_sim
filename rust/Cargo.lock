@@ -252,6 +252,7 @@ name = "hub"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "cmodel",
  "hmac",
  "libc",
  "model",
@@ -558,6 +559,7 @@ dependencies = [
 name = "sim-server"
 version = "0.1.0"
 dependencies = [
+ "cmodel",
  "jpeg-encoder",
  "model",
  "mujoco-sys",

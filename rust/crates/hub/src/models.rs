@@ -110,6 +110,46 @@ impl ModelRepo {
         self.s.put("models", m);
         self.editor(mid, Some(&v))
     }
+    /// .cmodel upload: decode + parse into base.json, keep previous overrides (Python hub/models_repo.add_cmodel)
+    pub fn add_cmodel(&self, filename: &str, data: &[u8], meta: &Value) -> R<Value> {
+        if !filename.to_lowercase().ends_with(".cmodel") { return Err(err(400, "仅支持 .cmodel 模型文件")); }
+        let load = meta.get("load").and_then(|l| l.as_str()).unwrap_or("full").to_string();
+        let comp = cmodel::decode_cmodel_bytes(data).map_err(|e| err(400, format!("cmodel 解析失败: {e}")))?;
+        let mut base = cmodel::spec::extract_robot_spec(&comp["CompDesc"], filename, &load, None);
+        base["model_file"] = json!(filename);
+        let stem = if filename.len() > 7 { &filename[..filename.len() - 7] } else { filename };
+        let name = { let n = meta.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(); if n.is_empty() { stem.to_string() } else { n } };
+        let find_by_name = || self.s.list("models").into_iter().find(|m| sget(m, "name") == name).map(|m| sget(&m, "id").to_string());
+        let new_mid = || { let b = format!("m-{}", slug(&name, "model")); let (mut mid, mut i) = (b.clone(), 2); while self.s.get("models", &mid).is_some() { mid = format!("{b}-{i}"); i += 1; } mid };
+        let mid = meta.get("model_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()).or_else(find_by_name).unwrap_or_else(new_mid);
+        let mut m = self.s.get("models", &mid).unwrap_or_else(|| json!({"id": mid, "name": name, "versions": [], "created": now()}));
+        let versions = arr(&m, "versions");
+        let ver = match meta.get("version").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            Some(v) => v,
+            None => { let mut n = 1u64; for v in &versions { if let Some(k) = v.as_str().and_then(|s| s.strip_prefix('v')).and_then(|d| d.parse::<u64>().ok()) { n = n.max(k + 1); } } format!("v{n}") }
+        };
+        if versions.iter().any(|v| v.as_str() == Some(&ver)) { return Err(err(409, format!("版本 {ver} 已存在"))); }
+        let vd = self.vdir(&mid, &ver);
+        std::fs::create_dir_all(&vd).map_err(|e| err(500, e.to_string()))?;
+        std::fs::write(vd.join("model.cmodel"), data).map_err(|e| err(500, e.to_string()))?;
+        self.s.write_json(&vd.join("base.json"), &base);
+        let prev = m.get("latest").and_then(|v| v.as_str()).map(|s| s.to_string()).filter(|s| !s.is_empty());
+        let ov = prev.and_then(|p| Store::read_json(&self.vdir(&mid, &p).join("overrides.json"))).filter(|o| truthy(Some(o))).unwrap_or(json!({"version": 1}));
+        self.s.write_json(&vd.join("overrides.json"), &ov);
+        self.s.write_json(&vd.join("meta.json"), &json!({"file": filename, "uploaded": now(), "size": data.len(), "operator": meta.get("operator").cloned().unwrap_or(json!(""))}));
+        let mut vs = versions; vs.push(json!(ver));
+        m["versions"] = Value::Array(vs); m["latest"] = json!(ver);
+        for k in ["project", "vtype", "material_no", "note"] { if let Some(v) = meta.get(k).filter(|v| !v.is_null()) { m[k] = v.clone(); } }
+        if m.get("vtype").is_none() {
+            let t = base["chassis"]["type"].as_str().unwrap_or("").to_string();
+            let lab = if t.is_empty() { "AMR".to_string() } else { chassis_label(&t) };
+            m["vtype"] = json!(if base["lift"]["enabled"].as_bool().unwrap_or(false) { format!("{lab}顶升 AMR") } else { format!("{lab} AMR") });
+        }
+        m["file"] = json!(filename);
+        m["summary"] = Self::summarize(&base);
+        self.s.put("models", m.clone());
+        Ok(self.view(&m))
+    }
     pub fn urdf(&self, mid: &str, ver: Option<&str>) -> R<String> { Ok(model::urdf::generate_urdf(&self.spec(mid, ver)?)) }
     pub fn bundle(&self, mid: &str, ver: Option<&str>) -> R<Value> {
         let m = self.get(mid)?;

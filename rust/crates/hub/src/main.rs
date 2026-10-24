@@ -198,7 +198,14 @@ fn build(hub: Arc<Hub>) -> Server {
     // ---- models
     R!("GET", pp("/models"), "车辆模型", h, q => j(json!({"models": h.models.list()})));
     R!("GET", pp("/models/{mid}"), "模型详情 (含生效参数)", h, q => { let m = h.models.get(&q.params["mid"])?; let mut v = h.models.view(&m); v["spec"] = h.models.spec(&q.params["mid"], q.qs("ver"))?; j(v) });
-    R!("POST", pp("/models/upload"), "上传 .cmodel (请求体为文件内容，?filename=&name=&project=&vtype=&material_no=)", h, q => Err::<Response, _>(not_avail(" .cmodel 解析 (请使用 Python 平台上传，或直接导入 base.json)")));
+    R!("POST", pp("/models/upload"), "上传 .cmodel (请求体为文件内容，?filename=&name=&project=&vtype=&material_no=)", h, q => {
+        let un = |k: &str| qd(q, k).map(|v| rest::url_decode(&v.replace('+', "%2B")));
+        let fnm = un("filename").unwrap_or("model.cmodel".into());
+        let mut meta = serde_json::Map::new();
+        for k in ["name", "project", "vtype", "material_no", "note", "version", "model_id"] { if let Some(v) = un(k) { meta.insert(k.into(), json!(v)); } }
+        meta.insert("operator".into(), json!(user(q)));
+        j(h.models.add_cmodel(&fnm, &q.body, &Value::Object(meta))?)
+    });
     R!("PATCH", pp("/models/{mid}"), "修改模型信息 {name, project, vtype, material_no, note}", h, q => j(h.models.update_meta(&q.params["mid"], &q.json()?)?));
     R!("DELETE", pp("/models/{mid}"), "删除模型", h, q => { h.models.delete(&q.params["mid"])?; j(json!({"ok": true})) });
     R!("GET", pp("/models/{mid}/cmodel"), "下载 cmodel", h, q => { let m = h.models.get(&q.params["mid"])?; let f = h.models.cmodel_file(&q.params["mid"], q.qs("ver"))?; file_resp(&f, "application/octet-stream", if truthy(m.get("file")) { sget(&m, "file") } else { "model.cmodel" }) });

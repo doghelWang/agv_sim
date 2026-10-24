@@ -673,6 +673,18 @@ impl Service {
     }
 
     /// re-read base + overrides and rebuild (no cmodel parsing)
+    /// Re-parse a .cmodel file as the new base spec, then rebuild (Python reload_model(cmodel_path))
+    pub fn reload_model_from_cmodel(&self, path: &str, load: &str, save: bool) -> Result<Value, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("读取 cmodel 失败: {e}"))?;
+        let comp = cmodel::decode_cmodel_bytes(&bytes)?;
+        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let mut base = cmodel::spec::extract_robot_spec(&comp["CompDesc"], &name, load, None);
+        base["model_path"] = json!(std::fs::canonicalize(path).map(|p| p.to_string_lossy().to_string()).unwrap_or(path.to_string()));
+        if save { let _ = std::fs::write(&self.base_path, serde_json::to_string_pretty(&base).unwrap_or_default()); }
+        self.lock().base_spec = base;
+        self.reload_model(save)
+    }
+
     pub fn reload_model(&self, save: bool) -> Result<Value, String> {
         let (sp, repo) = { let g = self.lock(); (model::overrides::apply_overrides(&g.base_spec, &g.overrides), g.spec.get("repo").cloned()) };
         let mut sp = sp;

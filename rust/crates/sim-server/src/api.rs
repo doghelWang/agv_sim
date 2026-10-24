@@ -169,7 +169,10 @@ pub fn build_api(svc: Arc<Service>, port: u16) -> Server {
     });
     R!("POST", "/api/v1/model/reload", "重新解析 cmodel 并重建仿真 {cmodel_path, load: full|idle}", |s: &Arc<Service>, q: &Request| -> HResult {
         let b = q.json()?;
-        if b.get("cmodel_path").map(truthy).unwrap_or(false) { return Err(not_impl("cmodel 解析 (cmodel_path)")); }
+        if let Some(p) = b.get("cmodel_path").filter(|v| truthy(v)).and_then(|v| v.as_str()) {
+            let load = b.get("load").and_then(|v| v.as_str()).unwrap_or("full");
+            return ok(s.reload_model_from_cmodel(p, load, b.get("save").map(truthy).unwrap_or(true)).map_err(|e| ApiError::new(400, e))?);
+        }
         let save = b.get("save").map(truthy).unwrap_or(true);
         ok(s.reload_model(save).map_err(|e| ApiError::new(400, e))?)
     });
