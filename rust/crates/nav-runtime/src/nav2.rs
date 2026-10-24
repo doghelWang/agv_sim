@@ -38,6 +38,9 @@ pub struct Nav2 {
     pub safety: Mutex<Value>,
     last: Mutex<Option<(u64, Vec<(f64, f64)>, [f64; 3], Option<Vec<bool>>, std::time::Instant, u8)>>,
     ready_since: Mutex<Option<std::time::Instant>>,
+    n2_child: Mutex<Option<Child>>,
+    n2_launched: Mutex<Option<std::time::Instant>>,
+    n2_tries: std::sync::atomic::AtomicU32,
 }
 
 fn pack(t: u8, body: &[u8]) -> Vec<u8> {
@@ -71,6 +74,7 @@ impl Nav2 {
             token: AtomicI64::new(-1), seq: AtomicI64::new(0), tx, rx: Mutex::new(Some(rx)),
             to: SocketAddr::from_abstract_name(format!("{tag}_cpp").as_bytes()).unwrap(),
             kids: Mutex::new(vec![]), pose: Mutex::new(([0.0; 3], [0.0; 3])), tag, safety: Mutex::new(Value::Null), last: Mutex::new(None), ready_since: Mutex::new(None),
+            n2_child: Mutex::new(None), n2_launched: Mutex::new(None), n2_tries: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -89,7 +93,7 @@ impl Nav2 {
 
     fn send(&self, t: u8, body: &[u8]) { let _ = self.tx.send_to_addr(&pack(t, body), &self.to); }
 
-    fn spawn(&self, name: &str, argv: &[String], env: &[(&str, String)]) -> Result<(), String> {
+    fn spawn(&self, name: &str, argv: &[String], env: &[(&str, String)]) -> Result<Child, String> {
         let home = std::env::var("AGV_HOME").unwrap_or("/opt/agv".into());
         let mut c = Command::new("bash");
         c.arg("-c").arg(format!(". {home}/docker/nav2_env.sh; exec \"$@\"")).arg("_");
@@ -101,9 +105,7 @@ impl Nav2 {
         }
         for (k, v) in env { c.env(k, v); }
         unsafe { use std::os::unix::process::CommandExt; c.pre_exec(|| { libc::setpgid(0, 0); Ok(()) }); }
-        let ch = c.spawn().map_err(|e| format!("启动 {name} 失败: {e}"))?;
-        self.kids.lock().unwrap().push(ch);
-        Ok(())
+        c.spawn().map_err(|e| format!("启动 {name} 失败: {e}"))
     }
 
     /// Start bridge + Nav2 (idempotent).
@@ -113,16 +115,12 @@ impl Nav2 {
         let bin = match find_bin() { Some(b) => b, None => { self.started.store(false, Ordering::SeqCst); return Err("未找到 agv_ros_bridge (ros2/install 未构建)".into()); } };
         let home = std::env::var("AGV_HOME").unwrap_or("/opt/agv".into());
         let sim = std::env::var("SIM_API").unwrap_or("http://127.0.0.1:8090".into());
-        let (chassis, scenario) = { let s = nav.s(); (s.chassis_type.clone(), s.active_scenario.clone()) };
-        let chassis = if ["diff_drive", "single_steer", "dual_steer"].contains(&chassis.as_str()) { chassis } else { "dual_steer".into() };
         let r = self.spawn("bridge", &[bin, "--core".into(), "--in".into(), format!("@{}_cpp", self.tag), "--out".into(), format!("@{}_py", self.tag)],
-            &[("SIM_API", sim)]).and_then(|_| {
-            let (x, y, yaw) = { let p = self.pose.lock().unwrap(); (p.0[0], p.0[1], p.0[2]) };
-            self.spawn("nav2", &["ros2".into(), "launch".into(), format!("{home}/nav2/nav2_launch.py"), format!("chassis:={chassis}"),
-                format!("map:={home}/maps/{scenario}.yaml"), "localization:=ground_truth".into(), "use_sim_time:=false".into(), "map_source:=map_server".into(),
-                format!("initial_x:={x}"), format!("initial_y:={y}"), format!("initial_yaw:={yaw}")], &[])
-        });
+            &[("SIM_API", sim)]).map(|c| self.kids.lock().unwrap().push(c));
+        let _ = &home; let _ = &nav;
         if let Err(e) = r { self.stop(); self.started.store(false, Ordering::SeqCst); return Err(e); }
+        self.n2_tries.store(0, Ordering::SeqCst);
+        *self.n2_launched.lock().unwrap() = None;
         let rx = self.rx.lock().unwrap().take();
         if let Some(rx) = rx { let me = self.clone(); std::thread::Builder::new().name("nav2-rx".into()).spawn(move || me.rx_loop(rx)).ok(); }
         let me = self.clone();
@@ -130,7 +128,48 @@ impl Nav2 {
         Ok(())
     }
 
+    fn launch_nav2(&self) -> Result<(), String> {
+        let nav = self.nav.upgrade().ok_or("navigator gone")?;
+        let home = std::env::var("AGV_HOME").unwrap_or("/opt/agv".into());
+        let (chassis, scenario) = { let s = nav.s(); (s.chassis_type.clone(), s.active_scenario.clone()) };
+        let chassis = if ["diff_drive", "single_steer", "dual_steer"].contains(&chassis.as_str()) { chassis } else { "dual_steer".into() };
+        let (x, y, yaw) = { let p = self.pose.lock().unwrap(); (p.0[0], p.0[1], p.0[2]) };
+        let c = self.spawn("nav2", &["ros2".into(), "launch".into(), format!("{home}/nav2/nav2_launch.py"), format!("chassis:={chassis}"),
+            format!("map:={home}/maps/{scenario}.yaml"), "localization:=ground_truth".into(), "use_sim_time:=false".into(), "map_source:=map_server".into(),
+            format!("initial_x:={x}"), format!("initial_y:={y}"), format!("initial_yaw:={yaw}")], &[])?;
+        *self.n2_child.lock().unwrap() = Some(c);
+        *self.n2_launched.lock().unwrap() = Some(std::time::Instant::now());
+        self.n2_tries.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn kill_nav2(&self) {
+        if let Some(mut c) = self.n2_child.lock().unwrap().take() {
+            unsafe { libc::kill(-(c.id() as i32), libc::SIGINT); }
+            std::thread::sleep(Duration::from_millis(1500));
+            unsafe { libc::kill(-(c.id() as i32), libc::SIGKILL); }
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        *self.n2_launched.lock().unwrap() = None;
+    }
+
+    /// bridge up → launch Nav2; Nav2 not active 75 s after launch → relaunch (max 3 tries)
+    fn supervise(&self) {
+        let launched = *self.n2_launched.lock().unwrap();
+        match launched {
+            None => { if self.bridge_up() && self.n2_tries.load(Ordering::SeqCst) < 3 { std::thread::sleep(Duration::from_secs(2)); let _ = self.launch_nav2(); } }
+            Some(t) => {
+                if !self.nav2_active.load(Ordering::Relaxed) && t.elapsed().as_secs() > 75 && self.n2_tries.load(Ordering::SeqCst) < 3 {
+                    eprintln!("[nav2] 75 s 内未就绪，重启 Nav2 (第 {} 次)", self.n2_tries.load(Ordering::SeqCst) + 1);
+                    self.kill_nav2();
+                }
+            }
+        }
+    }
+
     pub fn stop(&self) {
+        self.kill_nav2();
         for mut c in self.kids.lock().unwrap().drain(..) {
             unsafe { libc::kill(-(c.id() as i32), libc::SIGINT); }
             std::thread::sleep(Duration::from_millis(300));
@@ -167,6 +206,7 @@ impl Nav2 {
         loop {
             std::thread::sleep(Duration::from_millis(200));
             if !self.started() { return; }
+            if n % 5 == 0 { self.supervise(); }
             let Some(nav) = self.nav.upgrade() else { return };
             if n % 25 == 0 || !self.bridge_up() { let c = serde_json::to_vec(&self.config(&nav)).unwrap_or_default(); self.send(T_CONFIG, &c); }
             let m = serde_json::to_vec(&self.mode(&nav)).unwrap_or_default();
