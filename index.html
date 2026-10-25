@@ -325,6 +325,7 @@
                 <button data-cargo="clear" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-rose-50 text-[11px]">清空货物</button>
               </div>
               <div class="flex gap-1 flex-wrap">
+                <button data-fork-auto="demo" class="px-2 py-0.5 rounded border border-emerald-400 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold">▶ 一键演示：叉起托盘</button>
                 <button data-fork-auto="pick" class="px-2 py-0.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-[11px] font-semibold">自动叉取托盘</button>
                 <button data-fork-auto="place" class="px-2 py-0.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-[11px] font-semibold">自动放置到前方</button>
                 <button data-fork-auto="stop_flow" class="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 hover:bg-rose-50 text-[11px]">停止任务</button>
@@ -3841,7 +3842,7 @@
     if (a) {
       const msg = document.getElementById('hud-fork-msg');
       fetch('/api/fork/' + a.dataset.forkAuto, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(r => r.json()).then(j => { if (msg) msg.textContent = j.status === 'ok' ? (a.dataset.forkAuto === 'stop_flow' ? '已停止' : '任务已下发 (见右侧事件/工步)') : (j.message || '失败'); })
+        .then(r => r.json()).then(j => { if (msg) msg.textContent = j.status === 'ok' ? (a.dataset.forkAuto === 'stop_flow' ? '已停止' : a.dataset.forkAuto === 'demo' ? '演示开始：放托盘 → 对准 → 插入 → 升起 (约 30 s)' : '任务已下发 (见右侧事件/工步)') : (j.message || '失败'); })
         .catch(() => { if (msg) msg.textContent = '请求失败'; });
       return;
     }
