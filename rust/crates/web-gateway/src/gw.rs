@@ -436,7 +436,7 @@ impl Gateway {
         let flow = json!({"id": "ui_pick", "name": "叉取托盘", "steps": [{"type": "pick", "cargo": id, "height": b.get("height").and_then(|h| h.as_f64()).unwrap_or(0.25)}]});
         self.nav.json("POST", "/api/v1/taskflows/run", Some(&flow), None).map_err(|e| e.to_string())
     }
-    /// one-click demo: clear cargo, lower fork, put a pallet (+box) 3.3 m ahead, then run the pick flow and lift high
+    /// one-click demo: clear cargo, lower fork, put a pallet 3.3 m ahead, then run the pick flow and lift high
     pub fn fork_demo(&self, b: &Value) -> Result<Value, String> {
         self.fork_stop_flow();
         self.cargo_clear();
@@ -445,7 +445,6 @@ impl Gateway {
         let d = b.get("distance").and_then(|v| v.as_f64()).unwrap_or(3.3);
         let (x, y) = (px + yaw.cos() * d, py + yaw.sin() * d);
         self.cargo_add(&json!({"kind": "pallet", "id": "DEMO_P", "x": x, "y": y, "yaw": yaw}))?;
-        self.cargo_add(&json!({"kind": "box", "id": "DEMO_B", "x": x, "y": y, "yaw": yaw, "size": [0.7, 0.5, 0.6]}))?;
         let h = b.get("height").and_then(|v| v.as_f64()).unwrap_or(1.2);
         self.fork_pick(&json!({"cargo": "DEMO_P", "height": h}))
     }

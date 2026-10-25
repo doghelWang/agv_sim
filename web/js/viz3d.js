@@ -83,8 +83,9 @@ export function obstacleMesh(o) {
     const hm = new THREE.Mesh(new THREE.SphereGeometry(.145, 14, 14, 0, Math.PI * 2, 0, Math.PI / 2), std(0xeab308)); hm.position.z = 1.53; g.add(hm);
     const lb = textSprite(`👷 人员 #${o.id ?? ''}`, '#e11d48'); lb.position.z = 2.0; g.add(lb);
   } else if (type === 'pallet') {
-    [-w / 2 + .08, 0, w / 2 - .08].forEach(x => { const s = new THREE.Mesh(new THREE.BoxGeometry(.1, h, .09), std(0x92400e)); s.position.set(x, 0, .045); g.add(s); });
-    const d = new THREE.Mesh(new THREE.BoxGeometry(w, h, .04), std(0xb45309)); d.position.z = .11; g.add(d);
+    // EUR 托盘: 3 根纵梁沿货叉插入方向(x), 形成 2 个叉口 (中心 y=±0.175), 叉口高 0.10 m, 面板厚 0.044 m
+    [-h / 2 + .05, 0, h / 2 - .05].forEach(y => { const s = new THREE.Mesh(new THREE.BoxGeometry(w, .1, .1), std(0x92400e)); s.position.set(0, y, .05); g.add(s); });
+    const d = new THREE.Mesh(new THREE.BoxGeometry(w, h, .044), std(0xd9a15b)); d.position.z = .122; g.add(d);
     const lb = textSprite(`🪵 栈板 #${o.id ?? ''}`, '#d97706'); lb.position.z = .7; g.add(lb);
   } else if (type === 'shelf') {
     const H = o.z || 2.2, lx = w / 2 - .04, ly = h / 2 - .04;
