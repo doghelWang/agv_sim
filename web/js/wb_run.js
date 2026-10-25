@@ -108,6 +108,26 @@ export function tab32(el) {
     const e = L.err_mm, cls = e == null ? '' : e > 20 ? 'text-rose-600' : e > 10 ? 'text-amber-600' : 'text-emerald-600';
     return `<div class="kv"><span title="${esc(name)}">定位误差:</span><span class="${cls}">${e == null ? '—' : fmt(e, 1) + ' mm / ' + fmt(L.err_yaw_deg, 2) + '°'} ${L.std_xy_mm == null ? '' : ' · σ ' + fmt(L.std_xy_mm, 1) + ' mm'}${L.accepted === false ? ' · <b class="text-amber-600">匹配未采纳</b>' : ''}</span></div>`;
   }
+  function forkHTML(t) {
+    const f = t.fork; if (!f || !f.tine) return '';
+    const bt = (k, v, txt, cls = '') => `<button data-fk="${k}" ${v ? `data-v="${v}"` : ''} class="px-2 py-0.5 rounded border text-[11px] ${cls || 'border-slate-200 bg-slate-50 hover:bg-amber-50'}">${txt}</button>`;
+    const st = f.loaded ? `带载 ${esc(f.load_id || '')}` : '空叉';
+    return `<div class="mt-2 pt-2 border-t border-slate-100 space-y-1.5">
+      <div class="flex justify-between"><span class="text-slate-500">货叉:</span><span class="font-semibold text-amber-700">${fmt((f.height_m || 0) * 1000, 0)} mm · ${st}${f.blocked ? ' · <b class="text-rose-600">受阻</b>' : ''}</span></div>
+      <div class="flex gap-1 flex-wrap">${bt('fork', 'bottom', '到底')}${bt('fork', 'up', '▲')}${bt('fork', 'down', '▼')}${bt('fork', 'stop', '■')}${bt('fork', 'top', '到顶')}</div>
+      <div class="flex gap-1 flex-wrap">${bt('demo', '', '▶ 一键演示：叉起托盘', 'border-emerald-400 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold')}</div>
+      <div class="flex gap-1 flex-wrap">${bt('pick', '', '自动叉取', 'border-amber-300 bg-amber-50 hover:bg-amber-100 font-semibold')}${bt('place', '', '自动放置', 'border-amber-300 bg-amber-50 hover:bg-amber-100 font-semibold')}${bt('stop_flow', '', '停止任务')}${bt('clear', '', '清空货物', 'border-slate-200 bg-slate-50 hover:bg-rose-50')}</div>
+      <div class="text-[10px] text-slate-400">托盘/货箱请从右侧「注入库」放置 (车前 2.5 m)；叉车上它们是可叉取的货物，不是障碍物。</div>
+    </div>`;
+  }
+  $('[data-hud]', el).addEventListener('click', guard(async (ev) => {
+    const b = ev.target.closest('[data-fk]'); if (!b) return;
+    if (!needLock()) return;
+    const k = b.dataset.fk;
+    if (k === 'fork') await ipost('/api/fork', { action: b.dataset.v });
+    else if (k === 'clear') await ipost('/api/cargo/clear');
+    else await ipost('/api/fork/' + k);
+  }));
   function renderHUD(t) {
     const tf = t.taskflow || {}, steps = tf.steps || [], i = tf.step_index;
     const st = tf.status === 'running' && steps[i] ? `${String(i + 1).padStart(2, '0')}: ${{ move: '导航前往', lift: '顶升取货', drop: '下降放货', wait: '等待' }[steps[i].type]} ${steps[i].target || (steps[i].seconds ? steps[i].seconds + 's' : '')}`
@@ -125,6 +145,7 @@ export function tab32(el) {
       ${protHTML(t)}
       <div class="kv"><span>激光点云:</span><span class="text-emerald-600">${pts.toLocaleString()} pts</span></div>
       <div class="kv"><span>最近障碍物:</span><span class="${ob.zone === 'stop' ? 'text-rose-600' : ob.zone === 'slow' ? 'text-amber-600' : ''}">${d == null ? '> 量程 (安全)' : fmt(d) + ' m'}${ob.zone === 'clear' || !ob.zone ? ' (安全)' : ''}</span></div>
+      ${forkHTML(t)}
       ${tf.status === 'running' ? `<div class="h-1.5 bg-slate-100 rounded mt-2"><div class="h-1.5 bg-blue-600 rounded" style="width:${((i + (tf.step_status === 'done' ? 1 : .5)) / Math.max(1, steps.length) * 100).toFixed(0)}%"></div></div>` : ''}`;
     const running = tf.status === 'running';
     const tag = paused ? ['仿真已暂停', 'bg-amber-50 text-amber-700 border-amber-200', 'bg-amber-500'] : running ? ['仿真进行中', 'bg-emerald-50 text-emerald-700 border-emerald-200', 'bg-emerald-500 pulse-dot'] : ['待命中', 'bg-slate-100 text-slate-600 border-slate-200', 'bg-slate-400'];

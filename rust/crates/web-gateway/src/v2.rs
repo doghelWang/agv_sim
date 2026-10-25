@@ -278,7 +278,8 @@ impl V2 {
     fn inject(&self, b: &Value) -> Result<Value, ApiError> {
         let cat = catalog().as_array().unwrap().iter().find(|c| Some(s(c, "type")) == b.get("type").and_then(|t| t.as_str())).cloned()
             .ok_or_else(|| ApiError::new(400, format!("未知元素类型 {}", b.get("type").map(|t| t.as_str().map(|s| s.to_string()).unwrap_or(t.to_string())).unwrap_or("None".into()))))?;
-        if !self.gw.is_paused() && !b.get("force").map(truthy).unwrap_or(false) { return Err(ApiError::coded(409, "请先暂停仿真，再从注入库放置扰动元素", "not_paused")); }
+        let fork_cargo = { let g = self.gw.lock(); g.telemetry.get("fork").map(|v| v.is_object()).unwrap_or(false) } && matches!(s(&cat, "type"), "pallet" | "box");
+        if !fork_cargo && !self.gw.is_paused() && !b.get("force").map(truthy).unwrap_or(false) { return Err(ApiError::coded(409, "请先暂停仿真，再从注入库放置扰动元素", "not_paused")); }
         let pl = b.get("placement").and_then(|p| p.as_str()).unwrap_or("ahead_2.5").to_string();
         let mut yaw = 0.0;
         let (x, y);
@@ -312,6 +313,17 @@ impl V2 {
             let (bx, by) = (b.get("x").and_then(|v| v.as_f64()), b.get("y").and_then(|v| v.as_f64()));
             let (Some(bx), Some(by)) = (bx, by) else { return Err(ApiError::new(400, "自定义位置需要 x, y")) };
             x = bx; y = by; yaw = f(b, "yaw", 0.0);
+        }
+        // 叉车: 托盘/货箱是「可叉取货物」(sim cargo), 不是实体障碍
+        let has_fork = { let g = self.gw.lock(); g.telemetry.get("fork").map(|v| v.is_object() && v.get("tine").is_some()).unwrap_or(false) };
+        if has_fork && matches!(s(&cat, "type"), "pallet" | "box") {
+            let is_pal = s(&cat, "type") == "pallet";
+            let id = format!("{}{}", if is_pal { "P" } else { "B" }, rand_u64() % 10000);
+            let mut body = json!({"kind": s(&cat, "type"), "id": id, "x": rnd(x, 3), "y": rnd(y, 3), "yaw": rnd(yaw, 3)});
+            if !is_pal { body["size"] = json!([0.7, 0.5, 0.6]); }
+            self.gw.cargo_add(&body).map_err(|e| ApiError::new(400, e))?;
+            self.gw.events.emit("sensors", "CARGO_ADD", "info", &format!("放置{} {}", if is_pal { "托盘" } else { "货箱" }, id), &format!("({:.2}, {:.2}) 可叉取货物", x, y), json!({"id": id}));
+            return Ok(json!({"type": s(&cat, "type"), "name": cat["name"], "x": rnd(x, 2), "y": rnd(y, 2), "yaw": rnd(yaw, 3), "id": 0, "cargo": id, "placement": pl}));
         }
         let mut el = json!({"type": cat["type"], "name": cat["name"], "x": rnd(x, 2), "y": rnd(y, 2), "yaw": rnd(yaw, 3), "w": cat["w"], "h": cat["h"], "z": cat["z"], "placement": pl});
         if s(&cat, "type") == "person" && b.get("walk").map(truthy).unwrap_or(false) {
