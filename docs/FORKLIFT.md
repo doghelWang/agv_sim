@@ -58,3 +58,12 @@ tests/test_forklift.py        # 仿真层: 托盘/叠放、错位被挡、插入
 tests/test_forklift_flow.py   # 导航层: pick+place 地面搬运，再叉起叠放到另一托盘
 ```
 启动：`sim-server` 载入 `models/forklift_4steer.cmodel`（`POST /api/v1/model/reload {"cmodel_path": ...}`），`nav-runtime` 指向它。
+
+## 托盘搬运 AMR(地牛式)与 9 块托盘(v4)
+
+- `models/pallet_truck_amr.cmodel`(`tools/make_pallet_truck_cmodel.py`):低位托盘搬运车 — 两轮差速、货叉长 1.15 m、叉宽 0.14、叉距 0.33、升程 0.2 m、车头尾部高立柱(信标/急停/触摸屏)。
+- 叉车模型货叉同步改为叉宽 0.14 / 叉距 0.33。
+- 托盘碰撞改为欧标 9 墩块(墩 0.13 m):叉齿只能从墩间孔插入,四面均可进叉;撞到墩块即判碰撞。
+- 插入判定:每根叉齿至少 4/8 采样点落入托盘范围。
+- 自动取放流程仍按托盘短边进叉;长边进叉需手动且叉齿居中(±~0.03 m)。
+- 升程有限的车型,taskflow 会把行进/抬升高度限制在 mast_max_m 内。

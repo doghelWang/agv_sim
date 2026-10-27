@@ -445,7 +445,8 @@ impl Gateway {
         let d = b.get("distance").and_then(|v| v.as_f64()).unwrap_or(3.3);
         let (x, y) = (px + yaw.cos() * d, py + yaw.sin() * d);
         self.cargo_add(&json!({"kind": "pallet", "id": "DEMO_P", "x": x, "y": y, "yaw": yaw}))?;
-        let h = b.get("height").and_then(|v| v.as_f64()).unwrap_or(1.2);
+        let mast_max = safe(&self.sim, "GET", "/api/v1/fork", None).and_then(|f| f.get("mast_max_m").and_then(|v| v.as_f64())).unwrap_or(3.0);
+        let h = b.get("height").and_then(|v| v.as_f64()).unwrap_or(1.2).min(mast_max);
         self.fork_pick(&json!({"cargo": "DEMO_P", "height": h}))
     }
     /// one-click place: put the carried pallet on the floor ~3.5 m ahead of the vehicle, same heading

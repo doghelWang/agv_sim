@@ -5,7 +5,7 @@ Proportions follow real autonomous counterbalance / stacker forklifts (AGILOX OC
 KUKA KMF 1500P-CB 3 m mast; IntraBot Fork 3.0 1080 kg 1.5/1.0 m/s; ATEAGO fork 1150x170x60 mm):
   body 1.70 x 1.10 m (incl. counterweight, excl. forks) under a 2.15 m overhead guard, 3200 kg, 1500 kg rated load,
   four steer+drive wheels (dia 320 mm, wheelbase 1.10 m, track 0.84 m) -> forward / crab / diagonal / spin,
-  mast 3.0 m with a carriage and two 1150 x 160 x 60 mm tines, laden 1.0 m/s / unladen 1.5 m/s,
+  mast 3.0 m with a carriage and two 1150 x 140 x 60 mm tines, laden 1.0 m/s / unladen 1.5 m/s,
   Mid-360 nav lidar on the guard, two diagonal 270 deg safety scanners, two pallet cameras, fork-tip photoelectrics,
   down code reader, gyro, 48 V / 300 Ah Li battery, e-stop, IO module.
 Written as CompDesc.json inside a ZIP (accepted by the Rust/Python decoders).
@@ -57,8 +57,8 @@ for k, (x, y) in WX.items():
         C("angleSensorType", "GROUP_CALI_ABS_INTERNAL"), F("relateWalkMotor", f"walk-{k}"), F("relateRotMotor", f"steer-{k}")], loc=(x, y, 0.0), box=(0.32, 0.10, 0.32), desc=f"舵轮 {k}"))
 
 comps.append(comp("lift_motor", "driver", "BDCMotor", [C("ENCType", "ENCODER_NULL"), I("ratedSpeed", 3000), C("bHbrake", "WITH_HBRAKE"), D("ratedVolt", 24), D("powerVolt", 48)], loc=(HEAD - 0.1, 0, 0.3)))
-comps.append(comp("fork_mast", "lifter", "forkMast", [D("mastMaxHeight", 3000), D("liftSpeed", 250), D("liftAccel", 350), D("tineLength", TINE_L * 1000), D("tineWidth", 160),
-    D("tineThickness", 60), D("tineSpacing", 350), D("maxLoad", 1500), D("tiltRange", 0), D("loadedSpeedFactor", 0.67)], loc=(MAST_X, 0, 0.0), box=(0.14, 0.92, 3.0), src="Mast + pallet fork", desc="门架+货叉"))
+comps.append(comp("fork_mast", "lifter", "forkMast", [D("mastMaxHeight", 3000), D("liftSpeed", 250), D("liftAccel", 350), D("tineLength", TINE_L * 1000), D("tineWidth", 140),
+    D("tineThickness", 60), D("tineSpacing", 330), D("maxLoad", 1500), D("tiltRange", 0), D("loadedSpeedFactor", 0.67)], loc=(MAST_X, 0, 0.0), box=(0.14, 0.92, 3.0), src="Mast + pallet fork", desc="门架+货叉"))
 comps.append(comp("lift_encoder", "sensor", "pullWireEncode", [D("wheelCirc", 230), C("absEncodeType", "CANOPEN_ENCODER")], loc=(HEAD - 0.1, 0, 1.0)))
 
 comps.append(comp("lidar3d", "sensor", "3DLaser", [C("scanDirect", "SCAN_COUNTERCLOCKWISE"), C("usageMode", "PClOUD_LASER")], loc=(0.30, 0, H + 0.07), cyl=(0.065, 0.06), src="Livox Mid-360S"))
@@ -67,8 +67,8 @@ comps.append(comp("safety_laser_rr", "sensor", "safetyLaser", [C("scanDirect", "
 for side, y in (("left", 0.15), ("right", -0.15)):
     comps.append(comp(f"cam_{side}", "sensor", "camera", [C("lensOrientation", "LENS_DIR_FRONT")], loc=(HEAD - 0.05, y, H - 0.15), rpy=(0, 25, 0), box=(0.04, 0.06, 0.04), src="RGB camera 640x480"))
 comps.append(comp("code_reader_down", "sensor", "codeReader", [C("lensOrientation", "LENS_DIR_DOWN"), D("scanDistence", 120)], loc=(0.3, 0, 0.18), box=(0.05, 0.05, 0.05)))
-comps.append(comp("pallet_tip_l", "sensor", "proximitySensor", [], loc=(MAST_X + TINE_L, 0.175, 0.08), box=(0.03, 0.03, 0.03)))
-comps.append(comp("pallet_tip_r", "sensor", "proximitySensor", [], loc=(MAST_X + TINE_L, -0.175, 0.08), box=(0.03, 0.03, 0.03)))
+comps.append(comp("pallet_tip_l", "sensor", "proximitySensor", [], loc=(MAST_X + TINE_L, 0.165, 0.08), box=(0.03, 0.03, 0.03)))
+comps.append(comp("pallet_tip_r", "sensor", "proximitySensor", [], loc=(MAST_X + TINE_L, -0.165, 0.08), box=(0.03, 0.03, 0.03)))
 comps.append(comp("gyro", "sensor", "gyro", [], loc=(0, 0, 0.3)))
 comps.append(comp("MainController", "mainCPU", "subMainCPU", [C("isWithGyro", "yes")], loc=(0, 0, 0.35), box=(0.12, 0.1, 0.04)))
 comps.append(comp("IO module", "extendedlnterface", "IOModule", [S("chipPlatform", "R106")], loc=(0, 0, 0.4)))

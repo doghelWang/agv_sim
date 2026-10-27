@@ -87,6 +87,7 @@ impl ModelRepo {
             let Ok(data) = std::fs::read(&p) else { continue };
             let (name, vtype) = match fname.as_str() {
                 "forklift_4steer.cmodel" => ("四舵轮叉车 AMR", "叉车 AMR"),
+                "pallet_truck_amr.cmodel" => ("托盘搬运 AMR (地牛式)", "托盘搬运 AMR"),
                 _ => ("", ""),
             };
             let mut meta = json!({"project": "示例项目", "note": "平台内置示例模型", "operator": "builtin"});

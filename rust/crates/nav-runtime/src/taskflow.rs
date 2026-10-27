@@ -324,7 +324,8 @@ impl TaskFlow {
         let (ok, msg) = self.goto_xy(gen, st, sx, sy, Some(yaw_in), format!("托盘预备位({id})"));
         if !ok { return (false, msg); }
         if let Err(e) = self.servo_insert(gen, cx, cy, yaw_in, d, 0.25) { return (false, format!("叉入托盘 {id} 失败: {e}")); }
-        let lift_h = st.get("height").and_then(|v| v.as_f64()).unwrap_or(0.25).max(0.12);
+        let mast_max = self.sim_get("/api/v1/fork")["mast_max_m"].as_f64().unwrap_or(3.0);
+        let lift_h = st.get("height").and_then(|v| v.as_f64()).unwrap_or(0.25).max(0.12).min(mast_max);
         if let Err(e) = self.fork_to(gen, lift_h, 60.0) { return (false, format!("起升失败: {e}")); }
         let f = self.sim_get("/api/v1/fork");
         if f["loaded"] != true { return (false, format!("未能叉起托盘 {id}")); }
@@ -349,7 +350,8 @@ impl TaskFlow {
         let approach = st.get("approach").and_then(|v| v.as_f64()).unwrap_or(2.0);
         let (sx, sy) = (tx - (d + approach) * yaw_in.cos(), ty - (d + approach) * yaw_in.sin());
         self.emit("FORK_PLACE_PLAN", "info", &format!("放置到 {name}"), &format!("目标高度 {z:.2} m，预备位 ({sx:.2},{sy:.2})"), json!({"target": name}));
-        let travel = z + 0.25;
+        let mast_max = f0["mast_max_m"].as_f64().unwrap_or(3.0);
+        let travel = (z + 0.25).min(mast_max);
         let cur_h = f0["height_m"].as_f64().unwrap_or(0.0);
         if cur_h < travel - 0.01 { if let Err(e) = self.fork_to(gen, travel, 90.0) { return (false, e); } }
         let (ok, msg) = self.goto_xy(gen, st, sx, sy, Some(yaw_in), format!("放置预备位{name}"));

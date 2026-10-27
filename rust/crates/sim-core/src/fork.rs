@@ -2,7 +2,7 @@
 //!
 //! Cargo lives inside `World::obstacles` (entries with `"cargo": true`, `"id"`, `"z0"`), so MuJoCo geoms, lidar rays, camera
 //! scene and bumpers see it like any obstacle.  The fork itself is a kinematic mechanism (mast height with trapezoid velocity
-//! profile) whose tines are tested against the world each step; pallets have real runners/pockets so mis-aligned insertion is
+//! profile) whose tines are tested against the world each step; pallets have real support blocks/openings (4-way entry) so mis-aligned insertion is
 //! blocked, and lifting under the deck attaches the pallet (with everything stacked on it) until it is lowered back onto a
 //! support (floor, platform or other cargo).
 use crate::geom::{collides, Seg};
@@ -10,7 +10,8 @@ use crate::io::IoSim;
 use crate::world::World;
 use serde_json::{json, Map, Value};
 
-pub const RUNNER_W: f64 = 0.10;
+/// EUR-pallet support blocks: 9 blocks (3x3), so the pallet has fork openings on ALL four sides (4-way entry)
+pub const BLOCK: f64 = 0.13;
 
 #[derive(Clone, Debug)]
 pub struct ForkSpec {
@@ -181,12 +182,14 @@ impl Fork {
             if ph > 0.0 {
                 let (x0, y0, yaw) = (onum(o, "x", 0.0), onum(o, "y", 0.0), onum(o, "yaw", 0.0));
                 let (hx, hy) = (onum(o, "w", 1.2) / 2.0, onum(o, "h", 0.8) / 2.0);
-                // runners (full depth) occupy z in [z0, z0+ph]
+                // 9 support blocks occupy z in [z0, z0+ph]; the gaps between them are the fork openings on all four sides
                 if zb < z0 + ph {
                     let (s, c) = yaw.sin_cos();
-                    for ry in [-(hy - RUNNER_W / 2.0), 0.0, hy - RUNNER_W / 2.0] {
-                        let rc = rect(x0 - s * ry, y0 + c * ry, hx, RUNNER_W / 2.0, yaw);
-                        if tp.iter().any(|t| sat(t, &rc)) { return Some((i, false)); }
+                    for bx in [-(hx - BLOCK / 2.0), 0.0, hx - BLOCK / 2.0] {
+                        for by in [-(hy - BLOCK / 2.0), 0.0, hy - BLOCK / 2.0] {
+                            let bc = rect(x0 + c * bx - s * by, y0 + s * bx + c * by, BLOCK / 2.0, BLOCK / 2.0, yaw);
+                            if tp.iter().any(|t| sat(t, &bc)) { return Some((i, false)); }
+                        }
                     }
                 }
                 if zt > z0 + ph + 1e-6 {
@@ -214,7 +217,7 @@ impl Fork {
                 if point_in(o, px, py, 0.0) { cnt[k] += 1; }
             }
         }
-        cnt[0] >= 5 && cnt[1] >= 5
+        cnt[0] >= 4 && cnt[1] >= 4
     }
 
     fn carried_polys(&self, world: &World, x: f64, y: f64, th: f64) -> Vec<(Poly, f64, f64)> {

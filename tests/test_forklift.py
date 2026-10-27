@@ -6,6 +6,9 @@ import json, math, sys, time, urllib.request
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:18100").rstrip("/") + "/api/v1"
 FAILS = []
 TIP = 2.25
+MAXH = 3.0
+LIFT = 0.5
+CHASSIS = ""
 
 def req(m, p, b=None):
     r = urllib.request.Request(BASE + p, method=m, data=None if b is None else json.dumps(b).encode(), headers={"Content-Type": "application/json"})
@@ -50,9 +53,10 @@ def reset(x, y, yaw=0.0):
 def main():
     print("backend:", req("GET", "/sim")["backend"], " chassis:", req("GET", "/state")["chassis"])
     f = fork()
-    global TIP
+    global TIP, MAXH, LIFT, CHASSIS
     TIP = f["tine"]["root_x"] + f["tine"]["length"]
-    check("fork present", isinstance(f, dict) and f.get("mast_max_m") == 3.0, str(f)[:80])
+    MAXH = f["mast_max_m"]; LIFT = min(0.5, round(0.6 * MAXH, 3)); CHASSIS = req("GET", "/state")["chassis"]
+    check("fork present", isinstance(f, dict) and MAXH > 0.1, str(f)[:80])
     for c in list(cargo()): req("DELETE", f"/world/cargo/{c}")
 
     # --- cargo spawn + stacking
@@ -75,11 +79,11 @@ def main():
     p = drive_to_x(5.35 - TIP, vmax=0.4, tol=0.03)
     check("aligned insertion reaches depth", abs(p["x"] - (5.35 - TIP)) < 0.08, f"x={p['x']:.3f} y={p['y']:.3f}")
     check("pallet-detect DI on", req("GET", "/io")["inputs"].get("di_pallet_detect") is True)
-    req("PUT", "/fork", {"height": 0.5}); f = wait_fork(0.5)
-    check("fork reached 0.5 m", abs(f["height_m"] - 0.5) < 0.01, f"h={f['height_m']}")
+    req("PUT", "/fork", {"height": LIFT}); f = wait_fork(LIFT)
+    check(f"fork reached {LIFT} m", abs(f["height_m"] - LIFT) < 0.01, f"h={f['height_m']}")
     check("pallet attached", f["loaded"] and f["load_id"] == "P1" and len(f["load"]) == 2, f"loaded={f['loaded']} n={len(f['load'])}")
     cg = cargo()
-    check("pallet lifted with tines", abs(cg["P1"]["z0"] - (0.5 + 0.06 - 0.10)) < 0.01, f"z0={cg['P1']['z0']}")
+    check("pallet lifted with tines", abs(cg["P1"]["z0"] - (LIFT + 0.06 - 0.10)) < 0.01, f"z0={cg['P1']['z0']}")
     check("box rides on pallet", abs(cg["B1"]["z0"] - (cg["P1"]["z0"] + 0.144)) < 0.01)
     check("DI cargo present", req("GET", "/io")["inputs"].get("di_cargo_present") is True)
 
@@ -87,13 +91,16 @@ def main():
     p = drive_to_x(0.5, vmax=0.8)
     c1 = cargo()["P1"]
     dx = c1["x"] - p["x"]
-    check("pallet follows vehicle", 1.5 < dx < 3.0, f"rel_x={dx:.2f}")
+    check("pallet follows vehicle", 0.5 < dx < TIP, f"rel_x={dx:.2f}")
     t0 = pose()
-    drive(0.0, 0.5, 0.0, 2.0); req("PUT", "/control/cmd_vel", {"vx": 0, "vy": 0, "wz": 0}); time.sleep(0.5)
+    if CHASSIS in ("multi_steer", "dual_steer"): drive(0.0, 0.5, 0.0, 2.0)
+    else: drive(-0.3, 0.0, 0.0, 2.0)   # diff/single-steer: no crab, just back up with the load
+    req("PUT", "/control/cmd_vel", {"vx": 0, "vy": 0, "wz": 0}); time.sleep(0.5)
     t1 = pose()
-    check("crab (sideways) motion with load", t1["y"] - t0["y"] > 0.3, f"dy={t1['y']-t0['y']:.2f}")
+    check("sideways (crab) / reverse motion with load", math.hypot(t1["y"] - t0["y"], t1["x"] - t0["x"]) > 0.3, f"d=({t1['x']-t0['x']:.2f},{t1['y']-t0['y']:.2f})")
     c2 = cargo()["P1"]
-    check("pallet keeps relative pose while carried", abs((c2["y"] - t1["y"]) - (c1["y"] - t0["y"])) < 0.05)
+    d0 = math.hypot(c1["x"] - t0["x"], c1["y"] - t0["y"]); d1 = math.hypot(c2["x"] - t1["x"], c2["y"] - t1["y"])
+    check("pallet keeps relative pose while carried", abs(d1 - d0) < 0.05, f"{d0:.3f} vs {d1:.3f}")
 
     # --- place on floor: lower, tines go free, back out
     req("PUT", "/fork", {"height": 0.0}); f = wait_fork(0.0)
@@ -107,18 +114,39 @@ def main():
     # --- stack: pick the box-laden pallet again and put on top of second pallet
     req("POST", "/world/cargo", {"kind": "pallet", "id": "P2", "x": pl["x"] - 3.0, "y": pl["y"] - 2.5, "yaw": math.pi / 2})
     # re-pick P1
-    pp = pose(); reset(pl["x"] - 4.0, pl["y"], 0.0)
-    drive_to_x(pl["x"] - 1.9, tol=0.03)
-    req("PUT", "/fork", {"height": 0.3}); f = wait_fork(0.3)
+    pp = pose(); reset(pl["x"] - TIP - 1.75, pl["y"], 0.0)
+    drive_to_x(pl["x"] + 0.35 - TIP, tol=0.03)
+    req("PUT", "/fork", {"height": LIFT}); f = wait_fork(LIFT)
     check("re-pick works from placed state", f["loaded"] and f["load_id"] == "P1")
     # top height
-    req("PUT", "/fork", {"action": "top"}); f = wait_fork(3.0, 30)
-    check("mast reaches top limit", f["limits"]["top"] and f["height_m"] >= 2.99, f"h={f['height_m']}")
+    req("PUT", "/fork", {"action": "top"}); f = wait_fork(MAXH, 30)
+    check("mast reaches top limit", f["limits"]["top"] and f["height_m"] >= MAXH - 0.01, f"h={f['height_m']}")
     check("DI lift_top", req("GET", "/io")["inputs"].get("di_lift_top") is True)
-    req("PUT", "/fork", {"height": 0.2}); wait_fork(0.2, 30)
+    req("PUT", "/fork", {"height": LIFT / 2}); wait_fork(LIFT / 2, 30)
     # lowering to floor-level target should release
     req("PUT", "/fork", {"height": 0.0}); f = wait_fork(0.0, 10)
     check("final lower to floor releases", not f["loaded"])
+
+    # --- 4-way entry: the EUR pallet (9 blocks) also has openings on its LONG sides, but only when the tines line up with them
+    for c in list(cargo()): req("DELETE", f"/world/cargo/{c}")
+    req("POST", "/world/cargo", {"kind": "pallet", "id": "P3", "x": -1.0, "y": 0.0, "yaw": 0.0})
+    reset(-1.0 + 0.14, -TIP - 0.8, math.pi / 2)             # long side, tines 0.14 m off centre -> hit a support block
+    for _ in range(120):
+        req("PUT", "/control/cmd_vel", {"vx": 0.4, "vy": 0, "wz": 0}); time.sleep(0.05)
+    req("PUT", "/control/cmd_vel", {"vx": 0, "vy": 0, "wz": 0}); time.sleep(0.3)
+    p = pose(); tipy = p["y"] + TIP
+    check("long side, misaligned: blocked by support block", tipy < -0.4 + 0.02, f"tip_y={tipy:.2f} (pallet edge -0.40)")
+    reset(-1.0, -TIP - 0.8, math.pi / 2)                     # long side, centred -> tines go through the two openings
+    for _ in range(200):
+        if pose()["y"] + TIP > -0.4 + 0.5: break
+        req("PUT", "/control/cmd_vel", {"vx": 0.3, "vy": 0, "wz": 0}); time.sleep(0.05)
+    req("PUT", "/control/cmd_vel", {"vx": 0, "vy": 0, "wz": 0}); time.sleep(0.3)
+    p = pose(); tipy = p["y"] + TIP
+    check("long side, centred: tines enter the openings", tipy > -0.4 + 0.35, f"tip_y={tipy:.2f}")
+    req("PUT", "/fork", {"height": LIFT}); f = wait_fork(LIFT)
+    check("pallet picked from the long side", f["loaded"] and f["load_id"] == "P3", f"loaded={f['loaded']}")
+    req("PUT", "/fork", {"height": 0.0}); wait_fork(0.0)
+    reset(-1.0, -TIP - 0.8, math.pi / 2)
 
     # --- raising tines into a wall-like obstacle / blocked reporting
     reset(-8.0, 0.0, 0.0)
