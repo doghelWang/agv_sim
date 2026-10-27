@@ -83,9 +83,12 @@ export function obstacleMesh(o) {
     const hm = new THREE.Mesh(new THREE.SphereGeometry(.145, 14, 14, 0, Math.PI * 2, 0, Math.PI / 2), std(0xeab308)); hm.position.z = 1.53; g.add(hm);
     const lb = textSprite(`👷 人员 #${o.id ?? ''}`, '#e11d48'); lb.position.z = 2.0; g.add(lb);
   } else if (type === 'pallet') {
-    // EUR 托盘: 3 根纵梁沿货叉插入方向(x), 形成 2 个叉口 (中心 y=±0.175), 叉口高 0.10 m, 面板厚 0.044 m
-    [-h / 2 + .05, 0, h / 2 - .05].forEach(y => { const s = new THREE.Mesh(new THREE.BoxGeometry(w, .1, .1), std(0x92400e)); s.position.set(0, y, .05); g.add(s); });
-    const d = new THREE.Mesh(new THREE.BoxGeometry(w, h, .044), std(0xd9a15b)); d.position.z = .122; g.add(d);
+    // EUR 托盘 (四向进叉): 9 个支撑块 (3x3) + 3 块底板 + 5 块面板; 叉口在四个侧面, 叉口净高 0.10 m
+    const BK = 0.13, ph = 0.10, wood = std(0x92400e), light = std(0xd9a15b);
+    [-w / 2 + BK / 2, 0, w / 2 - BK / 2].forEach(x => [-h / 2 + BK / 2, 0, h / 2 - BK / 2].forEach(y => { const b = new THREE.Mesh(new THREE.BoxGeometry(BK, BK, ph), wood); b.position.set(x, y, ph / 2); g.add(b); }));
+    [-h / 2 + BK / 2, 0, h / 2 - BK / 2].forEach(y => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, BK, .02), wood); b.position.set(0, y, .01); g.add(b); });
+    const nb = 5, bw = (h - 0.04 * (nb - 1)) / nb;
+    for (let i = 0; i < nb; i++) { const d = new THREE.Mesh(new THREE.BoxGeometry(w, bw, .044), light); d.position.set(0, -h / 2 + bw / 2 + i * (bw + .04), ph + .022); g.add(d); }
     const lb = textSprite(`🪵 栈板 #${o.id ?? ''}`, '#d97706'); lb.position.z = .7; g.add(lb);
   } else if (type === 'shelf') {
     const H = o.z || 2.2, lx = w / 2 - .04, ly = h / 2 - .04;
@@ -259,8 +262,10 @@ export class Viewer3D {
       while (this.forkGroup.children.length) { const c = this.forkGroup.children[0]; this.forkGroup.remove(c); disposeTree(c); }
       const rx = f.tine.root_x, H = Math.min(f.mast_max_m + 0.3, 3.4);
       const steel = new THREE.MeshLambertMaterial({ color: 0x1e293b, emissive: 0x1e293b }), fork = new THREE.MeshBasicMaterial({ color: 0xff9800 });
-      [-0.3, 0.3].forEach(y => { const m = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, H), steel); m.position.set(rx - 0.06, y, H / 2); this.forkGroup.add(m); });
-      const cross = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.66, 0.08), steel); cross.position.set(rx - 0.06, 0, H); this.forkGroup.add(cross);
+      if (f.mast_max_m > 0.6) {   // tall mast only for real forklifts; low-lift pallet trucks have no mast
+        [-0.3, 0.3].forEach(y => { const m = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, H), steel); m.position.set(rx - 0.06, y, H / 2); this.forkGroup.add(m); });
+        const cross = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.66, 0.08), steel); cross.position.set(rx - 0.06, 0, H); this.forkGroup.add(cross);
+      }
       const car = new THREE.Group(); car.name = 'carriage';
       const plate = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 0.32), steel); plate.position.set(rx - 0.02, 0, 0.16); car.add(plate);
       [-1, 1].forEach(sd => {
