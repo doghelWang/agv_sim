@@ -241,6 +241,7 @@ fn build(hub: Arc<Hub>) -> Server {
     R!("PUT", format!("{v}/api/v1/model/overrides"), "保存补全", h, q => j(h.models.save_overrides(&q.params["mid"], Some(&q.params["ver"]), &q.json()?)?));
     R!("GET", format!("{v}/api/v1/model/sensor_template"), "传感器模板", h, q => j(model::overrides::sensor_template(&q.q_str("type", "lidar2d")).map_err(|e| err(400, e))?));
     R!("GET", format!("{v}/api/v1/model/urdf"), "URDF", h, q => Ok(Response::raw(h.models.urdf(&q.params["mid"], Some(&q.params["ver"]))?.into_bytes(), "application/xml")));
+    R!("GET", format!("{v}/api/v1/model/assembly"), "装配模型 (连杆/关节/执行机构/cmodel 缺失项)", h, q => j(h.models.assembly(&q.params["mid"], Some(&q.params["ver"]))?));
     R!("GET", format!("{v}/api/v1/model"), "生效参数", h, q => j(h.models.spec(&q.params["mid"], Some(&q.params["ver"]))?));
     R!("GET", format!("{v}/api/v1/sensors/cameras"), "离线编辑无相机画面", h, q => j(json!({"cameras": [], "offline": true})));
 

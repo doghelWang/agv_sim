@@ -3,7 +3,7 @@
 //                     暂停后: 扰动元素注入库 (托盘/货架/纸箱/人员，多种落点)；手动控制抽屉
 // ============================================================================
 import { $, $$, esc, fmt, toast, guard, icons, TAG_STYLE, http } from './core.js';
-import { W, iget, ipost, idel, needLock } from './wbcore.js';
+import { W, iget, ipost, iput, idel, needLock } from './wbcore.js';
 import { Viewer3D, nodeName } from './viz3d.js';
 import { MapCanvas } from './viz2d.js';
 import { loadFlows } from './wb_taskflow.js';
@@ -120,7 +120,39 @@ export function tab32(el) {
       <div class="text-[10px] text-slate-400">托盘/货箱请从右侧「注入库」放置 (车前 2.5 m)；叉车上它们是可叉取的货物，不是障碍物。</div>
     </div>`;
   }
+  // 上装执行机构 (cmodel → assembly 推断): 顶升 / 辊筒 / 牵引 / 前移门架
+  function actHTML(t) {
+    const a = t.actuator; if (!a || !a.type || a.type === 'none') return '';
+    const bt = (act, txt, extra = '') => `<button data-ac="${act}" ${extra} class="px-2 py-0.5 rounded border text-[11px] border-slate-200 bg-slate-50 hover:bg-sky-50">${txt}</button>`;
+    let st = '', btns = '';
+    if (a.type === 'jacking') {
+      st = `顶升 ${fmt((a.height_m || 0) * 1000, 0)}/${fmt((a.stroke_m || 0) * 1000, 0)} mm · 托盘 ${fmt(a.tray_deg || 0, 0)}° · ${a.loaded ? '载 ' + esc(a.load_id || '') : '空载'}${a.state === 'BLOCKED' ? ' · <b class="text-rose-600">偏心拒顶</b>' : ''}`;
+      btns = bt('up', '▲ 顶升') + bt('down', '▼ 下降') + bt('stop', '■') + bt('rotate', '托盘 +90°', 'data-rot="90"') + bt('rotate', '托盘 -90°', 'data-rot="-90"');
+    } else if (a.type === 'roller') {
+      st = `辊筒 ${esc(a.state || '')} · ${fmt(a.surface_speed_mps || 0, 2)} m/s · ${a.loaded ? '载 ' + esc(a.load_id || '') : '空载'}`;
+      btns = bt('load', '◀ 左侧接货', 'data-side="left"') + bt('load', '右侧接货 ▶', 'data-side="right"') + bt('unload', '◀ 左侧送货', 'data-side="left"') + bt('unload', '右侧送货 ▶', 'data-side="right"') + bt('stop', '■');
+    } else if (a.type === 'tugger') {
+      st = `挂钩 ${a.locked ? '锁定' : '打开'} · ${a.loaded ? '牵引 ' + esc(a.load_id || '') + ' · 折叠角 ' + fmt(a.articulation_deg || 0, 0) + '°' : '无料车'}${a.jackknife ? ' · <b class="text-rose-600">折叠超限</b>' : ''}`;
+      btns = bt('lock', '落钩挂接') + bt('release', '抬钩脱开');
+    } else if (a.reach_max_m > 0) {
+      st = `门架前移 ${fmt((a.reach_m || 0) * 1000, 0)}/${fmt(a.reach_max_m * 1000, 0)} mm`;
+      btns = bt('reach_out', '前移 ▶') + bt('reach_in', '◀ 缩回');
+    } else return '';
+    return `<div class="mt-2 pt-2 border-t border-slate-100 space-y-1.5">
+      <div class="flex justify-between"><span class="text-slate-500">${esc(a.label || a.type)}:</span></div>
+      <div class="text-[11px] font-semibold text-sky-700">${st}</div>
+      <div class="flex gap-1 flex-wrap">${btns}</div></div>`;
+  }
   $('[data-hud]', el).addEventListener('click', guard(async (ev) => {
+    const ac = ev.target.closest('[data-ac]');
+    if (ac) {
+      if (!needLock()) return;
+      const body = { action: ac.dataset.ac };
+      if (ac.dataset.side) body.side = ac.dataset.side;
+      if (ac.dataset.rot) body.rotate_deg = +ac.dataset.rot;
+      await iput('/sim/api/v1/actuator', body);
+      return;
+    }
     const b = ev.target.closest('[data-fk]'); if (!b) return;
     if (!needLock()) return;
     const k = b.dataset.fk;
@@ -146,6 +178,7 @@ export function tab32(el) {
       <div class="kv"><span>激光点云:</span><span class="text-emerald-600">${pts.toLocaleString()} pts</span></div>
       <div class="kv"><span>最近障碍物:</span><span class="${ob.zone === 'stop' ? 'text-rose-600' : ob.zone === 'slow' ? 'text-amber-600' : ''}">${d == null ? '> 量程 (安全)' : fmt(d) + ' m'}${ob.zone === 'clear' || !ob.zone ? ' (安全)' : ''}</span></div>
       ${forkHTML(t)}
+      ${actHTML(t)}
       ${tf.status === 'running' ? `<div class="h-1.5 bg-slate-100 rounded mt-2"><div class="h-1.5 bg-blue-600 rounded" style="width:${((i + (tf.step_status === 'done' ? 1 : .5)) / Math.max(1, steps.length) * 100).toFixed(0)}%"></div></div>` : ''}`;
     const running = tf.status === 'running';
     const tag = paused ? ['仿真已暂停', 'bg-amber-50 text-amber-700 border-amber-200', 'bg-amber-500'] : running ? ['仿真进行中', 'bg-emerald-50 text-emerald-700 border-emerald-200', 'bg-emerald-500 pulse-dot'] : ['待命中', 'bg-slate-100 text-slate-600 border-slate-200', 'bg-slate-400'];

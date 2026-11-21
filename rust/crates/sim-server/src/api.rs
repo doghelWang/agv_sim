@@ -225,12 +225,35 @@ pub fn build_api(svc: Arc<Service>, port: u16) -> Server {
     });
     // ---- fork / cargo
     R!("GET", "/api/v1/fork", "货叉状态 (高度/速度/载货/受阻)", |s: &Arc<Service>, _q: &Request| ok(s.fork()));
-    R!("PUT", "/api/v1/fork", "货叉控制 {height: m} 或 {action: up|down|stop|top|bottom}", |s: &Arc<Service>, q: &Request| {
+    R!("PUT", "/api/v1/fork", "货叉控制 {height: m, reach?: m} 或 {action: up|down|stop|top|bottom|reach_out|reach_in}", |s: &Arc<Service>, q: &Request| {
         let b = q.json()?;
+        if b.get("reach").is_some() || matches!(b.get("action").and_then(|a| a.as_str()), Some("reach_out" | "reach_in")) { return ok(s.actuator_cmd(&b).map_err(|e| ApiError::new(400, e))?); }
         ok(s.fork_cmd(opt_f(&b, "height"), b.get("action").and_then(|a| a.as_str())).map_err(|e| ApiError::new(400, e))?)
     });
+    R!("GET", "/api/v1/actuator", "上装执行机构状态 (顶升/货叉/辊筒/牵引, 统一视图)", |s: &Arc<Service>, _q: &Request| ok(s.actuator()));
+    R!("PUT", "/api/v1/actuator", "上装执行机构控制: 顶升 {action: up|down|stop, height?, tray_deg?, rotate_deg?, follow?} / 货叉 {action: up|down|top|bottom|reach_out|reach_in, height?, reach?} / 辊筒 {action: load|unload|forward|reverse|stop, side: left|right} / 牵引 {action: lock|release}", |s: &Arc<Service>, q: &Request| {
+        let b = q.json()?;
+        ok(s.actuator_cmd(&b).map_err(|e| ApiError::new(400, e))?)
+    });
+    R!("GET", "/api/v1/model/assembly", "机器人装配模型 (cmodel → 连杆/关节/外观基本体/执行机构参数/缺失项)", |s: &Arc<Service>, _q: &Request| ok(s.assembly()));
+    R!("GET", "/api/v1/model/missing", "cmodel 缺失/推断项清单 (URDF/仿真所用的补全值)", |s: &Arc<Service>, _q: &Request| {
+        let a = s.assembly();
+        ok(json!({"archetype": a["archetype"], "archetype_source": a["archetype_source"], "missing": a["missing"]}))
+    });
+    R!("GET", "/api/v1/model/mjcf", "MuJoCo MJCF (当前场景 + 铰接机器人)", |s: &Arc<Service>, _q: &Request| -> HResult { Ok(Response::raw(s.mjcf().into_bytes(), "application/xml; charset=utf-8")) });
+    R!("GET", "/api/v1/world/props", "场景布景道具 (立柱/充电桩/货架/输送线/护栏)", |s: &Arc<Service>, _q: &Request| ok(s.props()));
+    R!("PUT", "/api/v1/world/dressing", "重新布景 {mode: auto|demo|none} (auto: 道具与货物避开路网; demo: 另在每个站点放置待取货物)", |s: &Arc<Service>, q: &Request| {
+        let b = q.json()?;
+        ok(s.set_dressing(b.get("mode").and_then(|m| m.as_str()).unwrap_or("auto")).map_err(|e| ApiError::new(400, e))?)
+    });
+    R!("GET", "/api/v1/world/pcd", "场景点云地图 PCD v0.7 ?res=0.05&floor=0&ceiling=0&z_max=6&format=binary|ascii", |s: &Arc<Service>, q: &Request| -> HResult {
+        let o = sim_core::pcd::PcdOpts { res: q.q_f64("res", 0.05)?, floor: q.q_bool("floor", false), ceiling: q.q_bool("ceiling", false), z_max: q.q_f64("z_max", 6.0)?,
+            max_points: 4_000_000, binary: q.q_str("format", "binary") != "ascii" };
+        let (body, n) = s.pcd(&o);
+        Ok(Response::binary(body, vec![("X-Points".into(), n.to_string()), ("Content-Disposition".into(), "attachment; filename=\"scene_map.pcd\"".into())], "application/octet-stream"))
+    });
     R!("GET", "/api/v1/world/cargo", "货物列表 (托盘/箱子)", |s: &Arc<Service>, _q: &Request| ok(s.cargo_list()));
-    R!("POST", "/api/v1/world/cargo", "新增货物 {kind: pallet|box, id, x, y, yaw, z0?, size?: [长,宽,高]}", |s: &Arc<Service>, q: &Request| {
+    R!("POST", "/api/v1/world/cargo", "新增货物 {kind: pallet|box|tote|rack|cart, id, x, y, yaw, z0?, size?: [长,宽,高]}", |s: &Arc<Service>, q: &Request| {
         let b = q.json()?;
         ok(s.cargo_add(&b).map_err(|e| ApiError::new(400, e))?)
     });

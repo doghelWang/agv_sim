@@ -8,7 +8,7 @@ use std::sync::Arc;
 fn q(v: f64) -> String { format!("{:.5}", v) }
 
 #[derive(Clone, Debug)]
-pub struct RobotBody { pub footprint: Vec<[f64; 2]>, pub height: f64, pub mass: f64, pub clearance: f64 }
+pub struct RobotBody { pub footprint: Vec<[f64; 2]>, pub height: f64, pub mass: f64, pub clearance: f64, pub assembly: Value }
 
 impl RobotBody {
     pub fn from_spec(spec: &Value) -> RobotBody {
@@ -16,7 +16,7 @@ impl RobotBody {
         let footprint: Vec<[f64; 2]> = ch["footprint"].as_array().map(|a| a.iter().map(|p| [p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0)]).collect()).unwrap_or_default();
         let r_min = spec.get("wheels").and_then(|w| w.as_array()).map(|ws| ws.iter().map(|w| w.get("radius_m").and_then(|r| r.as_f64()).unwrap_or(0.1)).fold(f64::INFINITY, f64::min)).filter(|v| v.is_finite()).unwrap_or(0.1);
         let mass = ch.get("mass_kg").and_then(|m| m.as_f64()).filter(|m| *m != 0.0).unwrap_or(200.0);
-        RobotBody { footprint, height: ch.get("height_m").and_then(|h| h.as_f64()).unwrap_or(1.0), mass, clearance: (r_min * 0.5).max(0.02) }
+        RobotBody { footprint, height: ch.get("height_m").and_then(|h| h.as_f64()).unwrap_or(1.0), mass, clearance: (r_min * 0.5).max(0.02), assembly: crate::assembly::build(spec) }
     }
 }
 
@@ -44,15 +44,15 @@ pub fn build_mjcf(world: &World, robot: &RobotBody, dt: f64, decor: &Decor) -> S
     }
     for (i, o) in world.obstacles.iter().enumerate() {
         let gf = |k: &str, d: f64| o.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
-        let z = o.get("z").and_then(|v| v.as_f64()).or_else(|| o.get("height").and_then(|v| v.as_f64())).unwrap_or(1.0);
-        let typ = o.get("type").and_then(|t| t.as_str());
-        let rgb = obstacle_color(typ);
-        let (w, h) = (gf("w", 0.8), gf("h", 0.8));
-        let z0 = gf("z0", 0.0);
-        let shape = if typ == Some("person") { format!("type=\"cylinder\" size=\"{} {}\"", q(w.max(h) / 2.0), q(z / 2.0)) }
-            else { format!("type=\"box\" size=\"{} {} {}\"", q(w / 2.0), q(h / 2.0), q(z / 2.0)) };
-        g.push(format!("<body name=\"ob{i}\" mocap=\"true\" pos=\"{} {} {}\" euler=\"0 0 {}\"><geom name=\"o{i}\" {shape} pos=\"0 0 {}\" rgba=\"{} {} {} 1\" group=\"0\"{}/></body>",
-            q(gf("x", 0.0)), q(gf("y", 0.0)), q(z0), q(gf("yaw", 0.0)), q(z / 2.0), rgb[0], rgb[1], rgb[2], if o.get("carried").and_then(|v| v.as_bool()).unwrap_or(false) { " contype=\"0\" conaffinity=\"0\"" } else { "" }));
+        let off = if o.get("carried").and_then(|v| v.as_bool()).unwrap_or(false) { " contype=\"0\" conaffinity=\"0\"" } else { "" };
+        let mut geoms = String::new();
+        for (k, p) in obstacle_parts(o).iter().enumerate() {
+            let nm = if k == 0 { format!("o{i}") } else { format!("o{i}_{k}") };
+            let quat = part_quat(p);
+            let shape = if p.cyl { format!("type=\"cylinder\" size=\"{} {}\"", q(p.half[0]), q(p.half[2])) } else { format!("type=\"box\" size=\"{} {} {}\"", q(p.half[0]), q(p.half[1]), q(p.half[2])) };
+            geoms += &format!("<geom name=\"{nm}\" {shape} pos=\"{} {} {}\" quat=\"{}\" rgba=\"{} {} {} 1\" group=\"0\"{off}/>", q(p.c[0]), q(p.c[1]), q(p.c[2]), quat, p.rgb[0], p.rgb[1], p.rgb[2]);
+        }
+        g.push(format!("<body name=\"ob{i}\" mocap=\"true\" pos=\"{} {} {}\" euler=\"0 0 {}\">{geoms}</body>", q(gf("x", 0.0)), q(gf("y", 0.0)), q(gf("z0", 0.0)), q(gf("yaw", 0.0))));
     }
     for (i, s) in decor.stations.iter().enumerate() {
         g.push(format!("<geom name=\"st{i}\" type=\"cylinder\" pos=\"{} {} 0.0005\" size=\"0.35 0.0005\" rgba=\"0.10 0.70 0.35 1\" contype=\"0\" conaffinity=\"0\" group=\"2\"/>", q(s[0]), q(s[1])));
@@ -75,16 +75,18 @@ pub fn build_mjcf(world: &World, robot: &RobotBody, dt: f64, decor: &Decor) -> S
     let (bx, by) = ((xmax + xmin) / 2.0, (ymax + ymin) / 2.0);
     let (hx, hy) = ((xmax - xmin) / 2.0, (ymax - ymin) / 2.0);
     let (hh, cl, mass) = (robot.height, robot.clearance, robot.mass);
-    let base_h = if hh > 0.6 { hh.min(0.35) } else { hh };
+    // collision box spans [clearance, height] (height_m is measured from the floor)
+    let base_h = (if hh > 0.6 { hh.min(0.35) } else { hh } - cl).max(0.02);
     let izz = mass * (4.0 * hx * hx + 4.0 * hy * hy) / 12.0;
     let (kv_lin, kv_ang, f_lin) = (mass * 40.0, izz * 40.0, mass * 4.0);
-    let mut robot_xml = format!("<body name=\"agv\" pos=\"0 0 0\"><joint name=\"jx\" type=\"slide\" axis=\"1 0 0\" damping=\"0\"/><joint name=\"jy\" type=\"slide\" axis=\"0 1 0\" damping=\"0\"/><joint name=\"jyaw\" type=\"hinge\" axis=\"0 0 1\" damping=\"0\"/><geom name=\"agv_base\" type=\"box\" pos=\"{} {} {}\" size=\"{} {} {}\" mass=\"{}\" rgba=\"0.95 0.55 0.1 1\" group=\"1\" condim=\"3\" friction=\"0.4\"/>",
+    let mut robot_xml = format!("<body name=\"agv\" pos=\"0 0 0\"><joint name=\"jx\" type=\"slide\" axis=\"1 0 0\" damping=\"0\"/><joint name=\"jy\" type=\"slide\" axis=\"0 1 0\" damping=\"0\"/><joint name=\"jyaw\" type=\"hinge\" axis=\"0 0 1\" damping=\"0\"/><geom name=\"agv_base\" type=\"box\" pos=\"{} {} {}\" size=\"{} {} {}\" mass=\"{}\" rgba=\"0.95 0.55 0.1 0.15\" group=\"3\" condim=\"3\" friction=\"0.4\"/>",
         q(bx), q(by), q(cl + base_h / 2.0), q(hx), q(hy), q(base_h / 2.0), q(mass));
     if hh - base_h - cl > 0.05 {
         let up = hh - base_h - cl;
-        robot_xml += &format!("<geom name=\"agv_upper\" type=\"box\" pos=\"{} {} {}\" size=\"{} {} {}\" mass=\"0.001\" rgba=\"0.85 0.85 0.88 0.6\" group=\"1\"/>",
+        robot_xml += &format!("<geom name=\"agv_upper\" type=\"box\" pos=\"{} {} {}\" size=\"{} {} {}\" mass=\"0.001\" rgba=\"0.85 0.85 0.88 0.1\" group=\"3\"/>",
             q(bx), q(by), q(cl + base_h + up / 2.0), q(hx), q(hy), q(up / 2.0));
     }
+    robot_xml += &assembly_bodies(&robot.assembly, "base_link");
     robot_xml += "</body>";
     format!("<mujoco model=\"agv_world\">
   <compiler angle=\"radian\"/>
@@ -120,6 +122,8 @@ pub struct MjCtx {
     pub robot_body: i32,
     pub robot_geom: Vec<bool>,
     pub mocap: Vec<i32>, // per obstacle index -> mocap id (or -1)
+    pub ob_geoms: Vec<Vec<usize>>,
+    pub joint_adr: Vec<(String, usize, usize)>, // assembly joint -> (qpos adr, dof adr)
 }
 unsafe impl Send for MjCtx {}
 
@@ -152,7 +156,20 @@ impl MjCtx {
             let b = name(ms::mjtObj_mjOBJ_BODY as i32, &format!("ob{i}"));
             if b < 0 { -1 } else { unsafe { *(*m).body_mocapid.add(b as usize) } }
         }).collect();
-        Ok(MjCtx { lib, m, d, robot_body, robot_geom, mocap })
+        let ob_geoms: Vec<Vec<usize>> = (0..n_obstacles).map(|i| {
+            let b = name(ms::mjtObj_mjOBJ_BODY as i32, &format!("ob{i}"));
+            if b < 0 { return vec![]; }
+            (0..ngeom).filter(|&g| unsafe { *(*m).geom_bodyid.add(g) } == b).collect()
+        }).collect();
+        let njnt = unsafe { (*m).njnt } as usize;
+        let mut joint_adr = vec![];
+        for jid in 3..njnt {
+            let nm = unsafe { lib.mj_id2name(m, ms::mjtObj_mjOBJ_JOINT as i32, jid as i32) };
+            if nm.is_null() { continue; }
+            let s = unsafe { std::ffi::CStr::from_ptr(nm as *const _).to_string_lossy().to_string() };
+            joint_adr.push((s, unsafe { *(*m).jnt_qposadr.add(jid) } as usize, unsafe { *(*m).jnt_dofadr.add(jid) } as usize));
+        }
+        Ok(MjCtx { lib, m, d, robot_body, robot_geom, mocap, ob_geoms, joint_adr })
     }
 
     pub fn qpos(&self, i: usize) -> f64 { unsafe { *(*self.d).qpos.add(i) } }
@@ -172,11 +189,16 @@ impl MjCtx {
     }
 
     pub fn set_obstacle_collide(&mut self, idx: usize, on: bool) {
-        // geom "o{idx}" -> contype/conaffinity (runtime switch for carried cargo)
-        let c = CString::new(format!("o{idx}")).unwrap();
-        let g = unsafe { self.lib.mj_name2id(self.m, ms::mjtObj_mjOBJ_GEOM as i32, c.as_ptr() as *const _) };
-        if g < 0 { return; }
-        unsafe { *(*self.m).geom_contype.add(g as usize) = on as i32; *(*self.m).geom_conaffinity.add(g as usize) = on as i32; }
+        // all geoms of mocap body "ob{idx}" -> contype/conaffinity (runtime switch for carried cargo)
+        let Some(gs) = self.ob_geoms.get(idx) else { return };
+        for &g in gs { unsafe { *(*self.m).geom_contype.add(g) = on as i32; *(*self.m).geom_conaffinity.add(g) = on as i32; } }
+    }
+
+    /// write articulated (visual) joint positions; velocities zeroed so the integrator keeps them
+    pub fn set_joints(&mut self, vals: &[(String, f64)]) {
+        for (n, v) in vals {
+            if let Some((_, qa, da)) = self.joint_adr.iter().find(|(k, _, _)| k == n) { let (qa, da) = (*qa, *da); self.set_qpos(qa, *v); self.set_qvel(da, 0.0); }
+        }
     }
 
     pub fn move_obstacle(&mut self, idx: usize, x: f64, y: f64, yaw: f64) { self.move_obstacle_z(idx, x, y, yaw, 0.0) }
@@ -233,4 +255,71 @@ impl MjCtx {
         }
         for i in 0..n { if gid[i] < 0 || dist[i] < 0.0 { dist[i] = f64::INFINITY; } }
     }
+}
+
+/// quaternion (w x y z) of a part in its obstacle frame
+fn part_quat(p: &Part) -> String {
+    let (cz, sz) = ((p.yaw / 2.0).cos(), (p.yaw / 2.0).sin());
+    if p.cyl && p.axis_y {
+        // qz(yaw) * qx(90deg)
+        let (cx, sx) = ((std::f64::consts::FRAC_PI_4).cos(), (std::f64::consts::FRAC_PI_4).sin());
+        format!("{} {} {} {}", q(cz * cx), q(cz * sx), q(sz * sx), q(sz * cx))
+    } else { format!("{} 0 0 {}", q(cz), q(sz)) }
+}
+
+fn hexrgb(c: &str) -> String {
+    let h = c.trim_start_matches('#');
+    let v = |i: usize| u8::from_str_radix(h.get(i..i + 2).unwrap_or("80"), 16).unwrap_or(128) as f64 / 255.0;
+    format!("{:.3} {:.3} {:.3}", v(0), v(2), v(4))
+}
+
+fn vis_geom(v: &Value, name: &str) -> String {
+    let a = |k: &str| v.get(k).and_then(|x| x.as_array()).map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect::<Vec<_>>()).unwrap_or(vec![0.0; 3]);
+    let (xyz, rpy) = (a("xyz"), a("rpy"));
+    let op = v.get("opacity").and_then(|o| o.as_f64()).unwrap_or(1.0);
+    let rgba = format!("{} {}", hexrgb(v.get("color").and_then(|c| c.as_str()).unwrap_or("#888888")), op);
+    let pos_ok = |x: f64| x.is_finite() && x > 1e-4;
+    let ok = match v.get("shape").and_then(|s| s.as_str()).unwrap_or("box") {
+        "cylinder" => pos_ok(v["radius"].as_f64().unwrap_or(0.0)) && pos_ok(v["length"].as_f64().unwrap_or(0.0)),
+        "sphere" => pos_ok(v["radius"].as_f64().unwrap_or(0.0)),
+        _ => a("size").iter().all(|x| pos_ok(*x)),
+    };
+    if !ok { return String::new(); }
+    let shape = match v.get("shape").and_then(|s| s.as_str()).unwrap_or("box") {
+        "cylinder" => format!("type=\"cylinder\" size=\"{} {}\"", q(v["radius"].as_f64().unwrap_or(0.05)), q(v["length"].as_f64().unwrap_or(0.05) / 2.0)),
+        "sphere" => format!("type=\"sphere\" size=\"{}\"", q(v["radius"].as_f64().unwrap_or(0.05))),
+        _ => { let sz = a("size"); format!("type=\"box\" size=\"{} {} {}\"", q(sz[0] / 2.0), q(sz[1] / 2.0), q(sz[2] / 2.0)) }
+    };
+    format!("<geom name=\"{name}\" {shape} pos=\"{} {} {}\" euler=\"{} {} {}\" rgba=\"{rgba}\" contype=\"0\" conaffinity=\"0\" mass=\"0.001\" group=\"1\"/>",
+        q(xyz[0]), q(xyz[1]), q(xyz[2]), q(rpy[0]), q(rpy[1]), q(rpy[2]))
+}
+
+/// Nested MJCF bodies for the assembly links below `parent` (base_link visuals go straight into the `agv` body).
+/// Actuator / wheel joints become hinge/slide joints; the simulation writes their qpos kinematically every step.
+pub fn assembly_bodies(asm: &Value, parent: &str) -> String {
+    let links = asm["links"].as_array().cloned().unwrap_or_default();
+    let mut out = String::new();
+    for l in &links {
+        let name = l["name"].as_str().unwrap_or("");
+        let par = l.get("parent").and_then(|p| p.as_str()).unwrap_or("");
+        if parent == "base_link" && name == "base_link" {
+            for (k, v) in l["visuals"].as_array().into_iter().flatten().enumerate() { out += &vis_geom(v, &format!("base_link_v{k}")); }
+            continue;
+        }
+        if par != parent { continue; }
+        let j = &l["joint"];
+        let a = |k: &str| j.get(k).and_then(|x| x.as_array()).map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect::<Vec<_>>()).unwrap_or(vec![0.0; 3]);
+        let (xyz, rpy, axis) = (a("xyz"), a("rpy"), a("axis"));
+        out += &format!("<body name=\"{name}\" pos=\"{} {} {}\" euler=\"{} {} {}\">", q(xyz[0]), q(xyz[1]), q(xyz[2]), q(rpy[0]), q(rpy[1]), q(rpy[2]));
+        let jt = j["type"].as_str().unwrap_or("fixed");
+        if jt != "fixed" {
+            let mj_t = if jt == "prismatic" { "slide" } else { "hinge" };
+            let rng = match (j.get("lower").and_then(|v| v.as_f64()), j.get("upper").and_then(|v| v.as_f64())) { (Some(lo), Some(hi)) if jt != "continuous" => format!(" range=\"{} {}\" limited=\"true\"", q(lo), q(hi)), _ => String::new() };
+            out += &format!("<joint name=\"{}\" type=\"{mj_t}\" axis=\"{} {} {}\" damping=\"0\" armature=\"0.01\"{rng}/>", j["name"].as_str().unwrap_or(""), q(axis[0]), q(axis[1]), q(axis[2]));
+        }
+        for (k, v) in l["visuals"].as_array().into_iter().flatten().enumerate() { out += &vis_geom(v, &format!("{name}_v{k}")); }
+        out += &assembly_bodies(asm, name);
+        out += "</body>";
+    }
+    out
 }

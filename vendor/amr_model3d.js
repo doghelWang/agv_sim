@@ -81,6 +81,10 @@
       const clr = Math.max(0.02, rmin * 0.5);
       const baseH = H > 0.6 ? Math.min(0.35, H) : H;
 
+      // cmodel → RobotAssembly: articulated body (chassis, wheels/casters, actuator mechanism) driven by joint_states
+      st.asm = (spec.assembly && spec.assembly.links && window.AMRAssembly) ? window.AMRAssembly.build(group, spec.assembly) : null;
+      const useAsm = !!st.asm;
+      if (!useAsm) {
       // 底盘 (半透明, 可看到内部轮组)
       const chassisMat = mat(0xf59e0b, { transparent: true, opacity: 0.55 });
       const base = new THREE.Mesh(new THREE.BoxGeometry(L, W, baseH), chassisMat);
@@ -106,6 +110,7 @@
         group.add(lb); st.labels.push(lb);
       }
 
+      }
       // 运动中心 (base_link 原点) + 车头方向
       const mc = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.02, 24), new THREE.MeshBasicMaterial({ color: 0x111827 }));
       mc.rotation.x = Math.PI / 2; mc.position.set(0, 0, 0.01);
@@ -117,7 +122,7 @@
       group.add(lmc); st.labels.push(lmc);
 
       // 轮组
-      wheels.forEach(w => {
+      (useAsm ? [] : wheels).forEach(w => {
         const r = w.radius_m || 0.1, wid = w.width_m || Math.max(0.04, r * 0.6);
         const colors = { steer: 0xdc2626, drive: 0x1f2937, fixed: 0x6b7280, caster: 0xcbd5e1 };
         if (w.kind === 'caster') {
@@ -297,13 +302,22 @@
         st.env.add(a);
         const lb = label(s.name, s.color || '#6366f1', 0.22); lb.position.set(s.x, s.y, 0.6); st.env.add(lb); st.envLabels.push(lb);
       });
+      // 仓储布景道具 (立柱/充电桩/货架立柱横梁/输送线/护栏) — 与仿真激光/相机看到的几何一致
+      if (window.AMRAssembly) (meta.props || []).forEach(o => { const m = window.AMRAssembly.prop(o); if (m) st.env.add(m); });
       // 拓扑路网 + 地面二维码
       if (topo) {
         const pos = [];
         (topo.edges || []).forEach(e => { pos.push(e.p1.x, e.p1.y, 0.01, e.p2.x, e.p2.y, 0.01); });
         const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
         st.env.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.6 })));
-        Object.values(topo.nodes || {}).forEach(n => {
+        const qrs = (meta.qr_codes || []);
+        if (qrs.length && window.AMRAssembly) {
+          // real QR symbols (same bitmaps the simulated code readers image)
+          qrs.forEach(c => {
+            const q = new THREE.Mesh(new THREE.PlaneGeometry(c.size, c.size), new THREE.MeshBasicMaterial({ map: window.AMRAssembly.qrTexture(c) }));
+            q.position.set(c.x, c.y, 0.004); q.rotation.z = c.yaw || 0; st.env.add(q);
+          });
+        } else Object.values(topo.nodes || {}).forEach(n => {
           const q = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), new THREE.MeshBasicMaterial({ color: 0x111827 }));
           q.position.set(n.x, n.y, 0.006); st.env.add(q);
         });
@@ -326,7 +340,7 @@
       }
       const meta = tel.scenario_metadata;
       if (meta && tel.topo_graph) {
-        const es = meta.id + ':' + (meta.walls || []).length;
+        const es = meta.id + ':' + (meta.walls || []).length + ':' + (meta.qr_codes || []).length + ':' + (meta.props || []).length + ':' + (meta.dressing || '');
         if (es !== st.envSig) { st.envSig = es; buildEnv(c.scene, meta, tel.topo_graph); }
       }
       if (st.env) st.env.visible = st.showEnv;
@@ -354,6 +368,7 @@
           const dj = idx[n + '_drive_joint'] !== undefined ? n + '_drive_joint' : n + '_joint';
           if (idx[dj] !== undefined) j.spin.rotation.y = idx[dj] + vel[dj] * age;             // 轮转角按转速外推
         });
+        if (st.asm) window.AMRAssembly.apply(st.asm.joints, js, age, k);
       }
 
       // 每个物理激光的点云 (真实安装高度)

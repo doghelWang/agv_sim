@@ -149,7 +149,8 @@ impl Gateway {
                     if changed { self.apply_model(m); }
                 }
                 let w = safe(&self.sim, "GET", "/api/v1/world", None)?;
-                let newworld = { let g = self.lock(); w.get("id") != g.world.get("id") || !truthy(&g.world) };
+                let plen = |v: &Value| v.get("props").and_then(|p| p.as_array()).map(|a| a.len()).unwrap_or(0);
+                let newworld = { let g = self.lock(); w.get("id") != g.world.get("id") || !truthy(&g.world) || w.get("dressing") != g.world.get("dressing") || plen(&w) != plen(&g.world) };
                 if newworld { self.apply_world(&w); }
                 {
                     let mut g = self.lock();
@@ -205,7 +206,7 @@ impl Gateway {
             "lidars": lidars.iter().map(|l| pick(l, &["name", "model", "x", "y", "z", "yaw", "inverted", "fov_deg", "max_range"])).collect::<Vec<_>>(),
             "cameras": sg("cameras", json!([])), "warnings": sg("warnings", json!([])), "assumptions": sg("assumptions", json!([])),
             "chassis": pick(&ch, &["type", "cmodel_type", "cmodel_name", "length_m", "width_m", "height_m", "head_offset_m", "tail_offset_m", "left_offset_m", "right_offset_m", "max_speed_mps", "max_accel_mps2", "max_decel_mps2", "max_ang_speed_radps", "mass_kg"]),
-            "imu": sg("imu", Value::Null), "battery": sg("battery", Value::Null), "io": sg("io", Value::Null), "other_actuators": sg("other_actuators", json!([])),
+            "imu": sg("imu", Value::Null), "battery": sg("battery", Value::Null), "io": sg("io", Value::Null), "other_actuators": sg("other_actuators", json!([])), "assembly": sg("assembly", Value::Null),
             "lidars_full": lidars.iter().map(|l| pick(l, &["name", "model", "vendor_model", "type", "x", "y", "z", "roll", "pitch", "yaw", "inverted", "fov_deg", "min_range", "max_range", "resolution_deg", "freq_hz", "spec_source", "vfov_min_deg", "vfov_max_deg", "point_rate", "topic", "lines", "scan_pattern"])).collect::<Vec<_>>()});
         g.telemetry.insert("config".into(), spec.clone());
         g.telemetry.insert("robot_spec".into(), rs);
@@ -243,7 +244,7 @@ impl Gateway {
                 ("joint_states", json!({"names": joints.get("names").cloned().unwrap_or(json!([])), "positions": rnd_arr(joints.get("position"), 4), "velocities": rnd_arr(joints.get("velocity"), 4)})),
                 ("sim_status", sim.clone()), ("actuators", sim.get("kinematics").cloned().unwrap_or(Value::Null)), ("timestamp", json!(now())), ("last_update", json!(now())),
                 ("dynamic_obstacles", dyn_obs.clone()), ("obstacles", dyn_obs), ("photoelectric", snap.get("photoelectric").cloned().unwrap_or(json!([]))), ("cameras", snap.get("cameras").cloned().unwrap_or(json!([]))),
-                ("bumpers", snap.get("bumpers").cloned().unwrap_or(json!({}))), ("cargo", snap.get("cargo").cloned().unwrap_or(json!([]))), ("fork", snap.get("fork").cloned().unwrap_or(Value::Null))];
+                ("bumpers", snap.get("bumpers").cloned().unwrap_or(json!({}))), ("cargo", snap.get("cargo").cloned().unwrap_or(json!([]))), ("fork", snap.get("fork").cloned().unwrap_or(Value::Null)), ("actuator", snap.get("actuator").cloned().unwrap_or(Value::Null))];
             for (k, v) in upd { tel.insert(k.into(), v); }
             let mut sim_paused = st.get("paused").and_then(|p| p.as_bool()).unwrap_or(false);
             match g.pause_override {

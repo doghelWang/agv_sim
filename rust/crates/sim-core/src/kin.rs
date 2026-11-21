@@ -232,7 +232,20 @@ impl Chassis {
         let n_drv = self.wheels.iter().filter(|w| w.kind.driven()).count().max(1) as f64;
         let (mass, kt, rc, eff) = (self.lim.mass, self.kt, self.rolling_coeff, self.efficiency);
         for w in self.wheels.iter_mut() {
-            let heading = if w.kind == Kind::Steer { w.steer } else { 0.0 };
+            if w.kind == Kind::Caster {
+                // trailing caster: the swivel self-aligns with the velocity of its pivot (offset e = 0.35 r behind the pivot)
+                let (px, py) = (vx - wz * w.y, vy + wz * w.x);
+                let v = px.hypot(py);
+                if v > 1e-4 {
+                    let e = (0.35 * w.radius).max(0.01);
+                    let mut err = py.atan2(px) - w.steer;
+                    while err > PI { err -= 2.0 * PI; } while err < -PI { err += 2.0 * PI; }
+                    let d = (v / e * err.sin() * dt).clamp(-err.abs(), err.abs());
+                    w.steer += d;
+                    while w.steer > PI { w.steer -= 2.0 * PI; } while w.steer < -PI { w.steer += 2.0 * PI; }
+                }
+            }
+            let heading = if matches!(w.kind, Kind::Steer | Kind::Caster) { w.steer } else { 0.0 };
             if matches!(w.kind, Kind::Fixed | Kind::Caster) { w.speed = (vx - wz * w.y) * heading.cos() + (vy + wz * w.x) * heading.sin(); }
             let rad = w.radius.max(1e-3);
             w.angle += (w.speed / rad) * dt;
@@ -280,7 +293,10 @@ impl Chassis {
                     pos.push(w.steer); pos.push(w.angle); vel.push(0.0); vel.push(w.speed / r); eff.push(0.0); eff.push(w.torque_nm);
                 }
                 Kind::Drive | Kind::Fixed => { names.push(format!("{}_joint", w.name)); pos.push(w.angle); vel.push(w.speed / r); eff.push(w.torque_nm); }
-                Kind::Caster => {}
+                Kind::Caster => {
+                    names.push(format!("{}_swivel_joint", w.name)); names.push(format!("{}_wheel_joint", w.name));
+                    pos.push(w.steer); pos.push(w.angle); vel.push(0.0); vel.push(w.speed / r); eff.push(0.0); eff.push(0.0);
+                }
             }
         }
         (names, pos, vel, eff)

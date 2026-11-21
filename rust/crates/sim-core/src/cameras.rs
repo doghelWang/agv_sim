@@ -17,12 +17,17 @@ pub struct CamScene {
     pub tex_h: usize,
     pub tex_w: usize,
     pub tex_org: (f64, f64, f64),
+    /// per-gid surface material (procedural detail); empty = flat colours
+    pub mat: Vec<u8>,
+    /// high-resolution floor decals (QR codes)
+    pub decals: std::sync::Arc<crate::qr::DecalGrid>,
 }
 
 
-pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lanes: &[[f64; 4]], revision: u64, reuse_tex: Option<std::sync::Arc<Vec<f32>>>) -> CamScene {
+pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lanes: &[[f64; 4]], revision: u64, reuse_tex: Option<std::sync::Arc<Vec<f32>>>, decals: std::sync::Arc<crate::qr::DecalGrid>) -> CamScene {
     let mut prims: Vec<Prim> = vec![];
     let mut rgb: Vec<[f32; 3]> = vec![CAT_COLORS[0], CAT_COLORS[4]];
+    let mut mat: Vec<u8> = vec![MAT_PLAIN, MAT_PLAIN];
     for s in &world.static_segments {
         let (x0, y0, x1, y1, h) = (s[0], s[1], s[2], s[3], s[4]);
         let l = (x1 - x0).hypot(y1 - y0);
@@ -33,6 +38,7 @@ pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lane
         let r = rot_z((y1 - y0).atan2(x1 - x0));
         let gid = rgb.len() as f64;
         rgb.push(CAT_COLORS[cat_id(cat)]);
+        mat.push(if cat == "wall" { MAT_WALL } else { MAT_STEEL });
         let mut p = [0.0f64; 18];
         p[0] = (x0 + x1) / 2.0; p[1] = (y0 + y1) / 2.0; p[2] = h / 2.0;
         p[3..12].copy_from_slice(&r);
@@ -41,37 +47,79 @@ pub fn build_scene(world: &World, stations: &[[f64; 2]], tags: &[[f64; 2]], lane
         prims.push(p);
     }
     for o in &world.obstacles {
-        let g = |k: &str, d: f64| o.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
-        let z = o.get("z").and_then(|v| v.as_f64()).or_else(|| o.get("height").and_then(|v| v.as_f64())).unwrap_or(1.0);
-        let typ = o.get("type").and_then(|t| t.as_str());
-        let (w, h) = (g("w", 0.8), g("h", 0.8));
-        let gid = rgb.len() as f64;
-        rgb.push(obstacle_color(typ));
-        let mut p = [0.0f64; 18];
-        p[0] = g("x", 0.0); p[1] = g("y", 0.0); p[2] = g("z0", 0.0) + z / 2.0;
-        p[3..12].copy_from_slice(&rot_z(g("yaw", 0.0)));
-        if typ == Some("person") {
-            let r = w.max(h) / 2.0;
-            p[12] = r; p[13] = r; p[14] = z / 2.0; p[15] = 1.0; p[17] = r.hypot(z / 2.0) * 1.0001 + 1e-6;
-        } else {
-            p[12] = w / 2.0; p[13] = h / 2.0; p[14] = z / 2.0; p[15] = 0.0;
-            p[17] = ((w / 2.0).powi(2) + (h / 2.0).powi(2) + (z / 2.0).powi(2)).sqrt() * 1.0001 + 1e-6;
-        }
-        p[16] = gid;
-        prims.push(p);
+        prims.extend(obstacle_prims(o, &mut rgb, &mut mat));
     }
+    let b = world.bounds;
     match reuse_tex {
         Some(t) => {
-            let b = world.bounds;
             let (x0, y0) = (b[0] - 1.0, b[1] - 1.0);
             let w = ((b[2] - b[0] + 2.0) / 0.02).ceil() as usize;
             let h = ((b[3] - b[1] + 2.0) / 0.02).ceil() as usize;
-            CamScene { revision, prims, rgb, floor_gid: 0, ceil_gid: 1, tex: t, tex_h: h, tex_w: w, tex_org: (x0, y0, 0.02) }
+            CamScene { revision, prims, rgb, floor_gid: 0, ceil_gid: 1, tex: t, tex_h: h, tex_w: w, tex_org: (x0, y0, 0.02), mat, decals }
         }
         None => {
             let (tex, th, tw, org) = make_floor_texture(world, stations, tags, lanes);
-            CamScene { revision, prims, rgb, floor_gid: 0, ceil_gid: 1, tex: std::sync::Arc::new(tex), tex_h: th, tex_w: tw, tex_org: org }
+            CamScene { revision, prims, rgb, floor_gid: 0, ceil_gid: 1, tex: std::sync::Arc::new(tex), tex_h: th, tex_w: tw, tex_org: org, mat, decals }
         }
+    }
+}
+
+fn mat3(a: &[f64; 9], b: &[f64; 9]) -> [f64; 9] {
+    let mut r = [0.0; 9];
+    for i in 0..3 { for j in 0..3 { r[3 * i + j] = (0..3).map(|k| a[3 * i + k] * b[3 * k + j]).sum(); } }
+    r
+}
+
+/// ray-cast primitives of one obstacle (one per part); pushes colours/materials
+pub fn obstacle_prims(o: &serde_json::Map<String, Value>, rgb: &mut Vec<[f32; 3]>, mat: &mut Vec<u8>) -> Vec<Prim> {
+    let g = |k: &str, d: f64| o.get(k).and_then(|v| v.as_f64()).unwrap_or(d);
+    let (ox, oy, oz, yaw) = (g("x", 0.0), g("y", 0.0), g("z0", 0.0), g("yaw", 0.0));
+    let ro = rot_z(yaw);
+    let (s, c) = yaw.sin_cos();
+    let rx90 = [1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0];
+    let mut out = vec![];
+    for p in obstacle_parts(o) {
+        let gid = rgb.len() as f64;
+        rgb.push(p.rgb);
+        mat.push(p.mat);
+        let mut r = mat3(&ro, &rot_z(p.yaw));
+        if p.cyl && p.axis_y { r = mat3(&r, &rx90); }
+        let mut q = [0.0f64; 18];
+        q[0] = ox + c * p.c[0] - s * p.c[1]; q[1] = oy + s * p.c[0] + c * p.c[1]; q[2] = oz + p.c[2];
+        q[3..12].copy_from_slice(&r);
+        q[12..15].copy_from_slice(&p.half);
+        q[15] = if p.cyl { 1.0 } else { 0.0 };
+        q[16] = gid;
+        q[17] = (p.half[0].powi(2) + p.half[1].powi(2) + p.half[2].powi(2)).sqrt() * 1.0001 + 1e-6;
+        out.push(q);
+    }
+    out
+}
+
+/// procedural surface detail (multiplier / override colour) at a world hit point
+fn material_color(m: u8, base: [f32; 3], p: [f64; 3], n: [f64; 3]) -> [f32; 3] {
+    let fr = |v: f64| v - v.floor();
+    match m {
+        MAT_WALL => {
+            // painted wall: dark-grey dado (0-1.2 m) with a yellow/black safety band at the floor, panel joints every 1.2 m
+            if p[2] < 0.12 { let k = fr((p[0] + p[1] + p[2]) / 0.2); return if k < 0.5 { [0.95, 0.78, 0.1] } else { [0.08, 0.08, 0.08] }; }
+            if p[2] < 1.2 { return [0.55, 0.58, 0.62]; }
+            let along = if n[0].abs() > n[1].abs() { p[1] } else { p[0] };
+            if fr(along / 1.2) < 0.012 || fr(p[2] / 1.2) < 0.012 { return [base[0] * 0.8, base[1] * 0.8, base[2] * 0.8]; }
+            base
+        }
+        MAT_WOOD => { let k = 0.9 + 0.1 * ((p[0] * 37.0 + p[1] * 23.0).sin() * (p[2] * 90.0 + p[0] * 11.0).cos()) as f32; [base[0] * k, base[1] * k, base[2] * k] }
+        MAT_CARDBOARD => {
+            // packing tape across the top and a dark label
+            if n[2] > 0.7 && (fr(p[1] * 4.0) < 0.08) { return [0.85, 0.80, 0.70]; }
+            if n[2].abs() < 0.3 && fr(p[2] * 3.0) > 0.55 && fr(p[2] * 3.0) < 0.75 && fr((p[0] + p[1]) * 2.0) < 0.3 { return [0.95, 0.95, 0.95]; }
+            base
+        }
+        MAT_HAZARD => { let k = fr((p[0] + p[1] + p[2]) / 0.25); if k < 0.5 { [0.97, 0.78, 0.08] } else { [0.08, 0.08, 0.08] } }
+        MAT_STEEL => { let k = 0.92 + 0.08 * (fr(p[2] * 13.0) as f32); [base[0] * k, base[1] * k, base[2] * k] }
+        MAT_ROLLER => { let k = 0.85 + 0.15 * ((p[0] + p[1]) * 60.0).sin().abs() as f32; [base[0] * k, base[1] * k, base[2] * k] }
+        MAT_CONCRETE => { let k = 0.93 + 0.07 * ((p[0] * 7.1 + p[2] * 5.3).sin() * (p[1] * 6.7 + p[2] * 3.1).sin()) as f32; [base[0] * k, base[1] * k, base[2] * k] }
+        _ => base,
     }
 }
 
@@ -299,6 +347,11 @@ pub fn shade(scene: &CamScene, o: [f64; 3], dirs: &[f64], r: &CastResult, sigma:
                 let iy = (((py - y0) / res) as i64).clamp(0, scene.tex_h as i64 - 1) as usize;
                 let t = &scene.tex[3 * (iy * scene.tex_w + ix)..3 * (iy * scene.tex_w + ix) + 3];
                 base = [t[0], t[1], t[2]];
+                if let Some(dark) = scene.decals.sample(px, py) { base = if dark { [0.04, 0.04, 0.05] } else { [0.93, 0.93, 0.92] }; }
+            } else if g >= 0 && (g as usize) < scene.mat.len() && scene.mat[g as usize] != MAT_PLAIN {
+                let p = [o[0] + dirs[3 * i] * d, o[1] + dirs[3 * i + 1] * d, o[2] + dirs[3 * i + 2] * d];
+                let nn = match &r.nrm { Some(v) => [v[3 * i], v[3 * i + 1], v[3 * i + 2]], None => [0.0, 0.0, 1.0] };
+                base = material_color(scene.mat[g as usize], base, p, nn);
             }
             let (nx, ny, nz) = match &r.nrm { Some(v) => (v[3 * i], v[3 * i + 1], v[3 * i + 2]), None => (0.0, 0.0, 1.0) };
             let lam = (nx * l[0] + ny * l[1] + nz * l[2]).abs().min(1.0);
@@ -321,12 +374,13 @@ pub fn shade(scene: &CamScene, o: [f64; 3], dirs: &[f64], r: &CastResult, sigma:
 
 // ------------------------------------------------------------------ sensors
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CamKind { Camera, Stereo, Tof }
+pub enum CamKind { Camera, Stereo, Tof, CodeReader }
 
 fn library(kind: &str) -> Value {
     match kind {
         "camera" => json!({"model": "通用 USB RGB 相机", "width": 320, "height": 240, "hfov_deg": 70.0, "fps": 10.0, "range_max": 30.0, "pixel_noise": 2.0}),
         "stereo" => json!({"model": "Intel RealSense D435 (仿)", "width": 424, "height": 240, "hfov_deg": 87.0, "fps": 10.0, "baseline_m": 0.05, "range_min": 0.3, "range_max": 10.0, "subpixel_px": 0.08, "pixel_noise": 2.0}),
+        "codeReader" => json!({"model": "下视读码相机 (仿, 全局快门 + 环形补光)", "width": 320, "height": 240, "hfov_deg": 44.0, "fps": 10.0, "range_max": 2.0, "pixel_noise": 3.0}),
         "tof" => json!({"model": "PMD/Sunny 224×172 ToF (仿)", "width": 224, "height": 172, "hfov_deg": 62.0, "fps": 10.0, "range_min": 0.1, "range_max": 4.0, "noise_abs_m": 0.005, "noise_rel": 0.004}),
         _ => json!({}),
     }
@@ -362,10 +416,17 @@ fn cf(c: &Value, k: &str, d: f64) -> f64 { c.get(k).and_then(|v| v.as_f64()).unw
 pub fn build_camera(cfg: &Value) -> Option<Camera> {
     let t = cfg.get("type").and_then(|t| t.as_str())?;
     let t = if t == "depthCamera" { "tof" } else { t };
-    let kind = match t { "camera" => CamKind::Camera, "stereo" => CamKind::Stereo, "tof" => CamKind::Tof, _ => return None };
+    let kind = match t { "camera" => CamKind::Camera, "stereo" => CamKind::Stereo, "tof" => CamKind::Tof, "codeReader" => CamKind::CodeReader, _ => return None };
     let mut c = library(t);
     if let Some(o) = cfg.as_object() { for (k, v) in o { if !v.is_null() { c[k.as_str()] = v.clone(); } } }
     c["type"] = json!(t);
+    if kind == CamKind::CodeReader {
+        // reader looks straight down (cmodel orientation LENS_DOWN); cmodels often leave its height at 0 → mount just under the body
+        let up = c.get("orientation").and_then(|o| o.as_str()).map(|o| o.ends_with("UP")).unwrap_or(false);
+        c["pitch"] = json!(if up { -std::f64::consts::FRAC_PI_2 } else { std::f64::consts::FRAC_PI_2 });
+        if cf(&c, "z", 0.0) <= 0.02 { c["z"] = json!(0.1); }
+        c["roll"] = json!(0.0);
+    }
     let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("camera").to_string();
     let (w, h) = (cf(&c, "width", 640.0) as usize, cf(&c, "height", 480.0) as usize);
     let hfov = cf(&c, "hfov_deg", 70.0).to_radians();
@@ -392,9 +453,9 @@ pub fn build_camera(cfg: &Value) -> Option<Camera> {
 }
 
 impl Camera {
-    pub fn kind_name(&self) -> &'static str { match self.kind { CamKind::Camera => "camera", CamKind::Stereo => "stereo", CamKind::Tof => "tof" } }
+    pub fn kind_name(&self) -> &'static str { match self.kind { CamKind::Camera => "camera", CamKind::Stereo => "stereo", CamKind::Tof => "tof", CamKind::CodeReader => "codeReader" } }
     pub fn streams(&self) -> Vec<&'static str> {
-        match self.kind { CamKind::Camera => vec!["rgb"], CamKind::Stereo => vec!["left", "right", "depth"], CamKind::Tof => vec!["depth", "amplitude", "points"] }
+        match self.kind { CamKind::Camera | CamKind::CodeReader => vec!["rgb"], CamKind::Stereo => vec!["left", "right", "depth"], CamKind::Tof => vec!["depth", "amplitude", "points"] }
     }
     pub fn k(&self) -> [f64; 9] { [self.fx, 0.0, self.cx, 0.0, self.fy, self.cy, 0.0, 0.0, 1.0] }
     pub fn info(&self) -> Value {
@@ -443,6 +504,20 @@ impl Camera {
             CamKind::Camera => {
                 let (o, dw, r) = self.cast(scene, x, y, th, true, 0.0, threads);
                 let img = shade(scene, o, &dw, &r, pix_noise, Some(&mut self.rng));
+                CamFrames { streams: vec![("rgb".into(), Plane::Rgb(img))] }
+            }
+            CamKind::CodeReader => {
+                let (o, dw, r) = self.cast(scene, x, y, th, true, 0.0, threads);
+                let mut img = shade(scene, o, &dw, &r, pix_noise, Some(&mut self.rng));
+                // monochrome sensor with ring illumination: luminance + contrast stretch, vignetting
+                let (w2, h2) = (w as f64 / 2.0, h as f64 / 2.0);
+                for i in 0..n {
+                    let lum = 0.299 * img[3 * i] as f64 + 0.587 * img[3 * i + 1] as f64 + 0.114 * img[3 * i + 2] as f64;
+                    let (u, v) = ((i % w) as f64 - w2, (i / w) as f64 - h2);
+                    let vig = 1.0 - 0.25 * ((u * u + v * v) / (w2 * w2 + h2 * h2));
+                    let g = ((lum - 40.0) * 1.35 * vig).clamp(0.0, 255.0) as u8;
+                    img[3 * i] = g; img[3 * i + 1] = g; img[3 * i + 2] = g;
+                }
                 CamFrames { streams: vec![("rgb".into(), Plane::Rgb(img))] }
             }
             CamKind::Stereo => {

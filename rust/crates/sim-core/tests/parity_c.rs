@@ -56,6 +56,8 @@ fn kin_step_matches_c() {
                 maxd = maxd.max((a - b).abs());
             }
             for (c, w) in cw.iter().zip(&ch.wheels) {
+                // casters: the Rust kinematics now models swivel self-alignment (C kernel keeps them fixed at 0°) → not compared
+                if w.kind == sim_core::kin::Kind::Caster { continue; }
                 for (a, b) in [(c.steer, w.steer), (c.speed, w.speed), (c.angle, w.angle), (c.current_a, w.current_a), (c.torque_nm, w.torque_nm), (c.motor_rpm, w.motor_rpm)] {
                     maxd = maxd.max((a - b).abs());
                 }

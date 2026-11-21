@@ -2,6 +2,7 @@
 pub mod protection;
 pub mod overrides;
 pub mod urdf;
+pub use sim_core::assembly;
 pub mod limits;
 
 use serde_json::Value;

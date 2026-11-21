@@ -65,22 +65,24 @@ pub struct Fork {
     pub dirty_world: bool,
     last_pose: [f64; 3],
     last_good: Option<[f64; 3]>,
+    /// reach-truck mast travel along x (0 = retracted); `reach_max` 0 = no reach mechanism
+    pub reach: f64, pub reach_v: f64, pub reach_target: Option<f64>, pub reach_max: f64, pub reach_speed: f64, pub base_x: f64,
 }
 
-type Poly = [[f64; 2]; 4];
+pub(crate) type Poly = [[f64; 2]; 4];
 
-fn onum(o: &Map<String, Value>, k: &str, d: f64) -> f64 { o.get(k).and_then(|x| x.as_f64()).unwrap_or(d) }
-fn ostr<'a>(o: &'a Map<String, Value>, k: &str) -> &'a str { o.get(k).and_then(|x| x.as_str()).unwrap_or("") }
+pub(crate) fn onum(o: &Map<String, Value>, k: &str, d: f64) -> f64 { o.get(k).and_then(|x| x.as_f64()).unwrap_or(d) }
+pub(crate) fn ostr<'a>(o: &'a Map<String, Value>, k: &str) -> &'a str { o.get(k).and_then(|x| x.as_str()).unwrap_or("") }
 pub fn is_cargo(o: &Map<String, Value>) -> bool { o.get("cargo").and_then(|c| c.as_bool()).unwrap_or(false) }
-fn height_of(o: &Map<String, Value>) -> f64 { o.get("z").and_then(|v| v.as_f64()).or_else(|| o.get("height").and_then(|v| v.as_f64())).unwrap_or(1.0) }
+pub(crate) fn height_of(o: &Map<String, Value>) -> f64 { o.get("z").and_then(|v| v.as_f64()).or_else(|| o.get("height").and_then(|v| v.as_f64())).unwrap_or(1.0) }
 
-fn rect(cx: f64, cy: f64, hx: f64, hy: f64, yaw: f64) -> Poly {
+pub(crate) fn rect(cx: f64, cy: f64, hx: f64, hy: f64, yaw: f64) -> Poly {
     let (s, c) = yaw.sin_cos();
     let p = |dx: f64, dy: f64| [cx + c * dx - s * dy, cy + s * dx + c * dy];
     [p(-hx, -hy), p(hx, -hy), p(hx, hy), p(-hx, hy)]
 }
 
-fn sat(a: &Poly, b: &Poly) -> bool {
+pub(crate) fn sat(a: &Poly, b: &Poly) -> bool {
     for poly in [a, b] {
         for i in 0..4 {
             let (p, q) = (poly[i], poly[(i + 1) % 4]);
@@ -94,9 +96,9 @@ fn sat(a: &Poly, b: &Poly) -> bool {
     true
 }
 
-fn obst_rect(o: &Map<String, Value>) -> Poly { rect(onum(o, "x", 0.0), onum(o, "y", 0.0), onum(o, "w", 0.8) / 2.0, onum(o, "h", 0.8) / 2.0, onum(o, "yaw", 0.0)) }
+pub(crate) fn obst_rect(o: &Map<String, Value>) -> Poly { rect(onum(o, "x", 0.0), onum(o, "y", 0.0), onum(o, "w", 0.8) / 2.0, onum(o, "h", 0.8) / 2.0, onum(o, "yaw", 0.0)) }
 
-fn point_in(o: &Map<String, Value>, px: f64, py: f64, margin: f64) -> bool {
+pub(crate) fn point_in(o: &Map<String, Value>, px: f64, py: f64, margin: f64) -> bool {
     let (x, y, yaw) = (onum(o, "x", 0.0), onum(o, "y", 0.0), onum(o, "yaw", 0.0));
     let (s, c) = yaw.sin_cos();
     let (dx, dy) = (px - x, py - y);
@@ -108,7 +110,9 @@ pub fn round3(v: f64) -> f64 { (v * 1000.0).round() / 1000.0 }
 
 impl Fork {
     pub fn new(sp: ForkSpec) -> Fork {
-        Fork { sp, h: 0.0, v: 0.0, target: None, jog: 0, load: vec![], root: None, blocked_n: 0, blocked_reason: String::new(), events: vec![], moved: vec![], collide_toggle: vec![], dirty_world: false, last_pose: [f64::NAN; 3], last_good: None }
+        let base_x = sp.x;
+        Fork { sp, h: 0.0, v: 0.0, target: None, jog: 0, load: vec![], root: None, blocked_n: 0, blocked_reason: String::new(), events: vec![], moved: vec![], collide_toggle: vec![], dirty_world: false, last_pose: [f64::NAN; 3], last_good: None,
+            reach: 0.0, reach_v: 0.0, reach_target: None, reach_max: 0.0, reach_speed: 0.12, base_x }
     }
 
     fn ev(&mut self, kind: &'static str, level: &'static str, msg: String, data: Value) { self.events.push(ForkEvent { kind, level, msg, data }); }
@@ -138,7 +142,7 @@ impl Fork {
         out
     }
 
-    fn idx_of(world: &World, id: &str) -> Option<usize> { world.obstacles.iter().position(|o| is_cargo(o) && ostr(o, "id") == id) }
+    pub(crate) fn idx_of(world: &World, id: &str) -> Option<usize> { world.obstacles.iter().position(|o| is_cargo(o) && ostr(o, "id") == id) }
 
     /// highest top surface (floor 0) below `bottom + tol` under (px,py), ignoring ids; returns (top, id of cargo)
     pub fn support_under(world: &World, ignore: &[String], px: f64, py: f64, bottom: f64) -> (f64, Option<String>) {
@@ -146,7 +150,7 @@ impl Fork {
         for o in &world.obstacles {
             if ignore.iter().any(|i| i == ostr(o, "id")) && is_cargo(o) { continue; }
             let t = ostr(o, "type");
-            let supportive = is_cargo(o) || t == "platform" || t == "table" || t == "rack_beam" || o.get("support").and_then(|v| v.as_bool()).unwrap_or(false);
+            let supportive = is_cargo(o) || t == "platform" || t == "table" || t == "rack_beam" || t == "conveyor" || o.get("support").and_then(|v| v.as_bool()).unwrap_or(false);
             if !supportive || o.get("carried").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
             let top = onum(o, "z0", 0.0) + height_of(o);
             if top <= bottom + 0.02 && top > best.0 && point_in(o, px, py, 0.0) { best = (top, if is_cargo(o) { Some(ostr(o, "id").to_string()) } else { None }); }
@@ -317,10 +321,51 @@ impl Fork {
         }
     }
 
+    pub fn with_reach(mut self, max: f64, speed: f64) -> Fork { self.reach_max = max.max(0.0); self.reach_speed = speed.max(0.01); self }
+
+    /// mast reach (reach trucks): move the whole mast + tines (+ load) along x, blocked by contact
+    fn reach_step(&mut self, dt: f64, pose: [f64; 3], world: &mut World, segs: &[Seg], brake: bool) {
+        let Some(t) = self.reach_target else { self.reach_v = 0.0; return; };
+        let d = t - self.reach;
+        if d.abs() < 5e-4 || brake { if d.abs() < 5e-4 { self.reach = t; self.reach_target = None; } self.reach_v = 0.0; return; }
+        let acc = 0.3;
+        let vdes = d.signum() * self.reach_speed.min((2.0 * acc * d.abs()).sqrt()).max(0.005);
+        self.reach_v += (vdes - self.reach_v).clamp(-acc * dt, acc * dt);
+        let mut step = self.reach_v * dt;
+        if step.abs() > d.abs() { step = d; }
+        let old = self.sp.x;
+        self.sp.x = self.base_x + self.reach + step;
+        for l in self.load.iter_mut() { l.rel[0] += step; }
+        if self.hit_at(world, pose[0], pose[1], pose[2], segs) {
+            self.sp.x = old;
+            for l in self.load.iter_mut() { l.rel[0] -= step; }
+            self.reach_v = 0.0; self.reach_target = None;
+            self.ev("FORK_REACH_BLOCKED", "warning", format!("门架前移受阻 (前移量 {:.2} m)", self.reach), json!({"reach": round3(self.reach)}));
+            return;
+        }
+        self.reach += step;
+        if !self.load.is_empty() { self.sync_load(world, pose[0], pose[1], pose[2]); }
+    }
+
+    pub fn set_reach(&mut self, r: f64) { if self.reach_max > 0.0 { self.reach_target = Some(r.clamp(0.0, self.reach_max)); } }
+
+    pub fn joints(&self) -> Vec<(String, f64, f64)> {
+        let mut v = vec![("fork_lift_joint".to_string(), self.h, self.v), ("mast_stage_joint".to_string(), self.h / 2.0, self.v / 2.0)];
+        if self.reach_max > 0.0 { v.push(("reach_joint".into(), self.reach, self.reach_v)); }
+        v
+    }
+
     pub fn step(&mut self, dt: f64, pose: [f64; 3], world: &mut World, io: &mut IoSim, brake: bool) {
         let [x, y, th] = pose;
-        let sp = self.sp.clone();
         let segs: Vec<Seg> = world.static_segments.clone();
+        if self.reach_max > 0.0 {
+            if io.do_("do_reach_out", false) { self.reach_target = Some(self.reach_max); }
+            if io.do_("do_reach_in", false) { self.reach_target = Some(0.0); }
+            self.reach_step(dt, pose, world, &segs, brake);
+            io.set_di_raw("di_reach_origin", self.reach <= 0.002);
+            io.set_di_raw("di_reach_limit", self.reach >= self.reach_max - 0.002);
+        }
+        let sp = self.sp.clone();
         // jog by DO
         let (up, dn) = (io.do_("do_lift_motor_up", false), io.do_("do_lift_motor_down", false));
         let jog = if up && !dn { 1 } else if dn && !up { -1 } else { self.jog };
@@ -398,7 +443,8 @@ impl Fork {
             "state": if self.blocked_reason.is_empty() { if self.v.abs() > 1e-3 { if self.v > 0.0 { "LIFTING" } else { "LOWERING" } } else { "IDLE" } } else { "BLOCKED" },
             "blocked": self.blocked_reason, "blocked_count": self.blocked_n, "loaded": !self.load.is_empty(), "load_id": self.root,
             "load": load, "tine": {"length": self.sp.tine_len, "width": self.sp.tine_w, "thickness": self.sp.tine_t, "spacing": self.sp.spacing, "root_x": self.sp.x},
-            "limits": {"top": self.h >= self.sp.mast_max - 0.005, "bottom": self.h <= 0.005}})
+            "limits": {"top": self.h >= self.sp.mast_max - 0.005, "bottom": self.h <= 0.005},
+            "reach_m": round3(self.reach), "reach_max_m": self.reach_max, "reach_target_m": self.reach_target})
     }
 }
 

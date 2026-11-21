@@ -358,6 +358,15 @@ function openRdmp() {
 async function openModel(mid) {
   const d = await hub.get(`/models/${mid}`);
   const sp = d.spec, ch = sp.chassis || {}, s = d.summary || {};
+  // cmodel → 装配模型 (执行机构推断 + 缺失项); 3D 预览按装配模型绘制
+  const asm = d.latest ? await hub.get(`/models/${mid}/versions/${d.latest}/api/v1/model/assembly`).catch(() => null) : null;
+  if (asm) sp.assembly = asm;
+  const MS = { missing: 'bg-rose-50 text-rose-700 border-rose-200', defaulted: 'bg-amber-50 text-amber-700 border-amber-200', estimated: 'bg-amber-50 text-amber-700 border-amber-200', inferred: 'bg-sky-50 text-sky-700 border-sky-200' };
+  const asmCard = !asm ? '' : `<div class="card p-4"><div class="panel-title mb-2">执行机构 · cmodel 缺失项</div>
+          <div class="kv"><span>上装类型</span><span class="font-semibold">${esc(asm.archetype_label || asm.archetype)}</span></div>
+          <div class="kv"><span>判定依据</span><span class="text-slate-500">${esc(asm.archetype_source || '')}</span></div>
+          <div class="kv"><span>关节</span><span class="font-mono text-[11px]">${(asm.actuator?.joints || []).map(j => esc(j.name)).join(', ') || '—'}</span></div>
+          <div class="mt-2 max-h-56 overflow-y-auto space-y-1">${(asm.missing || []).map(m => `<div class="flex gap-2 items-start text-[11px]"><span class="tag ${MS[m.status] || ''}">${esc(m.status)}</span><span class="font-mono whitespace-nowrap">${esc(m.category)}.${esc(m.item)}</span><span class="text-slate-500">${m.value === null || m.value === undefined ? '' : '= ' + esc(JSON.stringify(m.value)) + ' · '}${esc(m.note || '')}</span></div>`).join('')}</div></div>`;
   let view = null;
   const m = modal({ full: true, title: `车辆模型详情 - ${esc(d.name)}`, icon: 'truck',
     badge: `<span class="text-[11px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-semibold ml-2">${esc(d.vtype || s.chassis_label || '')}</span>`,
@@ -398,6 +407,7 @@ async function openModel(mid) {
           ${(sp.cameras || []).map(c => `<div class="kv"><span>相机 ${esc(c.name)} (${esc(c.type)})</span><span>[${fmt(c.x, 3)}, ${fmt(c.y, 3)}, ${fmt(c.z, 3)}] m</span></div>`).join('')}
           <div class="kv"><span>光电 / 触边</span><span>${(sp.photoelectric || []).length || '四角缺省'} / 前后缺省</span></div>
           <div class="kv"><span>完整度</span><span>${Object.entries(d.audit?.by_severity || {}).map(([k, v]) => `${{ ok: '完整', info: '提示', warn: '待确认', missing: '缺失' }[k]} ${v}`).join(' · ')}</span></div></div>
+        ${asmCard}
         <div class="text-right"><button data-delmodel class="btn-danger">删除模型</button></div>
       </div></div>
       <div data-pane="ed" class="h-full hidden"><iframe data-iframe class="w-full h-full border-0"></iframe></div>

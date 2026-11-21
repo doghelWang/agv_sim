@@ -113,11 +113,11 @@ impl ModelRepo {
         let (sp, ov) = (self.spec(mid, ver)?, self.overrides(mid, ver)?);
         let v = self.ver(&self.get(mid)?, ver)?;
         Ok(json!({"spec": sp, "base_file": "base.json", "overrides": ov, "audit": model::overrides::audit(&sp, Some(&ov)), "sensors": model::overrides::sensor_list(&sp, None),
-            "sensor_types": model::overrides::sensor_types(), "repo": {"model_id": mid, "version": v}}))
+            "sensor_types": model::overrides::sensor_types(), "repo": {"model_id": mid, "version": v}, "assembly": model::assembly::build(&sp)}))
     }
     pub fn preview(&self, mid: &str, ver: Option<&str>, ov: &Value) -> R<Value> {
         let sp = model::overrides::apply_overrides(&self.base(mid, ver)?, ov);
-        Ok(json!({"spec": sp, "audit": model::overrides::audit(&sp, Some(ov)), "sensors": model::overrides::sensor_list(&sp, None), "urdf": model::urdf::generate_urdf(&sp)}))
+        Ok(json!({"spec": sp, "audit": model::overrides::audit(&sp, Some(ov)), "sensors": model::overrides::sensor_list(&sp, None), "urdf": model::urdf::generate_urdf(&sp), "assembly": model::assembly::build(&sp)}))
     }
     pub fn save_overrides(&self, mid: &str, ver: Option<&str>, ov: &Value) -> R<Value> {
         let mut m = self.get(mid)?;
@@ -162,7 +162,9 @@ impl ModelRepo {
         if m.get("vtype").is_none() {
             let t = base["chassis"]["type"].as_str().unwrap_or("").to_string();
             let lab = if t.is_empty() { "AMR".to_string() } else { chassis_label(&t) };
-            m["vtype"] = json!(if base["lift"]["enabled"].as_bool().unwrap_or(false) { format!("{lab}顶升 AMR") } else { format!("{lab} AMR") });
+            let arch = model::assembly::classify(&base).0;
+            let kind = match arch.as_str() { "jacking" => "顶升潜伏", "reach_fork" => "前移式叉车", "stacker_fork" => "堆垛叉车", "pallet_truck" => "托盘搬运", "roller" => "辊筒对接", "tugger" => "牵引", _ => if base["lift"]["enabled"].as_bool().unwrap_or(false) { "顶升" } else { "" } };
+            m["vtype"] = json!(format!("{lab}{kind} AMR"));
         }
         m["file"] = json!(filename);
         m["summary"] = Self::summarize(&base);
@@ -170,6 +172,7 @@ impl ModelRepo {
         Ok(self.view(&m))
     }
     pub fn urdf(&self, mid: &str, ver: Option<&str>) -> R<String> { Ok(model::urdf::generate_urdf(&self.spec(mid, ver)?)) }
+    pub fn assembly(&self, mid: &str, ver: Option<&str>) -> R<Value> { Ok(model::assembly::build(&self.spec(mid, ver)?)) }
     pub fn bundle(&self, mid: &str, ver: Option<&str>) -> R<Value> {
         let m = self.get(mid)?;
         let v = self.ver(&m, ver)?;

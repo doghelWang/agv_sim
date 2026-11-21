@@ -46,6 +46,7 @@ bash install.sh --repo https://github.com/doghelWang/agv_sim.git --name phone1 -
 | [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md) | 树莓派 / 手机底层运行优化方案 (问题根因、分批实施与验证) |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | 手机 vs 树莓派 5 性能对比与推荐组合；C/C++ 化前后对比 |
 | [docs/NAVIGATION.md](docs/NAVIGATION.md) | **导航说明**：执行进程规划器与 Nav2 的区别、Nav2 线路跟随中断根因、中断恢复流程 (位姿调整/重新规划)、快速验证 |
+| [docs/ASSEMBLY.md](docs/ASSEMBLY.md) | **cmodel → 装配模型**：上装类型判定 (顶升/前移叉车/堆垛/托盘搬运/辊筒/牵引)、cmodel 缺失项、URDF/MJCF/3D、执行机构、仓储布景 (真二维码/货架/输送线/PCD) |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | 平台与工作台功能、路径规划与精确跟踪、保护空间 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 进程架构与设计取舍 |
 | [docs/CODEBASE.md](docs/CODEBASE.md) | 代码框架：每个文件的职责、依赖库、调用链 |

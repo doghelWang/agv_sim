@@ -10,7 +10,8 @@
   <script src="/vendor/lucide.min.js"></script>
   <script src="/vendor/three.min.js"></script>
   <script src="/vendor/OrbitControls.js"></script>
-  <script src="/vendor/amr_model3d.js?v=8"></script>
+  <script src="/vendor/amr_assembly3d.js?v=1"></script>
+  <script src="/vendor/amr_model3d.js?v=9"></script>
 
   <style>
     /* Custom Scrollbars */
@@ -3414,7 +3415,7 @@
     function update3DObstacles() {
       if (!scene3D || !obstacles3DGroup) return;
       const curList = injectedObstacles || [];
-      const curSig = JSON.stringify(curList.map(o => ({ id: o.id, x: o.x, y: o.y, w: o.w, h: o.h, type: o.type, active: o.active })));
+      const curSig = JSON.stringify(curList.map(o => ({ id: o.id, x: o.x, y: o.y, w: o.w, h: o.h, type: o.type, active: o.active, z0: o.z0, yaw: o.yaw })));
       if (curSig === last3DObsSignature) return;
       last3DObsSignature = curSig;
 
@@ -3436,8 +3437,14 @@
       if (!curList || curList.length === 0) return;
 
       curList.forEach(obs => {
+        // 货架/料车/周转箱/输送线等: 与仿真几何一致的装配体 (vendor/amr_assembly3d.js); 含顶升/叉起后的高度 z0 与朝向
+        if (window.AMRAssembly && ['rack', 'cart', 'tote'].includes(obs.kind || obs.type)) {
+          const pg = window.AMRAssembly.prop(obs);
+          if (pg) { obstacles3DGroup.add(pg); return; }
+        }
         const obsGroup = new THREE.Group();
-        obsGroup.position.set(obs.x, obs.y, 0);
+        obsGroup.position.set(obs.x, obs.y, obs.z0 || 0);
+        if (obs.yaw) obsGroup.rotation.z = obs.yaw;
 
         const type = obs.type || 'box';
         const w = obs.w || 0.8;

@@ -18,7 +18,7 @@ fn cameras_match_python() {
     let org = j["org"].as_array().unwrap();
     let scene = CamScene { revision: 0, prims, rgb, floor_gid: j["floor"].as_i64().unwrap() as i32, ceil_gid: j["ceil"].as_i64().unwrap() as i32, tex: std::sync::Arc::new(tex),
         tex_h: ts[0].as_u64().unwrap() as usize, tex_w: ts[1].as_u64().unwrap() as usize,
-        tex_org: (org[0].as_f64().unwrap(), org[1].as_f64().unwrap(), org[2].as_f64().unwrap()) };
+        tex_org: (org[0].as_f64().unwrap(), org[1].as_f64().unwrap(), org[2].as_f64().unwrap()) , mat: vec![], decals: Default::default() };
     let pose = j["pose"].as_array().unwrap();
     let (x, y, th) = (pose[0].as_f64().unwrap(), pose[1].as_f64().unwrap(), pose[2].as_f64().unwrap());
     for cj in j["cams"].as_array().unwrap() {

@@ -536,7 +536,11 @@ impl Service {
         let id = g.core.scenario_id.clone();
         let mut meta = scen::metadata(&g.scenarios, &id);
         meta["topology"] = scen::topology(&g.scenarios, &id);
-        meta["obstacles"] = Value::Array(g.core.world.obstacles.iter().map(|o| Value::Object(o.clone())).collect());
+        meta["obstacles"] = Value::Array(g.core.world.obstacles.iter().filter(|o| !sim_core::core::is_prop(o)).map(|o| Value::Object(o.clone())).collect());
+        meta["props"] = Value::Array(g.core.props_list());
+        meta["qr_codes"] = Value::Array(g.core.decals.decals.iter().map(|d| json!({"id": d.id, "payload": d.payload, "x": d.x, "y": d.y, "yaw": d.yaw, "size": d.size, "n": d.n,
+            "bits": d.bits.iter().map(|b| if *b { '1' } else { '0' }).collect::<String>()})).collect());
+        meta["dressing"] = json!(g.core.dress_mode);
         meta["heights"] = json!({"wall": 6.0, "shelf": 2.5, "ceiling": 6.0});
         meta["scenario_def"] = g.scenarios[&id].clone();
         Ok(meta)
@@ -565,6 +569,34 @@ impl Service {
     }
     // ---- fork / cargo
     pub fn fork(&self) -> Value { self.lock().core.fork_view() }
+    // ---- assembly / actuator / props / pcd
+    pub fn assembly(&self) -> Value {
+        let g = self.lock();
+        let mut a = g.core.asm.clone();
+        a["joint_names"] = json!(sim_core::assembly::joint_names(&a));
+        a
+    }
+    pub fn actuator(&self) -> Value { self.lock().core.actuator_view() }
+    pub fn actuator_cmd(&self, b: &Value) -> Result<Value, String> {
+        let mut g = self.lock();
+        let v = g.core.actuator_command(b)?;
+        let a = b.get("action").and_then(|a| a.as_str()).unwrap_or("set").to_string();
+        Self::emit(&mut g, "ACTUATOR_CMD", "info", &format!("执行机构指令 {a}"), b.clone());
+        Ok(v)
+    }
+    pub fn props(&self) -> Value { Value::Array(self.lock().core.props_list()) }
+    pub fn set_dressing(&self, mode: &str) -> Result<Value, String> {
+        let mut g = self.lock();
+        let n = g.core.set_dressing(mode)?;
+        Self::emit(&mut g, "DRESSING", "info", &format!("场景布景 {mode}: {n} 个道具/货物"), json!({"mode": mode, "count": n}));
+        Ok(json!({"mode": mode, "count": n, "props": g.core.props_list(), "cargo": g.core.cargo_list()}))
+    }
+    pub fn pcd(&self, o: &sim_core::pcd::PcdOpts) -> (Vec<u8>, usize) {
+        let g = self.lock();
+        let pts = sim_core::pcd::sample_world(&g.core.world, o);
+        (sim_core::pcd::encode(&pts, o.binary), pts.len())
+    }
+    pub fn mjcf(&self) -> String { self.lock().core.mjcf() }
     pub fn fork_cmd(&self, height: Option<f64>, action: Option<&str>) -> Result<Value, String> {
         let mut g = self.lock();
         let Some(f) = g.core.fork.as_mut() else { return Err("当前车型没有货叉/门架 (cmodel 缺少 lifter 模块)".into()) };
@@ -646,6 +678,7 @@ impl Service {
         sp["active_chassis"] = json!(g.core.chassis_type);
         sp["active_wheels"] = Value::Array(g.core.wheels_d.clone());
         sp["model_rev"] = json!(g.model_rev);
+        sp["assembly"] = g.core.asm.clone();
         let mut nl = Map::new();
         for ct in model::limits::CHASSIS_TYPES { match model::limits::effective_limits(&g.spec, ct) { Ok(l) => { nl.insert(ct.to_string(), l); } Err(_) => { nl.clear(); break; } } }
         if !nl.is_empty() { sp["nav_limits"] = Value::Object(nl); }
@@ -751,7 +784,7 @@ impl Service {
 
     pub fn snapshot(&self, scans: bool) -> Value {
         let mut snap = json!({"state": self.state(), "io": self.io(), "codes": self.codes(), "sim": self.sim_status(), "photoelectric": self.photoelectric()["sensors"],
-            "bumpers": self.bumpers(), "cameras": self.cameras(), "control": self.control(), "nav": self.get_nav_feedback(), "cargo": self.cargo_list(), "fork": self.fork()});
+            "bumpers": self.bumpers(), "cameras": self.cameras(), "control": self.control(), "nav": self.get_nav_feedback(), "cargo": self.cargo_list(), "fork": self.fork(), "actuator": self.actuator()});
         let mut g = self.lock();
         if let Some(Scan::D2(m)) = g.merged.data.clone() {
             let cached = match &g.merged_json { Some((s, v)) if *s == m.seq => v.clone(), _ => { let v = ranges_json(&m.ranges, 3); g.merged_json = Some((m.seq, v.clone())); v } };

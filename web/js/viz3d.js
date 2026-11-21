@@ -16,7 +16,7 @@ export function robotSpecFromModel(spec) {
     model_file: spec.model_file, native_chassis: ch.type, active_chassis: spec.active_chassis || ch.type, model_rev: spec.model_rev || 1,
     photoelectric: spec.photoelectric || [], lift: spec.lift, footprint: ch.footprint, wheels: spec.active_wheels || spec.wheels || [],
     lidars: spec.lidars || [], cameras: spec.cameras || [], chassis: ch, imu: spec.imu, battery: spec.battery, io: spec.io,
-    lidars_full: spec.lidars || [],
+    lidars_full: spec.lidars || [], assembly: spec.assembly || null,
   };
 }
 
@@ -71,6 +71,10 @@ function textSprite(text, color) {
 const std = (c, r = 0.5) => new (T().MeshLambertMaterial)({ color: c });
 export function obstacleMesh(o) {
   const THREE = T();
+  if (window.AMRAssembly && ['rack', 'cart', 'tote', 'conveyor', 'charger', 'pillar', 'rack_upright', 'rack_beam', 'barrier'].includes(o.kind || o.type)) {
+    const p = window.AMRAssembly.prop(Object.assign({}, o, { z0: 0 }));
+    if (p) { p.position.z = 0; const lb = textSprite(`${{ rack: '🗄️ 顶升货架', cart: '🛒 料车', tote: '📦 周转箱', conveyor: '输送线' }[o.kind || o.type] || o.type} #${o.id ?? ''}`, '#2563eb'); lb.position.z = (o.z || 1) + .35; p.add(lb); return p; }
+  }
   const g = new THREE.Group();
   const w = o.w || 0.8, h = o.h || 0.8, type = o.type || 'box';
   if (type === 'person') {
@@ -242,7 +246,7 @@ export class Viewer3D {
       let e = this._cargo.get(c.id);
       if (!e || e.sig !== sig) {
         if (e) { this.cargoGroup.remove(e.m); disposeTree(e.m); }
-        const o = Object.assign({}, c, { type: c.kind === 'box' ? 'box' : 'pallet' });
+        const o = Object.assign({}, c, { type: ['rack', 'cart', 'tote'].includes(c.kind) ? c.kind : (c.kind === 'box' ? 'box' : 'pallet') });
         const m = obstacleMesh(o);
         m.traverse(n => { if (n.isSprite) n.visible = false; });
         if (c.kind === 'box') { const top = m.children[0]; if (top && top.material) top.material.color.setHex(0xc08457); }
@@ -255,7 +259,8 @@ export class Viewer3D {
   // 门架 + 货叉 (随车体, 高度随 fork.height_m)
   _drawFork(t) {
     const THREE = T(), f = t.fork;
-    if (!f || !f.tine) { if (this.forkGroup.children.length) { while (this.forkGroup.children.length) { const c = this.forkGroup.children[0]; this.forkGroup.remove(c); disposeTree(c); } this._forkSig = ''; } return; }
+    if (!f || !f.tine || (t.robot_spec && t.robot_spec.assembly)) {   // assembly robots animate mast/carriage/tines via joint_states
+      if (this.forkGroup.children.length) { while (this.forkGroup.children.length) { const c = this.forkGroup.children[0]; this.forkGroup.remove(c); disposeTree(c); } this._forkSig = ''; } return; }
     const sig = [f.mast_max_m, f.tine.root_x, f.tine.length, f.tine.spacing, f.tine.width, f.tine.thickness].join('|');
     if (sig !== this._forkSig) {
       this._forkSig = sig;

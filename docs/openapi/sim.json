@@ -28,10 +28,19 @@
    "name": "world"
   },
   {
+   "name": "gpu"
+  },
+  {
    "name": "scene"
   },
   {
    "name": "instance"
+  },
+  {
+   "name": "fork"
+  },
+  {
+   "name": "actuator"
   },
   {
    "name": "sim"
@@ -441,6 +450,7 @@
       }
      }
     },
+    "description": "切换车型 {type: single_steer|diff_drive|dual_steer|cmodel}",
     "requestBody": {
      "required": true,
      "content": {
@@ -448,7 +458,9 @@
        "schema": {
         "type": "object",
         "properties": {
-         "type": {}
+         "type": {
+          "description": "single_steer|diff_drive|dual_steer|cmodel"
+         }
         }
        }
       }
@@ -483,6 +495,7 @@
       }
      }
     },
+    "description": "重新解析 cmodel 并重建仿真 {cmodel_path, load: full|idle}",
     "requestBody": {
      "required": true,
      "content": {
@@ -491,8 +504,9 @@
         "type": "object",
         "properties": {
          "cmodel_path": {},
-         "load": {},
-         "save": {}
+         "load": {
+          "description": "full|idle"
+         }
         }
        }
       }
@@ -556,6 +570,7 @@
       }
      }
     },
+    "description": "切换场景 {id}",
     "requestBody": {
      "required": true,
      "content": {
@@ -563,13 +578,42 @@
        "schema": {
         "type": "object",
         "properties": {
-         "id": {},
-         "scenario": {}
+         "id": {}
         }
        }
       }
      }
     }
+   }
+  },
+  "/api/v1/gpu": {
+   "get": {
+    "operationId": "get_api_v1_gpu",
+    "summary": "GPU 射线求交服务",
+    "tags": [
+     "gpu"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "GPU 射线求交服务 (gpucastd) 状态"
    }
   },
   "/api/v1/world/obstacles": {
@@ -686,9 +730,7 @@
        "schema": {
         "type": "object",
         "properties": {
-         "scene": {},
-         "hub_scene_id": {},
-         "hub": {}
+         "scene": {}
         }
        }
       }
@@ -732,8 +774,7 @@
         "type": "object",
         "properties": {
          "model_id": {},
-         "version": {},
-         "hub": {}
+         "version": {}
         }
        }
       }
@@ -821,6 +862,510 @@
     ]
    }
   },
+  "/api/v1/fork": {
+   "get": {
+    "operationId": "get_api_v1_fork",
+    "summary": "货叉状态",
+    "tags": [
+     "fork"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "货叉状态 (高度/速度/载货/受阻)"
+   },
+   "put": {
+    "operationId": "put_api_v1_fork",
+    "summary": "货叉控制",
+    "tags": [
+     "fork"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "货叉控制 {height: m, reach?: m} 或 {action: up|down|stop|top|bottom|reach_out|reach_in}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "height": {
+          "description": "m"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/actuator": {
+   "get": {
+    "operationId": "get_api_v1_actuator",
+    "summary": "上装执行机构状态",
+    "tags": [
+     "actuator"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "上装执行机构状态 (顶升/货叉/辊筒/牵引, 统一视图)"
+   },
+   "put": {
+    "operationId": "put_api_v1_actuator",
+    "summary": "上装执行机构控制: 顶升",
+    "tags": [
+     "actuator"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "上装执行机构控制: 顶升 {action: up|down|stop, height?, tray_deg?, rotate_deg?, follow?} / 货叉 {action: up|down|top|bottom|reach_out|reach_in, height?, reach?} / 辊筒 {action: load|unload|forward|reverse|stop, side: left|right} / 牵引 {action: lock|release}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "action": {
+          "description": "up|down|stop"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/model/assembly": {
+   "get": {
+    "operationId": "get_api_v1_model_assembly",
+    "summary": "机器人装配模型",
+    "tags": [
+     "model"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "机器人装配模型 (cmodel → 连杆/关节/外观基本体/执行机构参数/缺失项)"
+   }
+  },
+  "/api/v1/model/missing": {
+   "get": {
+    "operationId": "get_api_v1_model_missing",
+    "summary": "cmodel 缺失/推断项清单",
+    "tags": [
+     "model"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "cmodel 缺失/推断项清单 (URDF/仿真所用的补全值)"
+   }
+  },
+  "/api/v1/model/mjcf": {
+   "get": {
+    "operationId": "get_api_v1_model_mjcf",
+    "summary": "MuJoCo MJCF",
+    "tags": [
+     "model"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "MuJoCo MJCF (当前场景 + 铰接机器人)"
+   }
+  },
+  "/api/v1/world/props": {
+   "get": {
+    "operationId": "get_api_v1_world_props",
+    "summary": "场景布景道具",
+    "tags": [
+     "world"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "场景布景道具 (立柱/充电桩/货架/输送线/护栏)"
+   }
+  },
+  "/api/v1/world/dressing": {
+   "put": {
+    "operationId": "put_api_v1_world_dressing",
+    "summary": "重新布景",
+    "tags": [
+     "world"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "重新布景 {mode: auto|demo|none} (auto: 道具与货物避开路网; demo: 另在每个站点放置待取货物)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "mode": {
+          "description": "auto|demo|none"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/world/pcd": {
+   "get": {
+    "operationId": "get_api_v1_world_pcd",
+    "summary": "场景点云地图 PCD v0.7",
+    "tags": [
+     "world"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "场景点云地图 PCD v0.7 ?res=0.05&floor=0&ceiling=0&z_max=6&format=binary|ascii",
+    "parameters": [
+     {
+      "name": "res",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 0.05"
+     },
+     {
+      "name": "floor",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 0"
+     },
+     {
+      "name": "ceiling",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 0"
+     },
+     {
+      "name": "z_max",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 6"
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "例如 binary|ascii"
+     }
+    ]
+   }
+  },
+  "/api/v1/world/cargo": {
+   "get": {
+    "operationId": "get_api_v1_world_cargo",
+    "summary": "货物列表",
+    "tags": [
+     "world"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "货物列表 (托盘/箱子)"
+   },
+   "post": {
+    "operationId": "post_api_v1_world_cargo",
+    "summary": "新增货物",
+    "tags": [
+     "world"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "description": "新增货物 {kind: pallet|box|tote|rack|cart, id, x, y, yaw, z0?, size?: [长,宽,高]}",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "kind": {
+          "description": "pallet|box|tote|rack|cart"
+         },
+         "id": {},
+         "x": {},
+         "y": {},
+         "yaw": {}
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/world/cargo/{id}": {
+   "delete": {
+    "operationId": "delete_api_v1_world_cargo_id",
+    "summary": "移除货物",
+    "tags": [
+     "world"
+    ],
+    "responses": {
+     "200": {
+      "description": "成功 (JSON；少数接口返回二进制/文本，见说明)",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "default": {
+      "description": "错误 (RFC 9457)",
+      "content": {
+       "application/problem+json": {
+        "schema": {
+         "$ref": "#/components/schemas/Problem"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
   "/api/v1/sim": {
    "get": {
     "operationId": "get_api_v1_sim",
@@ -875,6 +1420,7 @@
       }
      }
     },
+    "description": "暂停/实时因子 {paused, rtf}",
     "requestBody": {
      "required": true,
      "content": {
@@ -918,6 +1464,7 @@
       }
      }
     },
+    "description": "位姿复位 {x, y, yaw}",
     "requestBody": {
      "required": true,
      "content": {
@@ -1020,7 +1567,7 @@
       }
      }
     },
-    "description": "激光帧 (长轮询/二进制)",
+    "description": "激光帧 (长轮询/二进制) ?after_seq=N&wait=0.2",
     "parameters": [
      {
       "name": "name",
@@ -1036,7 +1583,8 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
+      },
+      "description": "例如 N"
      },
      {
       "name": "wait",
@@ -1044,15 +1592,8 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
-     },
-     {
-      "name": "format",
-      "in": "query",
-      "required": false,
-      "schema": {
-       "type": "string"
-      }
+      },
+      "description": "例如 0.2"
      }
     ]
    }
@@ -1083,33 +1624,7 @@
        }
       }
      }
-    },
-    "parameters": [
-     {
-      "name": "after_seq",
-      "in": "query",
-      "required": false,
-      "schema": {
-       "type": "string"
-      }
-     },
-     {
-      "name": "wait",
-      "in": "query",
-      "required": false,
-      "schema": {
-       "type": "string"
-      }
-     },
-     {
-      "name": "format",
-      "in": "query",
-      "required": false,
-      "schema": {
-       "type": "string"
-      }
-     }
-    ]
+    }
    }
   },
   "/api/v1/sensors/lidar_config": {
@@ -1242,22 +1757,6 @@
        "type": "string"
       },
       "description": "例如 jpeg|png|raw"
-     },
-     {
-      "name": "after_seq",
-      "in": "query",
-      "required": false,
-      "schema": {
-       "type": "string"
-      }
-     },
-     {
-      "name": "wait",
-      "in": "query",
-      "required": false,
-      "schema": {
-       "type": "string"
-      }
      }
     ]
    }
@@ -1433,6 +1932,7 @@
       }
      }
     },
+    "description": "批量写 IO {di, do}",
     "requestBody": {
      "required": true,
      "content": {
@@ -1476,6 +1976,7 @@
       }
      }
     },
+    "description": "写单个 IO {value}",
     "parameters": [
      {
       "name": "kind",
@@ -1565,7 +2066,7 @@
       }
      }
     },
-    "description": "速度指令 (执行进程 → 仿真)",
+    "description": "速度指令 (执行进程 → 仿真) {vx, vy, wz, source}",
     "requestBody": {
      "required": true,
      "content": {
@@ -1678,6 +2179,7 @@
       }
      }
     },
+    "description": "仿真事件 ?since=N",
     "parameters": [
      {
       "name": "since",
@@ -1685,7 +2187,8 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
+      },
+      "description": "例如 N"
      }
     ]
    }
@@ -1717,6 +2220,7 @@
       }
      }
     },
+    "description": "Web 汇总快照 ?scans=1",
     "parameters": [
      {
       "name": "scans",
@@ -1724,7 +2228,8 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
+      },
+      "description": "例如 1"
      }
     ]
    }

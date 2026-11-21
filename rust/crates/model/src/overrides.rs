@@ -203,6 +203,11 @@ pub fn apply_overrides(spec: &Value, ov: &Value) -> Value {
             prov.insert(format!("sensors.{name}"), json!(if added { "added" } else { "manual" }));
         }
     }
+    // actuator mechanism parameters the cmodel cannot carry (type, stroke, tray, tines, rollers, hitch ...)
+    if let Some(a) = ov.get("actuator").and_then(|a| a.as_object()).filter(|a| !a.is_empty()) {
+        for k in a.keys() { prov.insert(format!("actuator.{k}"), json!("manual")); }
+        sp["actuator"] = Value::Object(a.clone());
+    }
     let nprov = prov.len();
     sp["provenance"] = Value::Object(prov);
     sp["protection_effective"] = protection::effective(Some(&sp), None);

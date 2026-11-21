@@ -10,3 +10,8 @@ pub mod cameras;
 pub mod gpu;
 pub mod fork;
 pub mod imgcodec;
+pub mod assembly;
+pub mod actuator;
+pub mod props;
+pub mod qr;
+pub mod pcd;

@@ -142,22 +142,36 @@ OpenAPI: `docs/openapi/sim.json` · 契约版本 1.0.0
 | PUT | `/api/v1/model/overrides` | 保存并应用人工补全 (重建模型/URDF/仿真) |
 | POST | `/api/v1/model/preview` | 试算补全结果 (不保存): spec/审计/URDF |
 | GET | `/api/v1/model/sensor_template` | 新增传感器默认参数 ?type=lidar2d\|lidar3d\|camera\|stereo\|tof\|photoelectric\|codeReader |
-| PUT | `/api/v1/model/chassis` | 切换车型 |
-| POST | `/api/v1/model/reload` | 重新解析 cmodel 并重建仿真 |
+| PUT | `/api/v1/model/chassis` | 切换车型 {type: single_steer\|diff_drive\|dual_steer\|cmodel} |
+| POST | `/api/v1/model/reload` | 重新解析 cmodel 并重建仿真 {cmodel_path, load: full\|idle} |
 | GET | `/api/v1/world` | 场景 |
-| PUT | `/api/v1/world/scenario` | 切换场景 |
+| PUT | `/api/v1/world/scenario` | 切换场景 {id} |
+| GET | `/api/v1/gpu` | GPU 射线求交服务 (gpucastd) 状态 |
 | GET | `/api/v1/world/obstacles` | 动态障碍物 |
 | PUT | `/api/v1/world/obstacles` | 设置动态障碍物 (请求体为数组，元素 {x, y, w, h, z, yaw, motion}) |
 | POST | `/api/v1/scene/load` | 加载场景定义 {scene} 或平台场景 {hub_scene_id} |
 | POST | `/api/v1/model/load` | 从平台加载模型 {model_id, version} |
 | GET | `/api/v1/instance` | 实例信息 (平台模型/场景) |
 | GET | `/api/v1/world/map` | Nav2 栅格地图 ?part=pgm\|yaml&res=0.05 |
+| GET | `/api/v1/fork` | 货叉状态 (高度/速度/载货/受阻) |
+| PUT | `/api/v1/fork` | 货叉控制 {height: m, reach?: m} 或 {action: up\|down\|stop\|top\|bottom\|reach_out\|reach_in} |
+| GET | `/api/v1/actuator` | 上装执行机构状态 (顶升/货叉/辊筒/牵引, 统一视图) |
+| PUT | `/api/v1/actuator` | 上装执行机构控制: 顶升 {action: up\|down\|stop, height?, tray_deg?, rotate_deg?, follow?} / 货叉 {action: up\|down\|top\|bottom\|reach_out\|reach_in, height?, reach?} / 辊筒 {action: load\|unload\|forward\|reverse\|stop, side: left\|right} / 牵引 {action: lock\|release} |
+| GET | `/api/v1/model/assembly` | 机器人装配模型 (cmodel → 连杆/关节/外观基本体/执行机构参数/缺失项) |
+| GET | `/api/v1/model/missing` | cmodel 缺失/推断项清单 (URDF/仿真所用的补全值) |
+| GET | `/api/v1/model/mjcf` | MuJoCo MJCF (当前场景 + 铰接机器人) |
+| GET | `/api/v1/world/props` | 场景布景道具 (立柱/充电桩/货架/输送线/护栏) |
+| PUT | `/api/v1/world/dressing` | 重新布景 {mode: auto\|demo\|none} (auto: 道具与货物避开路网; demo: 另在每个站点放置待取货物) |
+| GET | `/api/v1/world/pcd` | 场景点云地图 PCD v0.7 ?res=0.05&floor=0&ceiling=0&z_max=6&format=binary\|ascii |
+| GET | `/api/v1/world/cargo` | 货物列表 (托盘/箱子) |
+| POST | `/api/v1/world/cargo` | 新增货物 {kind: pallet\|box\|tote\|rack\|cart, id, x, y, yaw, z0?, size?: [长,宽,高]} |
+| DELETE | `/api/v1/world/cargo/{id}` | 移除货物 |
 | GET | `/api/v1/sim` | 仿真状态/性能 |
-| PUT | `/api/v1/sim` | 暂停/实时因子 |
-| POST | `/api/v1/sim/reset` | 位姿复位 |
+| PUT | `/api/v1/sim` | 暂停/实时因子 {paused, rtf} |
+| POST | `/api/v1/sim/reset` | 位姿复位 {x, y, yaw} |
 | GET | `/api/v1/state` | 真值/里程计/关节/碰撞 |
 | GET | `/api/v1/sensors` | 传感器清单 |
-| GET | `/api/v1/sensors/lidars/{name}` | 激光帧 (长轮询/二进制) |
+| GET | `/api/v1/sensors/lidars/{name}` | 激光帧 (长轮询/二进制) ?after_seq=N&wait=0.2 |
 | GET | `/api/v1/sensors/scan` | 融合扫描 |
 | PUT | `/api/v1/sensors/lidar_config` | 激光配置 {beams, range_max, freq_hz, sensor_resolution_deg} |
 | GET | `/api/v1/sensors/cameras` | 相机清单 (内参/流/帧序号) |
@@ -167,14 +181,14 @@ OpenAPI: `docs/openapi/sim.json` · 契约版本 1.0.0
 | GET | `/api/v1/sensors/bumpers` | 防撞触边 (碰撞条) |
 | GET | `/api/v1/sensors/photoelectric` | 光电传感器 |
 | GET | `/api/v1/io` | IO 状态 |
-| PUT | `/api/v1/io` | 批量写 IO |
-| PUT | `/api/v1/io/{kind}/{name}` | 写单个 IO |
+| PUT | `/api/v1/io` | 批量写 IO {di, do} |
+| PUT | `/api/v1/io/{kind}/{name}` | 写单个 IO {value} |
 | GET | `/api/v1/control` | 当前指令/看门狗 |
-| PUT | `/api/v1/control/cmd_vel` | 速度指令 (执行进程 → 仿真) |
+| PUT | `/api/v1/control/cmd_vel` | 速度指令 (执行进程 → 仿真) {vx, vy, wz, source} |
 | GET | `/api/v1/nav/feedback` | 导航回馈 |
 | PUT | `/api/v1/nav/feedback` | 执行进程回馈导航状态 (请求体为导航回馈对象，字段同 GET /api/v1/nav/feedback) |
-| GET | `/api/v1/events` | 仿真事件 |
-| GET | `/api/v1/snapshot` | Web 汇总快照 |
+| GET | `/api/v1/events` | 仿真事件 ?since=N |
+| GET | `/api/v1/snapshot` | Web 汇总快照 ?scans=1 |
 
 ## 执行进程 nav_runtime
 
