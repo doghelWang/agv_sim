@@ -62,13 +62,19 @@ fi
 SPAWNER_ENV=""
 [ "${AGV_SPAWNER_OFF:-0}" != 1 ] && SPAWNER_ENV="AGV_SPAWNER=http://127.0.0.1:8069"
 
+# Rust 版平台/节点代理: 容器内有 /opt/agv/bin/hub 与 /opt/agv/bin/agent 时使用 (AGV_RUST=0 退回 Python 版)
+HUB_CMD="python3 -m hub.server"; AGENT_CMD="python3 -m agent.server"
+if [ "${AGV_RUST:-1}" != 0 ]; then
+    [ -x "$AGV_CODE/bin/hub" ] && HUB_CMD=/opt/agv/bin/hub
+    [ -x "$AGV_CODE/bin/agent" ] && AGENT_CMD=/opt/agv/bin/agent
+fi
 # ---- 2. 资源平台 (本机当平台时)
 if remote_hub; then
     echo "[info] 作为计算节点接入主平台 $HUB_API (不启动本机平台)"
     HUB="$HUB_API"; TOKEN="$JOIN_TOKEN"; ADV="AGENT_HOST=${AGENT_HOST:-$(wlan_ip)}"
 else
     if ! http_ok "http://127.0.0.1:$AGV_HUB_PORT/api/hub/health"; then
-        nohup proot-distro login "$AGV_DISTRO" -- bash -c "cd /opt/agv && $SPAWNER_ENV HUB_PORT=$AGV_HUB_PORT python3 -m hub.server" > ~/hub.log 2>&1 < /dev/null &
+        nohup proot-distro login "$AGV_DISTRO" -- bash -c "cd /opt/agv && $SPAWNER_ENV HUB_PORT=$AGV_HUB_PORT AGV_HOME=/opt/agv $HUB_CMD" > ~/hub.log 2>&1 < /dev/null &
         echo "[info] 资源平台 :$AGV_HUB_PORT 启动中"
         for i in $(seq 1 60); do http_ok "http://127.0.0.1:$AGV_HUB_PORT/api/hub/health" && break; sleep 1; done
     fi
@@ -81,7 +87,7 @@ if ! http_ok http://127.0.0.1:8070/api/v1/health; then
     MODEL="${AGV_DEVICE_MODEL:-$(getprop ro.product.model 2>/dev/null) ($(getprop ro.soc.model 2>/dev/null))}"
     nohup proot-distro login "$AGV_DISTRO" -- bash -c "cd /opt/agv && $SPAWNER_ENV $ADV HUB_API='$HUB' JOIN_TOKEN='$TOKEN' \
         AGENT_RUNTIME=process AGENT_NAME='${AGENT_NAME:-phone}' \
-        AGV_CPUS_SIM='$AGV_CPUS_SIM' AGV_CPUS_NAV='$AGV_CPUS_NAV' AGV_CPUS_WEB='$AGV_CPUS_WEB' OPENBLAS_NUM_THREADS='${OPENBLAS_NUM_THREADS:-1}' AGV_DEVICE_MODEL='$MODEL' AGENT_PORT=8070 python3 -m agent.server" \
+        AGV_CPUS_SIM='$AGV_CPUS_SIM' AGV_CPUS_NAV='$AGV_CPUS_NAV' AGV_CPUS_WEB='$AGV_CPUS_WEB' OPENBLAS_NUM_THREADS='${OPENBLAS_NUM_THREADS:-1}' AGV_DEVICE_MODEL='$MODEL' AGENT_PORT=8070 AGV_HOME=/opt/agv $AGENT_CMD" \
         > ~/agent.log 2>&1 < /dev/null &
     echo "[info] 节点代理 :8070 启动中${AGV_CPUS_SIM:+ (仿真绑核 $AGV_CPUS_SIM，网关 ${AGV_CPUS_WEB:-不绑定})}"
 fi

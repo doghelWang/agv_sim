@@ -52,11 +52,11 @@ apt-get install -y -q --no-install-recommends \
     python3-pip python3-numpy python3-pil python3-psutil python3-protobuf libopenblas0-pthread gcc libc6-dev
 
 # ---- MuJoCo (pip)。proot 里 ANDROID_* 环境变量会让 pip 误判成 Android 而启动失败，先去掉
-if ! python3 -c "import mujoco" 2>/dev/null; then
+if ! python3 -c "import mujoco; assert mujoco.__version__ == \"3.16.0\"" 2>/dev/null; then
     echo "== pip 安装 MuJoCo"
     PIPI=""; [ "$MIRROR" = tuna ] && PIPI="-i https://pypi.tuna.tsinghua.edu.cn/simple"
     env -u ANDROID_DATA -u ANDROID_ROOT -u ANDROID_ART_ROOT -u ANDROID_I18N_ROOT -u ANDROID_TZDATA_ROOT \
-        python3 -m pip install --no-cache-dir $PIPI "mujoco>=3.3" "numpy<2"
+        python3 -m pip install --no-cache-dir $PIPI "mujoco==3.16.0" "numpy<2"
 fi
 
 python3 - <<'EOF'
