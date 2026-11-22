@@ -197,7 +197,10 @@ impl Deployer {
         for (k, v) in [("SIM_API_PORT", json!(pn("sim_api"))), ("WEB_PORT", json!(pn("web"))), ("NAV_API", json!(format!("http://{nav_host}:{}", pn("nav_api")))), ("HUB_API", json!(hub_url)), ("INSTANCE_ID", json!(iid)),
             ("MODEL_ID", i["model_id"].clone()), ("MODEL_VER", i["model_ver"].clone()), ("SCENE_ID", i["scene_id"].clone()), ("INSTANCE_NAME", i["name"].clone()),
             ("SIM_CAMERA_RENDER", json!(opts.get("camera_render").and_then(|c| c.as_str()).unwrap_or("ray")))] { env.insert(k.into(), v); }
-        let solo = same && hs.starts_with("127.") && sim_n.pointer("/info/runtime/runtime").and_then(|r| r.as_str()) == Some("process");
+        // single-phone mode used to bind the instance gateway / nav API to loopback, which made http://<phone-ip>:<web port>
+        // unreachable from the LAN. They now listen on all interfaces; HUB_LOCAL_INSTANCES=1 restores loopback-only.
+        let solo = same && hs.starts_with("127.") && sim_n.pointer("/info/runtime/runtime").and_then(|r| r.as_str()) == Some("process")
+            && std::env::var("HUB_LOCAL_INSTANCES").map(|v| v == "1").unwrap_or(false);
         if solo { env.insert("WEB_BIND".into(), json!("127.0.0.1")); env.insert("AGV_BIND".into(), json!("127.0.0.1")); }
         if let Some(o) = opts.get("env_sim").and_then(|e| e.as_object()) { for (k, v) in o { env.insert(k.clone(), v.clone()); } }
         let (cname_s, cname_n) = (format!("agv-sim-{iid}"), format!("agv-nav-{iid}"));
