@@ -26,9 +26,13 @@ pub struct ForkSpec {
     pub spacing: f64,
     pub max_load: f64,
     pub loaded_factor: f64,
+    /// +1: tines point to +x (forward), -1: rear-facing forks (pallet stacker with the drive unit at the front)
+    pub dir: f64,
 }
 
 impl ForkSpec {
+    /// body-frame x of the point at fraction `f` along the tines (0 = root, 1 = tip)
+    pub fn at(&self, f: f64) -> f64 { self.x + self.dir * self.tine_len * f }
     pub fn from_spec(spec: &Value) -> Option<ForkSpec> {
         let f = spec.get("fork").filter(|f| f.is_object())?;
         let g = |k: &str, d: f64| f.get(k).and_then(|v| v.as_f64()).filter(|v| *v > 0.0).unwrap_or(d);
@@ -38,6 +42,7 @@ impl ForkSpec {
             mast_max: g("mast_max_m", 3.0), speed: g("lift_speed_mps", 0.3), accel: g("lift_accel_mps2", 0.4),
             tine_len: g("tine_length_m", 1.1), tine_w: g("tine_width_m", 0.12), tine_t: g("tine_thickness_m", 0.06),
             spacing: g("tine_spacing_m", 0.35), max_load: g("max_load_kg", 1000.0), loaded_factor: g("load_speed_factor", 0.6),
+            dir: if f.get("dir").and_then(|v| v.as_f64()).unwrap_or(1.0) < 0.0 { -1.0 } else { 1.0 },
         })
     }
 }
@@ -120,7 +125,7 @@ impl Fork {
     pub fn tine_polys(&self, x: f64, y: f64, th: f64) -> [Poly; 2] {
         let (s, c) = th.sin_cos();
         let mk = |ty: f64| {
-            let (lx, ly) = (self.sp.x + self.sp.tine_len / 2.0, ty);
+            let (lx, ly) = (self.sp.at(0.5), ty);
             rect(x + c * lx - s * ly, y + s * lx + c * ly, self.sp.tine_len / 2.0, self.sp.tine_w / 2.0, th)
         };
         [mk(self.sp.spacing / 2.0), mk(-self.sp.spacing / 2.0)]
@@ -216,7 +221,7 @@ impl Fork {
         let mut cnt = [0, 0];
         for (k, ty) in [self.sp.spacing / 2.0, -self.sp.spacing / 2.0].iter().enumerate() {
             for j in 0..8 {
-                let lx = self.sp.x + self.sp.tine_len * (j as f64 + 0.5) / 8.0;
+                let lx = self.sp.at((j as f64 + 0.5) / 8.0);
                 let (px, py) = (x + c * lx - s * ty, y + s * lx + c * ty);
                 if point_in(o, px, py, 0.0) { cnt[k] += 1; }
             }
@@ -334,7 +339,7 @@ impl Fork {
         let mut step = self.reach_v * dt;
         if step.abs() > d.abs() { step = d; }
         let old = self.sp.x;
-        self.sp.x = self.base_x + self.reach + step;
+        self.sp.x = self.base_x + self.sp.dir * (self.reach + step);
         for l in self.load.iter_mut() { l.rel[0] += step; }
         if self.hit_at(world, pose[0], pose[1], pose[2], segs) {
             self.sp.x = old;
@@ -428,7 +433,7 @@ impl Fork {
         let tip = world.obstacles.iter().any(|o| is_cargo(o) && onum(o, "pocket_h", 0.0) > 0.0 && !self.is_carried(ostr(o, "id")) && {
             let r = obst_rect(o);
             let (s, c) = th.sin_cos();
-            let (lx, ly) = (sp.x + sp.tine_len + 0.15, 0.0);
+            let (lx, ly) = (sp.at(1.0) + sp.dir * 0.15, 0.0);
             let probe = rect(x + c * lx - s * ly, y + s * lx + c * ly, 0.1, sp.spacing / 2.0, th);
             sat(&probe, &r) || tp.iter().any(|t| sat(t, &r))
         });
@@ -442,7 +447,7 @@ impl Fork {
         json!({"name": self.sp.name, "height_m": round3(self.h), "velocity_mps": round3(self.v), "target_m": self.target, "mast_max_m": self.sp.mast_max,
             "state": if self.blocked_reason.is_empty() { if self.v.abs() > 1e-3 { if self.v > 0.0 { "LIFTING" } else { "LOWERING" } } else { "IDLE" } } else { "BLOCKED" },
             "blocked": self.blocked_reason, "blocked_count": self.blocked_n, "loaded": !self.load.is_empty(), "load_id": self.root,
-            "load": load, "tine": {"length": self.sp.tine_len, "width": self.sp.tine_w, "thickness": self.sp.tine_t, "spacing": self.sp.spacing, "root_x": self.sp.x},
+            "load": load, "tine": {"length": self.sp.tine_len, "width": self.sp.tine_w, "thickness": self.sp.tine_t, "spacing": self.sp.spacing, "root_x": self.sp.x, "dir": self.sp.dir},
             "limits": {"top": self.h >= self.sp.mast_max - 0.005, "bottom": self.h <= 0.005},
             "reach_m": round3(self.reach), "reach_max_m": self.reach_max, "reach_target_m": self.reach_target})
     }

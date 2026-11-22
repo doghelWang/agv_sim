@@ -241,12 +241,23 @@ impl SimCore {
         Ok(())
     }
 
+    /// radius swept when turning in place about the control point: body outline, fork tines, a carried jacking rack
+    pub fn swept_radius(&self) -> f64 {
+        let mut r = self.footprint.iter().map(|p| p[0].hypot(p[1])).fold(0.0, f64::max);
+        if let Some(f) = &self.fork { r = r.max(f.sp.at(1.0).abs().max(f.sp.x.abs()).hypot(f.sp.spacing / 2.0 + f.sp.tine_w / 2.0)); }
+        if self.asm["archetype"] == "jacking" {
+            let ch = &self.asm["chassis"];
+            r = r.max(((ch["length_m"].as_f64().unwrap_or(1.0) + 0.16).max(1.0)).hypot((ch["width_m"].as_f64().unwrap_or(0.8) + 0.24).max(0.9)) / 2.0);
+        }
+        r
+    }
+
     /// replace world props + cargo by the dressing for the current scenario / vehicle family
     pub fn apply_dressing(&mut self) {
         let mut sc = self.scenario.clone();
         if let (Some(o), Some(n)) = (sc.get("origin").cloned(), sc.get_mut("nodes").and_then(|n| n.as_object_mut())) { n.insert("__origin".into(), json!([o.get("x").cloned().unwrap_or(json!(0.0)), o.get("y").cloned().unwrap_or(json!(0.0))])); }
         let arch = self.asm["archetype"].as_str().unwrap_or("none").to_string();
-        let d = crate::props::dress(&sc, &arch, self.asm["chassis"]["width_m"].as_f64().unwrap_or(0.8), self.asm["actuator"].get("deck_z_m").and_then(|v| v.as_f64()).unwrap_or(0.6), &self.dress_mode);
+        let d = crate::props::dress(&sc, &arch, self.asm["chassis"]["width_m"].as_f64().unwrap_or(0.8), self.swept_radius(), self.asm["actuator"].get("deck_z_m").and_then(|v| v.as_f64()).unwrap_or(0.6), &self.dress_mode);
         self.world.obstacles.retain(|o| !crate::fork::is_cargo(o) && !is_prop(o));
         self.world.obstacles.extend(d.props);
         let leg = json!({"leg_h": self.asm["actuator"].get("rack_clearance_m").and_then(|v| v.as_f64()).unwrap_or(0.2), "hitch_z": self.asm["actuator"].get("hitch_z_m").and_then(|v| v.as_f64()).unwrap_or(0.3)});
@@ -875,9 +886,11 @@ fn fork_from(spec: &Value, asm: &Value) -> Option<crate::fork::Fork> {
     let fs = crate::fork::ForkSpec::from_spec(spec).or_else(|| {
         let f = json!({"fork": {"name": "fork_mast", "x": a["tine_root_x_m"], "mast_max_m": a["mast_max_m"], "lift_speed_mps": a["lift_speed_mps"], "lift_accel_mps2": a["lift_accel_mps2"],
             "tine_length_m": a["tine_length_m"], "tine_width_m": a["tine_width_m"], "tine_thickness_m": a["tine_thickness_m"], "tine_spacing_m": a["tine_spacing_m"],
-            "max_load_kg": a["max_load_kg"], "load_speed_factor": a["load_speed_factor"]}});
+            "max_load_kg": a["max_load_kg"], "load_speed_factor": a["load_speed_factor"], "dir": a["fork_dir"]}});
         crate::fork::ForkSpec::from_spec(&f)
     })?;
+    let mut fs = fs;
+    if let Some(d) = a["fork_dir"].as_f64() { fs.dir = if d < 0.0 { -1.0 } else { 1.0 }; }
     let mut f = crate::fork::Fork::new(fs);
     if arch == "reach_fork" { f = f.with_reach(a["reach_stroke_m"].as_f64().unwrap_or(0.5), a["reach_speed_mps"].as_f64().unwrap_or(0.12)); }
     Some(f)

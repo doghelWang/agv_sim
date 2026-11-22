@@ -209,7 +209,8 @@ fn code_reader_images_qr() {
 fn dressing_same_in_both_backends() {
     let mut a = core(spec_of("models/roller_amr.cmodel"), false);
     a.set_dressing("auto").unwrap();
-    assert!(a.props_list().len() > 5 && a.cargo_list().len() > 3, "auto dressing: {} props {} cargo", a.props_list().len(), a.cargo_list().len());
+    assert!(a.props_list().len() >= 3 && a.cargo_list().len() > 3, "auto dressing: {} props {} cargo", a.props_list().len(), a.cargo_list().len());
+    assert!(a.props_list().iter().any(|p| p["type"] == "conveyor"), "roller dressing has a conveyor station");
     // robot at the origin is clear of every prop
     idle(&mut a, 0.3);
     assert_eq!(a.collisions, 0);
@@ -220,4 +221,22 @@ fn dressing_same_in_both_backends() {
     assert_eq!(n(&a), n(&b));
     idle(&mut b, 0.3);
     assert_eq!(b.collisions, 0);
+}
+
+#[test]
+fn tall_single_steer_lifter_is_rear_fork_stacker() {
+    // 测试车模型: single steer wheel ahead of the load axle, ZAPI pump motor "lift-motor", 2.03 m envelope, no fork module
+    let mut c = core(spec_of("tests/data/测试车模型.cmodel"), lib().is_some());
+    assert_eq!(c.asm["archetype"], "stacker_fork", "{}", c.asm["archetype_source"]);
+    let f = c.fork.as_ref().expect("fork runtime");
+    assert_eq!(f.sp.dir, -1.0);
+    assert!(f.sp.at(1.0) < -0.4 && f.sp.x > 0.3, "tines run from the root {} to the tail {}", f.sp.x, f.sp.at(1.0));
+    let tp = f.tine_polys(0.0, 0.0, 0.0);
+    assert!(tp.iter().all(|p| p.iter().all(|q| q[0] < f.sp.x + 1e-9)), "tines behind the root");
+    // mast/carriage built in a 180° mount frame; the lift moves the carriage
+    assert!(c.asm["links"].as_array().unwrap().iter().any(|l| l["name"] == "fork_mount_link"));
+    c.fork.as_mut().unwrap().set_target(0.3);
+    idle(&mut c, 2.5);
+    assert!(c.fork.as_ref().unwrap().h > 0.25);
+    assert_eq!(c.collisions, 0);
 }

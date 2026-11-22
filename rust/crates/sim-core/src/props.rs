@@ -38,15 +38,19 @@ fn prop(typ: &str, id: &str, x: f64, y: f64, yaw: f64, w: f64, h: f64, z: f64) -
     m
 }
 
-struct Placer { lanes: Vec<[f64; 4]>, walls: Vec<[f64; 4]>, taken: Vec<(f64, f64, f64, f64, f64)>, lane_clear: f64 }
+struct Placer { lanes: Vec<[f64; 4]>, nodes: Vec<[f64; 4]>, walls: Vec<[f64; 4]>, taken: Vec<(f64, f64, f64, f64, f64)>, lane_clear: f64, node_clear: f64 }
 impl Placer {
     fn ok(&self, x: f64, y: f64, hx: f64, hy: f64, yaw: f64, wall_clear: f64) -> bool {
         if rect_clear(x, y, hx, hy, yaw, &self.lanes) < self.lane_clear { return false; }
+        if rect_clear(x, y, hx, hy, yaw, &self.nodes) < self.node_clear { return false; }
         if rect_clear(x, y, hx, hy, yaw, &self.walls) < wall_clear { return false; }
         !self.taken.iter().any(|(tx, ty, thx, thy, _)| (x - tx).abs() < hx + thx + 0.25 && (y - ty).abs() < hy + thy + 0.25)
     }
     fn take(&mut self, x: f64, y: f64, hx: f64, hy: f64, yaw: f64) { self.taken.push((x, y, hx, hy, yaw)); }
 }
+
+/// standby / charging / dispatch stations get no transfer furniture
+fn name_is_service(n: &str) -> bool { let u = n.to_uppercase(); ["充电", "待命", "调度", "CHARG", "STANDBY", "PARK"].iter().any(|k| u.contains(k)) }
 
 #[allow(clippy::too_many_arguments)]
 fn place_item(d: &mut Dressing, item: &str, cx: f64, cy: f64, yaw: f64, along: f64, depth: f64, slot: usize, next: &mut impl FnMut(&str) -> String) {
@@ -88,8 +92,9 @@ fn place_item(d: &mut Dressing, item: &str, cx: f64, cy: f64, yaw: f64, along: f
     }
 }
 
-/// `archetype`: assembly archetype of the robot; `deck_z`: roller deck height; `mode`: "auto" | "demo" | "none"
-pub fn dress(sc: &Value, archetype: &str, robot_w: f64, deck_z: f64, mode: &str) -> Dressing {
+/// `archetype`: assembly archetype of the robot; `robot_w`: lateral envelope; `swept_r`: radius swept when the robot turns
+/// in place (body + forks / carried load); `deck_z`: roller deck height; `mode`: "auto" | "demo" | "none"
+pub fn dress(sc: &Value, archetype: &str, robot_w: f64, swept_r: f64, deck_z: f64, mode: &str) -> Dressing {
     let mut d = Dressing::default();
     if mode == "none" { return d; }
     let nodes = sc.get("nodes").and_then(|n| n.as_object()).cloned().unwrap_or_default();
@@ -98,15 +103,16 @@ pub fn dress(sc: &Value, archetype: &str, robot_w: f64, deck_z: f64, mode: &str)
         let (a, b) = (pt(c.get(0)?.as_str()?)?, pt(c.get(1)?.as_str()?)?);
         Some([a.0, a.1, b.0, b.1])
     }).collect()).unwrap_or_default();
-    let mut lanes = lanes;
-    for (_, p) in &nodes { if let (Some(x), Some(y)) = (p.get(0).and_then(|v| v.as_f64()), p.get(1).and_then(|v| v.as_f64())) { lanes.push([x, y, x, y]); } }
+    let node_pts: Vec<[f64; 4]> = nodes.values().filter_map(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?, p.get(0)?.as_f64()?, p.get(1)?.as_f64()?])).collect();
     let walls: Vec<[f64; 4]> = sc.get("walls").and_then(|w| w.as_array()).map(|a| a.iter().filter_map(|w| { let v = w.as_array()?; Some([v.first()?.as_f64()?, v.get(1)?.as_f64()?, v.get(2)?.as_f64()?, v.get(3)?.as_f64()?]) }).collect()).unwrap_or_default();
     if walls.len() < 4 { return d; }
     let xs: Vec<f64> = walls[..4].iter().flat_map(|w| [w[0], w[2]]).collect();
     let ys: Vec<f64> = walls[..4].iter().flat_map(|w| [w[1], w[3]]).collect();
     let (x0, x1) = (xs.iter().cloned().fold(f64::INFINITY, f64::min), xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
     let (y0, y1) = (ys.iter().cloned().fold(f64::INFINITY, f64::min), ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
-    let mut pl = Placer { lanes, walls, taken: vec![], lane_clear: (robot_w / 2.0 + 0.2).max(0.55) };
+    let lane_clear = (robot_w / 2.0 + 0.2).max(0.55);
+    // turning in place at a node sweeps a circle of swept_r: nothing may stand inside it (+ 0.15 m margin)
+    let mut pl = Placer { lanes, nodes: node_pts, walls, taken: vec![], lane_clear, node_clear: lane_clear.max(swept_r + 0.15) };
     let mut nid = 0usize;
     let mut next = move |p: &str| { nid += 1; format!("{p}{nid}") };
 
@@ -142,10 +148,20 @@ pub fn dress(sc: &Value, archetype: &str, robot_w: f64, deck_z: f64, mode: &str)
     for (k, (sx, sy, yaw, _name)) in stations.iter().enumerate() {
         match archetype {
             "roller" => {
-                // conveyor on the left of the docking pose, top = deck height; the first one holds a tote
+                // conveyor beside the docking pose (left first, then right), top = deck height; the first one holds a tote.
+                // Its outer edges must stay clear of every other lane / node turning circle: on a crossing it is skipped.
+                let lc = name_is_service(_name);
+                if lc { continue; }
                 let (s, c) = yaw.sin_cos();
                 let off = robot_w / 2.0 + 0.45 + 0.04;
-                let (cx, cy) = (sx - s * off, sy + c * off);
+                let lateral_ok = |x: f64, y: f64| {
+                    let own = |g: &[f64; 4]| { let (dx, dy) = (g[2] - g[0], g[3] - g[1]); let l = dx.hypot(dy); l > 1e-6 && ((dx * c + dy * s) / l).abs() > 0.99 && seg_dist(*sx, *sy, *g) < 0.05 };
+                    let other: Vec<[f64; 4]> = pl.lanes.iter().filter(|g| !own(g)).cloned().collect();
+                    let others_nodes: Vec<[f64; 4]> = pl.nodes.iter().filter(|n| (n[0] - sx).hypot(n[1] - sy) > 0.05).cloned().collect();
+                    rect_clear(x, y, 0.5, 0.45, *yaw, &other) >= pl.lane_clear && rect_clear(x, y, 0.5, 0.45, *yaw, &others_nodes) >= pl.node_clear
+                        && rect_clear(x, y, 0.5, 0.45, *yaw, &pl.walls) >= 0.05
+                };
+                let Some((cx, cy)) = [1.0, -1.0].iter().map(|sd| (sx - s * off * sd, sy + c * off * sd)).find(|(x, y)| lateral_ok(*x, *y)) else { continue };
                 d.props.push({ let mut m = prop("conveyor", &next("CV_"), cx, cy, *yaw, 1.0, 0.9, deck_z); m.insert("roll_axis".into(), json!("x")); m });
                 pl.take(cx, cy, 0.5, 0.45, *yaw);
                 if k % 2 == 0 { d.cargo.push(("tote".into(), next("TOTE_"), cx, cy, *yaw, None, None)); }
@@ -219,7 +235,7 @@ mod tests {
         let mut total = 0;
         for (id, s) in sc.as_object().unwrap() {
             for arch in ["jacking", "roller", "reach_fork", "tugger", "none"] {
-                let d = dress(s, arch, 1.0, 0.6, "auto");
+                let d = dress(s, arch, 1.0, 0.8, 0.6, "auto");
                 total += d.cargo.len() + d.props.len();
                 println!("{id}/{arch}: {} props, {} cargo", d.props.len(), d.cargo.len());
                 let nodes = s["nodes"].as_object().unwrap();

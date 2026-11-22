@@ -116,6 +116,12 @@ pub fn classify(spec: &Value) -> (String, String) {
         return ("stacker_fork".into(), format!("inferred: lifter forkMast 起升行程 {mm:.2} m"));
     }
     if let Some(k) = has(&["lift", "jack", "顶升", "举升"]) {
+        // a tall vehicle with a lift motor is a mast (pallet stacker), not a low jacking robot; a hydraulic pump motor or a
+        // single steer wheel confirms it
+        if h > 0.8 {
+            let why = if t.contains("zapi") || t.contains("pump") || t.contains("油泵") { " + 液压泵电机" } else if ctype.contains("single_steer") { " + 单舵轮" } else { "" };
+            return ("stacker_fork".into(), format!("inferred: 提升电机 '{k}' + 车高 {h:.3} m > 0.8 m (门架){why}; cmodel 无 fork 模块"));
+        }
         return ("jacking".into(), format!("inferred: 顶升电机 '{k}' + 车高 {h:.3} m{}", if t.contains("up_sensor") || t.contains("down_sensor") { " + 上/下限位" } else { "" }));
     }
     ("none".into(), "inferred: cmodel 无上装执行机构模块".into())
@@ -123,6 +129,12 @@ pub fn classify(spec: &Value) -> (String, String) {
 
 fn miss(out: &mut Vec<Value>, cat: &str, item: &str, status: &str, value: Value, note: &str) {
     out.push(json!({"category": cat, "item": item, "status": status, "value": value, "note": note}));
+}
+
+/// height of the chassis body top (deck / tray / roller surface). A cmodel `height_m` above 0.8 m on a low vehicle is
+/// the envelope incl. mast / lidar tower / guard rails, not the deck, so the deck is capped at 0.45 m.
+pub fn body_top(arch: &str, hh: f64) -> f64 {
+    match arch { "pallet_truck" => (0.30f64).min(hh), "reach_fork" => (0.38f64).min(hh), "stacker_fork" => (0.45f64).min(hh), _ => if hh > 0.8 { (0.45f64).min(hh) } else { hh } }
 }
 
 /// actuator parameters (with defaults for what the cmodel does not carry) + missing entries
@@ -147,9 +159,11 @@ fn actuator_params(spec: &Value, arch: &str, miss_out: &mut Vec<Value>) -> Value
             let speed = pick("lift_speed_mps", None, 0.03, "无丝杠导程/凸轮曲线, 无法由电机参数换算起升速度");
             let tray_d = pick("tray_diameter_m", None, r4((0.72 * l.min(w)).min(0.9)), "顶升托盘尺寸 cmodel 未描述");
             let rot = pick("rotate_speed_dps", None, 60.0, "托盘旋转机构 (同步旋转/独立电机) cmodel 未描述");
-            let clr = pick("rack_clearance_m", None, r4(hh + 0.02), "货架底部净空 = 车高 + 20 mm (推断)");
+            let deck = body_top(arch, hh);
+            let clr = pick("rack_clearance_m", None, r4(deck + 0.02), "货架底部净空 = 车体顶面 + 20 mm (推断)");
+            if hh > 0.8 { miss(miss_out, "actuator", "deck_z_m", "inferred", json!(r4(deck)), "cmodel 车高 > 0.8 m 视为外形包络 (含上装/护栏), 托盘面按 0.45 m 车体计"); }
             json!({"type": "jacking", "stroke_m": stroke, "lift_speed_mps": speed, "lift_accel_mps2": 0.1, "tray_diameter_m": tray_d, "tray_thickness_m": 0.03,
-                "rotate_speed_dps": rot, "rack_clearance_m": clr, "deck_z_m": hh, "motor": motor,
+                "rotate_speed_dps": rot, "rack_clearance_m": clr, "deck_z_m": r4(deck), "motor": motor,
                 "limit_inputs": {"top": io_name(spec, &["up_sensor", "up_limit", "top"]), "bottom": io_name(spec, &["down_sensor", "down_limit", "bottom"])}})
         }
         "reach_fork" | "stacker_fork" | "pallet_truck" => {
@@ -160,9 +174,19 @@ fn actuator_params(spec: &Value, arch: &str, miss_out: &mut Vec<Value>) -> Value
             let tw = pick("tine_width_m", fv("tine_width_m"), if pt { 0.16 } else { 0.10 }, "货叉宽度未描述");
             let tt = pick("tine_thickness_m", fv("tine_thickness_m"), if pt { 0.06 } else { 0.04 }, "货叉厚度未描述");
             let sp = pick("tine_spacing_m", fv("tine_spacing_m"), if pt { 0.36 } else { 0.56 }, "货叉外/内间距未描述");
-            let root = match fv("tine_root_x_m").or(fork.and_then(|f| f.get("x")).and_then(|v| v.as_f64())) { Some(x) => x, None => pick("tine_root_x_m", None, r4(if arch == "reach_fork" { -tail + (0.48 * l).max(0.5) + 0.08 } else { head }), "叉根位置未描述 (前移式: 缩回时门架位于车体前缘)") };
+            // fork direction: a cmodel without a fork module whose steer wheel sits ahead of the load axle (x = 0) carries
+            // its forks at the rear (pallet stacker: drive unit + mast at the front, load wheels in the fork arms)
+            let steer_x: Vec<f64> = spec.get("wheels").and_then(|w| w.as_array()).into_iter().flatten().filter(|w| s(w, "kind") == "steer").map(|w| n(w, "x", 0.0)).collect();
+            let rear = fork.is_none() && !steer_x.is_empty() && steer_x.iter().all(|x| *x > 0.2) && head > tail + 0.3;
+            let dir = match ov.get("fork_dir").and_then(|v| v.as_f64()).or(fork.and_then(|f| f.get("dir")).and_then(|v| v.as_f64())) {
+                Some(d) => if d < 0.0 { -1.0 } else { 1.0 },
+                None => if rear { -1.0 } else { 1.0 },
+            };
+            let dir_inferred = rear && dir < 0.0 && ov.get("fork_dir").is_none();
+            let root = match fv("tine_root_x_m").or(fork.and_then(|f| f.get("x")).and_then(|v| v.as_f64())) { Some(x) => x, None => pick("tine_root_x_m", None, r4(if dir < 0.0 { -tail + tl } else if arch == "reach_fork" { -tail + (0.48 * l).max(0.5) + 0.08 } else { head }), "叉根位置未描述 (前移式: 缩回时门架位于车体前缘; 后向叉: 叉尖在车尾)") };
+            if dir_inferred { pick("fork_dir", None, -1.0, "舵轮在载荷轴前方且 cmodel 无 fork 模块: 判定为后向货叉 (堆高车), 叉尖 = 车尾"); }
             let mut p = json!({"type": arch, "mast_max_m": lift, "lift_speed_mps": speed, "lift_accel_mps2": fv("lift_accel_mps2").unwrap_or(0.3),
-                "tine_length_m": tl, "tine_width_m": tw, "tine_thickness_m": tt, "tine_spacing_m": sp, "tine_root_x_m": root,
+                "tine_length_m": tl, "tine_width_m": tw, "tine_thickness_m": tt, "tine_spacing_m": sp, "tine_root_x_m": root, "fork_dir": dir,
                 "max_load_kg": fv("max_load_kg").unwrap_or(n(ch, "max_load_kg", 0.0).max(1000.0)), "load_speed_factor": fv("load_speed_factor").unwrap_or(0.6), "motor": motor});
             if arch == "reach_fork" {
                 let stroke = pick("reach_stroke_m", None, r4((0.42 * l).min(0.65)), "门架前移行程: cmodel 只有门架电机 + 原点/限位开关");
@@ -178,7 +202,7 @@ fn actuator_params(spec: &Value, arch: &str, miss_out: &mut Vec<Value>) -> Value
             let rd = pick("roller_diameter_m", None, 0.06, "辊筒直径/节距 cmodel 未描述");
             let pitch = pick("roller_pitch_m", None, 0.09, "辊筒节距未描述");
             let spd = pick("transfer_speed_mps", None, 0.3, "辊筒线速度: 无减速比/链轮参数");
-            let deck = pick("deck_z_m", None, hh, "辊面高度 = 车高 (推断)");
+            let deck = pick("deck_z_m", None, r4(body_top(arch, hh)), "辊面高度 = 车体顶面 (推断)");
             json!({"type": "roller", "roller_diameter_m": rd, "roller_pitch_m": pitch, "transfer_speed_mps": spd, "deck_z_m": deck, "transfer_axis": "y",
                 "deck_length_m": r4(l - 0.08), "deck_width_m": r4(w), "motor": motor})
         }
@@ -237,7 +261,7 @@ pub fn build(spec: &Value) -> Value {
     // --------------------------------------------------- links
     let mut b = B { links: vec![] };
     let top = hh;
-    let body_h = match arch.as_str() { "pallet_truck" => (0.30f64).min(top), "reach_fork" => (0.38f64).min(top), "stacker_fork" => (0.45f64).min(top), _ => if top > 0.8 { (0.45f64).min(top) } else { top } };
+    let body_h = body_top(&arch, top);
     let mut base_vis: Vec<Value> = vec![];
     let body_z0 = clearance;
     let cover_t = 0.012;
@@ -246,8 +270,9 @@ pub fn build(spec: &Value) -> Value {
         "reach_fork" | "pallet_truck" | "stacker_fork" => {
             // drive unit / battery housing at the rear, straddle legs or fork arms towards the front
             let root = n(&act, "tine_root_x_m", head);
-            let rear_len = if arch == "reach_fork" { (0.48 * l).max(0.5) } else { (root + tail).max(0.4) };
-            let rx0 = -tail;
+            let fdir = n(&act, "fork_dir", 1.0);
+            let rear_len = if arch == "reach_fork" { (0.48 * l).max(0.5) } else if fdir < 0.0 { (head - root).max(0.4) } else { (root + tail).max(0.4) };
+            let rx0 = if fdir < 0.0 { head - rear_len } else { -tail };
             let tower_h = if arch == "reach_fork" { (top * 0.62).max(1.0) } else if arch == "pallet_truck" { top } else { (top * 0.5).max(0.9) };
             base_vis.push(vbox([rear_len, w, body_h - body_z0], [rx0 + rear_len / 2.0, yc, body_z0 + (body_h - body_z0) / 2.0], C_BODY, "chassis"));
             // upper housing (battery / control cabinet), slightly narrower, with dark top cover
@@ -304,14 +329,18 @@ pub fn build(spec: &Value) -> Value {
     // e-stop buttons
     let n_estop = spec.pointer("/io/buttons").and_then(|a| a.as_array()).map(|a| a.iter().filter(|b| s(b, "type").contains("EMCY") && !s(b, "type").contains("NOT")).count()).unwrap_or(0).max(1);
     let estop_z = if ["reach_fork", "stacker_fork", "pallet_truck"].contains(&arch.as_str()) { body_h + 0.02 } else { body_h + 0.012 };
+    // rear-facing forks: the body (and its back end: e-stops, charging contacts) is at the +x end
+    let rear_fork = act.get("fork_dir").and_then(|v| v.as_f64()).unwrap_or(1.0) < 0.0;
+    let back = if rear_fork { head } else { -tail };
+    let inward = if rear_fork { -1.0 } else { 1.0 };
     for i in 0..n_estop.min(4) {
         let (sx, sy) = [(1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)][i];
-        let x = if ["reach_fork", "stacker_fork", "pallet_truck"].contains(&arch.as_str()) { -tail + 0.08 } else { xc + sx * (l / 2.0 - 0.08) };
+        let x = if ["reach_fork", "stacker_fork", "pallet_truck"].contains(&arch.as_str()) { back + inward * 0.08 } else { xc + sx * (l / 2.0 - 0.08) };
         base_vis.push(vcyl(0.025, 0.02, [x, yc + sy * (w / 2.0 - 0.08), estop_z], [0.0, 0.0, 0.0], C_RED, "estop"));
         base_vis.push(vcyl(0.035, 0.008, [x, yc + sy * (w / 2.0 - 0.08), estop_z - 0.012], [0.0, 0.0, 0.0], C_YELLOW, "estop_ring"));
     }
     // charging contacts (rear, low)
-    base_vis.push(vbox([0.01, 0.16, 0.05], [-tail - 0.005, yc, body_z0 + 0.05], "#b8860b", "charge_contacts"));
+    base_vis.push(vbox([0.01, 0.16, 0.05], [back - inward * 0.005, yc, body_z0 + 0.05], "#b8860b", "charge_contacts"));
     b.link("base_link", "", Value::Null, base_vis);
 
     // --------------------------------------------------- wheels
@@ -382,13 +411,17 @@ pub fn build(spec: &Value) -> Value {
         }
         "reach_fork" | "stacker_fork" | "pallet_truck" => {
             let (lift, tl, tw, tt, sp, root) = (n(&act, "mast_max_m", 1.6), n(&act, "tine_length_m", 1.07), n(&act, "tine_width_m", 0.1), n(&act, "tine_thickness_m", 0.04), n(&act, "tine_spacing_m", 0.56), n(&act, "tine_root_x_m", head));
-            let mast_parent;
+            let mut mast_parent;
+            let fdir = n(&act, "fork_dir", 1.0);
+            // rear-facing forks: the whole mast / carriage is built in a mount frame turned by 180° at the fork root
+            let rear = fdir < 0.0 && arch != "reach_fork";
+            let root = if rear { b.fixed("fork_mount_link", "base_link", [root, yc, 0.0], [0.0, 0.0, PI], vec![]); 0.0 } else { root };
             if arch == "reach_fork" {
                 let stroke = n(&act, "reach_stroke_m", 0.5);
                 b.joint("reach_link", "base_link", "reach_joint", "prismatic", [1.0, 0.0, 0.0], [root, yc, 0.0], Some((0.0, stroke)), json!({"source": "actuator", "velocity": n(&act, "reach_speed_mps", 0.12)}),
                     vec![vbox([0.24, w * 0.62, 0.08], [-0.14, 0.0, 0.10], C_STEEL, "reach_carriage"), vbox([0.04, w * 0.55, 0.3], [-0.24, 0.0, 0.3], C_DARK, "hydraulic_block")]);
                 mast_parent = "reach_link".to_string();
-            } else { mast_parent = "base_link".into(); }
+            } else { mast_parent = if rear { "fork_mount_link".into() } else { "base_link".into() }; }
             let mx = if arch == "reach_fork" { 0.0 } else { root };
             if arch != "pallet_truck" {
                 let mh = n(&act, "mast_height_m", hh.max(1.6));
@@ -419,12 +452,13 @@ pub fn build(spec: &Value) -> Value {
                 if arch != "pallet_truck" { cv.push(vbox([tt, tw, 0.42], [mx + tt / 2.0, ty, 0.21], C_FORK, "tine_shank")); }
                 cv.push(vbox([0.06, tw * 0.9, tt * 0.6], [mx + tl - 0.03, ty, tt * 0.3], "#ea580c", "tine_tip"));
             }
-            b.joint("carriage_link", if arch == "pallet_truck" { "base_link" } else { "mast_link" }, "fork_lift_joint", "prismatic", [0.0, 0.0, 1.0], [0.0, 0.0, 0.0], Some((0.0, lift)),
+            if arch == "pallet_truck" && !rear { mast_parent = "base_link".into(); }
+            b.joint("carriage_link", if arch == "pallet_truck" { mast_parent.as_str() } else { "mast_link" }, "fork_lift_joint", "prismatic", [0.0, 0.0, 1.0], [0.0, 0.0, 0.0], Some((0.0, lift)),
                 json!({"source": "actuator", "velocity": n(&act, "lift_speed_mps", 0.2), "effort": 20000.0}), cv);
             if arch == "pallet_truck" {
                 // load rollers under the fork tips (stay on the floor; the fork lifts relative to them)
                 for sy in [-1.0, 1.0] {
-                    b.fixed(&format!("load_roller_{}", if sy > 0.0 { "l" } else { "r" }), "base_link", [root + tl - 0.18, yc + sy * sp / 2.0, 0.035], [0.0, 0.0, 0.0],
+                    b.fixed(&format!("load_roller_{}", if sy > 0.0 { "l" } else { "r" }), &mast_parent, [root + tl - 0.18, if rear { 0.0 } else { yc } + sy * sp / 2.0, 0.035], [0.0, 0.0, 0.0],
                         vec![vcyl(0.035, tw * 0.8, [0.0, 0.0, 0.0], [PI / 2.0, 0.0, 0.0], "#9ca3af", "load_roller")]);
                 }
             }
