@@ -32,39 +32,63 @@ button:disabled{opacity:.45}
 .pill{font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
 .pill.running{color:#bbf7d0;border-color:#22c55e;background:#14532d}
 .pill.deploying,.pill.starting{color:#fde68a;border-color:#f59e0b;background:#78350f}
-.pill.failed,.pill.degraded{color:#fecaca;border-color:#ef4444;background:#7f1d1d}
+.pill.failed,.pill.degraded,.pill.error{color:#fecaca;border-color:#ef4444;background:#7f1d1d}
 .kv{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
 .kv div{background:#0d1528;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
 .kv b{display:block;font-size:15px;font-variant-numeric:tabular-nums}
 .kv span{font-size:11px;color:var(--mut)}
-canvas{width:100%;display:block;border-radius:10px;background:#070b16;touch-action:none}
+canvas{width:100%;display:block;border-radius:10px;background:#070b16;touch-action:manipulation}
 .legend{display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--mut);margin-top:6px}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:3px}
 .log{font:12px/1.4 ui-monospace,monospace;white-space:pre-wrap;color:#cbd5e1;max-height:160px;overflow:auto;background:#070b16;border-radius:8px;padding:8px;margin-top:8px}
+.modal{position:fixed;inset:0;background:#000a;z-index:30;display:none;align-items:center;justify-content:center;padding:20px}
+.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;width:100%;max-width:360px}
+.modal .msg{font-size:15px;margin-bottom:14px;line-height:1.5}
 .toast{position:fixed;left:12px;right:12px;bottom:16px;background:#1e293b;border:1px solid var(--line);border-radius:10px;padding:10px 12px;z-index:20;display:none}
 .mut{color:var(--mut)}
 input{font:inherit;background:#0d1528;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;width:100%}
 label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px}
 .empty{color:var(--mut);padding:8px 0}
+.prog{height:4px;background:#0d1528;border-radius:3px;margin:6px 0 2px;overflow:hidden}.prog i{display:block;height:100%;background:var(--acc);transition:width .4s}
+.step{font-size:12px;color:var(--mut)}
+.err{color:#fca5a5;font-size:12px;margin-top:4px}
+#map{cursor:pointer}
+.maptools{display:flex;gap:6px;align-items:center}
+.maptools button{min-height:28px;padding:2px 10px;font-size:12px}
+/* wide screens (unfolded landscape / tablets): controls left, live view right */
+/* phones: the live view comes first, then platform + instance controls */
+@media (max-width:759px){main{display:flex;flex-direction:column}#colL,#colR{display:contents}#setCard{order:0}#view,#noView{order:1}#platCard{order:2}#instCard{order:3}}
+@media (min-width:760px){main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:10px;align-items:start}#colL,#colR{min-width:0}}
+/* Flex Window (cover screen ~350x310 dp): tighter spacing */
+body.compact #view{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:6px;align-items:start}
+body.compact #view>section{margin-bottom:0}body.compact #view>section:nth-child(2){order:-1}
+body.compact .kv{grid-template-columns:1fr 1fr!important}body.compact #view .btns button{flex:1 1 45%;min-height:30px;font-size:12px;padding:3px 4px}
+body.compact header{padding:4px 10px}body.compact header .row{gap:6px}body.compact .sub{display:none}body.compact #hubDotC{display:inline-block!important}
+body.compact #btnSet{min-height:26px!important;padding:1px 8px!important;font-size:12px}body.compact .card h2{margin-bottom:4px;font-size:12px}body.compact .legend{display:none}body.compact .task{margin-top:3px}body.compact h1{font-size:14px}body.compact main{padding:6px 8px 40px}
+body.compact .card{padding:8px;margin-bottom:6px;border-radius:9px}body.compact button{min-height:34px;padding:5px 8px}
+body.compact .kv{grid-template-columns:repeat(3,1fr);gap:4px}body.compact .kv div{padding:3px 5px}body.compact .kv b{font-size:12px}body.compact .kv span{font-size:10px}
 .task{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mut);margin-top:6px;flex-wrap:wrap}
 </style>
 </head>
 <body>
 <header>
-  <div class="row"><h1>AMR 仿真控制</h1><button class="ghost" id="btnSet" style="min-height:32px;padding:4px 10px">设置</button></div>
+  <div class="row"><span class="dot" id="hubDotC" style="display:none"></span><h1>AMR 仿真控制</h1><button class="ghost" id="btnSet" style="min-height:32px;padding:4px 10px">设置</button></div>
   <div class="sub"><span class="dot" id="hubDot"></span><span id="hubTxt">检查平台…</span></div>
 </header>
 <main>
+ <div id="colL">
   <section class="card" id="setCard" style="display:none">
     <h2>设置</h2>
     <div class="mut" style="font-size:12px;margin-bottom:4px">平台地址 (本机用 http://127.0.0.1:8082)</div>
     <input id="hubUrl">
     <div style="height:8px"></div>
     <label class="sw"><input type="checkbox" id="keep" style="width:auto"> 保持在线 (Wi-Fi 与 CPU 不休眠, 局域网可随时访问)</label>
+    <label class="sw" style="margin-top:6px"><input type="checkbox" id="screenOn" style="width:auto"> App 在前台时屏幕常亮</label>
+    <div class="mut" style="font-size:12px;margin-top:8px" id="rootInfo"></div>
     <div class="btns" style="margin-top:10px"><button id="saveSet">保存</button></div>
   </section>
 
-  <section class="card">
+  <section class="card" id="platCard">
     <h2>仿真平台 <span class="mut" id="platInfo"></span></h2>
     <div class="btns">
       <button class="go" id="platStart">启动平台</button>
@@ -73,11 +97,13 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     <div class="log" id="platLog" style="display:none"></div>
   </section>
 
-  <section class="card">
+  <section class="card" id="instCard">
     <h2>仿真实例 <button class="ghost" id="refresh" style="min-height:28px;padding:2px 10px">刷新</button></h2>
     <div id="insts"><div class="empty">平台未运行</div></div>
   </section>
 
+  </div>
+ <div id="colR">
   <section id="view" style="display:none">
     <section class="card">
       <h2><span id="vName">-</span><span class="pill" id="vNav">-</span></h2>
@@ -92,27 +118,39 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
       <div class="task" id="kTask"></div>
     </section>
     <section class="card">
-      <h2>地图 · 路径 <span class="mut" id="mapHint">点站点 → 前往</span></h2>
+      <h2>地图 · 路径 <span class="maptools"><span class="mut" id="mapHint">点站点前往</span><button id="follow">跟随</button></span></h2>
       <canvas id="map" height="360"></canvas>
       <div class="legend"><span><i style="background:#64748b"></i>墙/工位</span><span><i style="background:#1d4ed8"></i>路线</span><span><i style="background:#22c55e"></i>规划路径</span><span><i style="background:#38bdf8"></i>AMR</span><span><i style="background:#f43f5e"></i>激光</span><span><i style="background:#a16207"></i>货物</span></div>
       <div class="btns" style="margin-top:8px">
         <button id="navCancel">取消导航</button>
+        <button id="planner" title="切换规划器">规划: -</button>
         <button id="simPause">暂停仿真</button>
         <button id="openWeb">完整工作台</button>
       </div>
     </section>
   </section>
+  <section class="card" id="noView"><div class="empty" id="noViewTxt">选择一个运行中的实例查看实时状态</div></section>
+ </div>
 </main>
 <div class="toast" id="toast"></div>
+<div class="modal" id="modal"><div class="box"><div class="msg" id="mMsg"></div><div class="btns"><button id="mNo">取消</button><button class="go" id="mYes">确定</button></div></div></div>
 <script>
 (() => {
   const $ = id => document.getElementById(id);
   const hasNative = typeof window.Native !== 'undefined';
   const LS = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (_) { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} } };
   let HUB = LS.get('hub', 'http://127.0.0.1:8082').replace(/\/$/, '');
-  let goalName = '', insts = [], sel = LS.get('sel', ''), world = null, model = null, tel = null, hubOk = false, busy = {}, trail = [];
+  let stuckSince = 0, showAll = false, goalName = '', insts = [], sel = LS.get('sel', ''), world = null, model = null, tel = null, hubOk = false, busy = {}, trail = [];
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const f = (v, n = 2) => (v === null || v === undefined || Number.isNaN(+v)) ? '-' : (+v).toFixed(n);
+  // in-page confirm (the WebView's native confirm() dialog is small and easy to miss on a phone)
+  function ask(msg, yes = '确定', danger = false) {
+    return new Promise(res => {
+      $('mMsg').textContent = msg; $('mYes').textContent = yes; $('mYes').className = danger ? 'stop' : 'go'; $('modal').style.display = 'flex';
+      const done = v => { $('modal').style.display = 'none'; $('mYes').onclick = $('mNo').onclick = null; res(v); };
+      $('mYes').onclick = () => done(true); $('mNo').onclick = () => done(false);
+    });
+  }
   function toast(msg, ms = 2500) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', ms); }
   async function api(path, opt = {}, timeout = 6000) {
     const c = new AbortController(), h = setTimeout(() => c.abort(), timeout);
@@ -133,23 +171,34 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     return new Promise(res => { pend[id] = res; Native.root(id, cmd, timeoutS); });
   }
   const R = '/data/local/ubuntu22';
-  const START = `if [ -f ${R}/enter22.sh ]; then nohup sh ${R}/enter22.sh bash /root/start22.sh > /data/local/tmp/agv_app_start.log 2>&1 & echo started; else echo "未找到 ${R}/enter22.sh"; exit 3; fi`;
+  const START = (inst) => `if [ -f ${R}/enter22.sh ]; then nohup sh ${R}/enter22.sh ${inst ? 'AGV_AUTOSTART_INSTANCE=' + inst + ' ' : ''}bash /root/start22.sh > /data/local/tmp/agv_app_start.log 2>&1 & echo started; else echo "未找到 ${R}/enter22.sh"; exit 3; fi`;
   const STOP = `for p in hub agent; do pkill -x $p && echo "stopped $p"; done; sleep 1; for p in sim-server nav-runtime web-gateway; do pkill -x $p && echo "stopped $p"; done; echo done`;
 
   function platLog(s) { const l = $('platLog'); l.style.display = 'block'; l.textContent = s.trim(); }
   async function platStart() {
-    if (busy.plat) return; busy.plat = true; $('platStart').disabled = true;
+    if (busy.plat) return;
+    if (rootOk === false) { toast('没有 root 权限, 无法启动平台', 4000); return; } busy.plat = true; $('platStart').disabled = true;
     platLog('启动平台… (hub / agent，约 10–40 秒)');
-    const r = await root(START, 30);
+    const last = (LS.get('lastRun', '') || '').split(',').filter(Boolean);
+    const r = await root(START(last[0]), 30);
     platLog(r.out || ('rc=' + r.rc));
-    for (let i = 0; i < 40; i++) { await new Promise(s => setTimeout(s, 1500)); if (await checkHub()) { platLog((r.out || '') + '\n平台已启动 ✓'); break; } }
+    let up = false;
+    for (let i = 0; i < 40; i++) { await new Promise(s => setTimeout(s, 1500)); if (await checkHub()) { up = true; break; } }
+    if (up && last.length) {
+      platLog('平台已启动 ✓  恢复上次运行的实例: ' + last.join(', '));
+      await new Promise(s => setTimeout(s, 4000));   // the boot autostart may already be bringing one back
+      let list = []; try { list = (await api('/api/hub/instances')).instances || []; } catch (_) {}
+      for (const id of last) { const i = list.find(x => x.id === id); if (i && !isLive(i.status)) { try { await api(`/api/hub/instances/${id}/restart`, { method: 'POST', body: '{}' }, 60000); } catch (e) { platLog('恢复 ' + id + ' 失败: ' + e.message); } } }
+      sel = last[0]; LS.set('sel', sel); world = model = tel = null; trail = [];
+    } else platLog(up ? '平台已启动 ✓' : '平台 60 秒内没有响应，请稍后刷新或查看 /data/local/tmp/agv_app_start.log');
     busy.plat = false; $('platStart').disabled = false; refresh();
   }
   async function platStop() {
     if (busy.plat) return;
-    if (!confirm('停止平台? 所有正在运行的仿真实例都会被停止。')) return;
+    if (!await ask('停止平台? 所有正在运行的仿真实例都会被停止。', '停止平台', true)) return;
     busy.plat = true; $('platStop').disabled = true;
     let msg = '';
+    const live = insts.filter(i => isLive(i.status)).map(i => i.id); if (live.length) LS.set('lastRun', live.join(','));
     for (const i of insts.filter(i => isLive(i.status))) { try { await api(`/api/hub/instances/${i.id}/stop`, { method: 'POST', body: '{}' }, 20000); msg += `实例 ${i.id} 已停止\n`; } catch (e) { msg += `实例 ${i.id}: ${e.message}\n`; } }
     platLog(msg + '停止 hub / agent…');
     const r = await root(STOP, 30);
@@ -161,38 +210,50 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
   const isLive = s => ['running', 'deploying', 'starting', 'degraded'].includes(s);
   async function checkHub() {
     try { const h = await api('/api/hub/health', {}, 3000); hubOk = !!h.ok; } catch (_) { hubOk = false; }
-    $('hubDot').className = 'dot ' + (hubOk ? 'on' : '');
+    $('hubDot').className = $('hubDotC').className = 'dot ' + (hubOk ? 'on' : '');
     $('hubTxt').textContent = hubOk ? `平台运行中 · ${HUB.replace(/^https?:\/\//, '')}` : `平台未运行或无法连接 (${HUB.replace(/^https?:\/\//, '')})`;
     $('platStart').disabled = hubOk || busy.plat; $('platStop').disabled = !hubOk || busy.plat;
     return hubOk;
   }
   async function refresh() {
-    if (!await checkHub()) { insts = []; renderInsts(); return; }
+    if (!await checkHub()) { insts = []; tel = null; $('platInfo').textContent = ''; renderInsts(); loadView(); return; }
     try { insts = (await api('/api/hub/instances')).instances || []; } catch (e) { toast('读取实例失败: ' + e.message); }
     insts.sort((a, b) => (isLive(b.status) - isLive(a.status)) || String(b.id).localeCompare(String(a.id), undefined, { numeric: true }));
-    if (!insts.find(i => i.id === sel)) { const r = insts.find(i => i.status === 'running'); sel = r ? r.id : ''; }
+    // keep the chosen instance; if it is gone or was stopped while another one runs, follow the running one
+    const cur = insts.find(i => i.id === sel), run = insts.find(i => i.status === 'running');
+    if ((!cur || (!isLive(cur.status) && cur.status !== 'error')) && run && run.id !== sel && !busy[sel]) { sel = run.id; LS.set('sel', sel); world = model = tel = null; trail = []; }
+    else if (!cur) sel = '';
     $('platInfo').textContent = `${insts.filter(i => i.status === 'running').length} 个实例运行中`;
     renderInsts(); loadView();
   }
-  const ST = { running: '运行中', stopped: '已停止', deploying: '启动中', starting: '启动中', failed: '失败', degraded: '异常' };
+  const ST = { running: '运行中', stopped: '已停止', deploying: '启动中', starting: '启动中', failed: '失败', error: '启动失败', degraded: '异常' };
+  function progress(i) {
+    const st = i.steps || []; if (!st.length) return '';
+    const done = st.filter(x => ['done', 'skipped'].includes(x.status)).length, cur = st.find(x => x.status === 'running');
+    return `<div class="prog"><i style="width:${Math.round(100 * done / st.length)}%"></i></div><div class="step">${done}/${st.length} ${esc(cur ? (cur.label || cur.key) + (cur.msg ? ' · ' + cur.msg : '') : '')}</div>`;
+  }
   function renderInsts() {
     const el = $('insts');
     if (!hubOk) { el.innerHTML = '<div class="empty">平台未运行 — 点 “启动平台”</div>'; return; }
     if (!insts.length) { el.innerHTML = '<div class="empty">还没有实例 (在电脑上的平台页面部署一个)</div>'; return; }
-    const shown = insts.slice(0, 8);
+    // running instances first, then the newest; the rest behind “显示全部” so the list stays short and stable
+    const shown = showAll ? insts : insts.filter((i, k) => isLive(i.status) || i.id === sel || k < 5);
     el.innerHTML = shown.map(i => `<div class="inst ${i.id === sel ? 'sel' : ''}" data-id="${esc(i.id)}">
       <div class="t"><span class="n">${esc(i.id)} · ${esc(i.model_name || '')}</span><span class="pill ${esc(i.status)}">${esc(ST[i.status] || i.status)}</span></div>
       <div class="mut" style="font-size:12px;margin:2px 0 8px">${esc(i.scene_name || i.scene_id || '')}</div>
+      ${['deploying', 'starting'].includes(i.status) ? progress(i) : ''}${i.status === 'error' && i.error ? `<div class="err">${esc(String(i.error).slice(0, 160))}</div>` : ''}
       <div class="btns">${isLive(i.status)
         ? `<button class="stop" data-act="stop">停止仿真</button><button data-act="restart">重启</button>`
-        : `<button class="go" data-act="restart">启动仿真</button>`}</div></div>`).join('') + (insts.length > shown.length ? `<div class="mut" style="font-size:12px;margin-top:6px">另有 ${insts.length - shown.length} 个旧实例未显示</div>` : '');
+        : `<button class="go" data-act="restart">启动仿真</button>`}</div></div>`).join('') + (insts.length > 5 ? `<div class="btns" style="margin-top:8px"><button class="ghost" data-all="1">${showAll ? '收起' : `显示全部 (${insts.length})`}</button></div>` : '');
   }
   $('insts').addEventListener('click', async e => {
+    if (e.target.dataset.all) { showAll = !showAll; renderInsts(); return; }
     const card = e.target.closest('.inst'); if (!card) return;
     const id = card.dataset.id, act = e.target.dataset.act;
     if (!act) { if (sel !== id) { sel = id; LS.set('sel', id); world = model = tel = null; trail = []; renderInsts(); loadView(); } return; }
     if (busy[id]) return;
-    if (act === 'restart' && insts.some(i => i.id !== id && isLive(i.status)) && !confirm('已有实例在运行。手机性能有限, 同时运行多个实例会变慢。继续?')) return;
+    if (act === 'restart' && insts.some(i => i.id !== id && isLive(i.status)) && !await ask('已有实例在运行。手机性能有限, 同时运行多个实例会变慢。继续启动?', '继续启动')) return;
+    if (act === 'stop' && !await ask(`停止仿真实例 ${id}?`, '停止', true)) return;
     busy[id] = true; e.target.disabled = true; e.target.textContent = act === 'stop' ? '停止中…' : '启动中…';
     try {
       await api(`/api/hub/instances/${id}/${act}`, { method: 'POST', body: '{}' }, 60000);
@@ -207,8 +268,10 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
   const IB = () => `/inst/${sel}`;
   async function loadView() {
     const i = inst();
-    $('view').style.display = i && i.status === 'running' ? 'block' : 'none';
-    if (!i || i.status !== 'running') return;
+    const on = !!(i && i.status === 'running');
+    $('view').style.display = on ? '' : 'none'; $('noView').style.display = on ? 'none' : 'block';
+    $('noViewTxt').textContent = !hubOk ? '平台未运行' : i ? `${i.id} ${ST[i.status] || i.status}` : '没有运行中的实例 — 点实例上的 “启动仿真”';
+    if (!on) return;
     $('vName').textContent = `${i.id} · ${i.model_name || ''} @ ${i.scene_name || ''}`;
     if (!world) { try { world = await api(IB() + '/sim/api/v1/world', {}, 8000); } catch (_) {} }
     if (!model) { try { model = await api(IB() + '/sim/api/v1/model', {}, 8000); } catch (_) {} }
@@ -225,9 +288,11 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     }
     setTimeout(pollTel, 300);
   }
-  const NAVS = { IDLE: '空闲', NAVIGATING: '行驶中', MOVING: '行驶中', SUCCEEDED: '已到达', ARRIVED: '已到达', FAILED: '失败', CANCELED: '已取消', CANCELLED: '已取消', BLOCKED: '受阻', PAUSED: '暂停', OFFLINE: '执行进程离线' };
+  const NAVS = { IDLE: '空闲', READY: '空闲', NAVIGATING: '行驶中', MOVING: '行驶中', SUCCEEDED: '已到达', ARRIVED: '已到达', FAILED: '失败', CANCELED: '已取消', CANCELLED: '已取消', BLOCKED: '受阻', PAUSED: '暂停', OFFLINE: '执行进程离线' };
   function renderTel() {
-    const t = tel, ns = String(t.nav_status || 'IDLE').toUpperCase(), sim = t.sim_status || {};
+    const t = tel, sim = t.sim_status || {};
+    let ns = t.arch && t.arch.nav_online === false ? 'OFFLINE' : String(t.nav_status || 'IDLE').toUpperCase();
+    if (/CANCEL|SUCCEED|ARRIVED/.test(ns) && !t.target_goal && !(t.plan_path || []).length) ns = ns.startsWith('CANCEL') ? 'IDLE' : ns;   // nothing to cancel → idle
     const v = Math.hypot(t.vx || 0, t.vy || 0);
     $('vNav').textContent = NAVS[ns] || ns; $('vNav').className = 'pill ' + (/NAVIG|MOV/.test(ns) ? 'running' : /FAIL|BLOCK/.test(ns) ? 'failed' : '');
     $('kNav').textContent = NAVS[ns] || ns;
@@ -241,19 +306,27 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     const goal = t.target_goal, tf = t.taskflow;
     $('kTask').innerHTML = (goal ? `目标 <b style="color:var(--text)">${esc(goal.name || goal.id || (goalName ? goalName + ` (${f(goal.x, 1)}, ${f(goal.y, 1)})` : `${f(goal.x, 1)}, ${f(goal.y, 1)}`))}</b>` : '') + (tf && tf.name ? ` · 任务流 ${esc(tf.name)} ${esc(tf.status || '')}` : '') + (t.is_paused ? ' · <span style="color:var(--warn)">仿真已暂停</span>' : '');
     $('simPause').textContent = t.is_paused ? '继续仿真' : '暂停仿真';
+    const pl = String(t.planner_type || '-'); $('planner').textContent = '规划: ' + (pl === 'nav2' ? 'Nav2' : pl === 'dijkstra' ? '内置' : pl);
+    // driving state but not moving for 10 s → likely stuck (e.g. Nav2 not executing): say so and suggest the built-in planner
+    const moving = Math.hypot(t.vx || 0, t.vy || 0) > 0.02 || Math.abs(t.wz || 0) > 0.02;
+    if (/NAVIG|MOV/.test(ns) && !moving && !t.is_paused) { stuckSince = stuckSince || Date.now(); } else stuckSince = 0;
+    if (stuckSince && Date.now() - stuckSince > 10000) $('kTask').innerHTML += ` · <span style="color:var(--warn)">已 ${Math.round((Date.now() - stuckSince) / 1000)} s 未移动${pl === 'nav2' ? ' — 可切换到 “规划: 内置”' : ''}</span>`;
   }
 
   // ------------------------------------------------------------ map
-  let view = null; // {P, inv}
+  let view = null, follow = LS.get('follow', '0') === '1'; // {P, inv}
+  function mapHeight(w) { const ih = innerHeight; return Math.round(document.body.classList.contains('compact') ? Math.max(180, Math.min(w * 1.1, ih - 150)) : Math.min(w * 0.95, Math.max(260, ih * 0.6))); }
+  $('follow').onclick = () => { follow = !follow; LS.set('follow', follow ? '1' : '0'); $('follow').textContent = follow ? '全图' : '跟随'; drawMap(); };
+  $('follow').textContent = follow ? '全图' : '跟随';
   function footprint() {
     const fp = model?.chassis?.footprint; if (fp && fp.length > 2) return fp;
     const c = model?.chassis || {}; const h = c.head_offset_m ?? 0.5, t = c.tail_offset_m ?? 0.5, l = c.left_offset_m ?? 0.4, r = c.right_offset_m ?? 0.4;
     return [[h, l], [h, -r], [-t, -r], [-t, l]];
   }
   function drawMap() {
-    const cv = $('map'), dpr = devicePixelRatio || 1, w = cv.clientWidth, h = +(cv.dataset.h || (cv.dataset.h = cv.getAttribute('height')));
-    if (!w) return;
-    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = h + 'px'; }
+    const cv = $('map'), dpr = devicePixelRatio || 1, w = cv.clientWidth; if (!w) return;
+    const h = mapHeight(w);
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = h + 'px'; }
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
     const sd = world?.scenario_def || {}, walls = (sd.walls || []).filter(Array.isArray);
     const segs = [], rects = [];
@@ -264,7 +337,8 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     const b = world?.bounds; if (b && b.min_x !== undefined) { xs.push(b.min_x, b.max_x); ys.push(b.min_y, b.max_y); }
     if (!xs.length && tel) { xs.push(tel.x - 6, tel.x + 6); ys.push(tel.y - 6, tel.y + 6); }
     if (!xs.length) return;
-    const x0 = Math.min(...xs) - .4, x1 = Math.max(...xs) + .4, y0 = Math.min(...ys) - .4, y1 = Math.max(...ys) + .4;
+    let x0 = Math.min(...xs) - .4, x1 = Math.max(...xs) + .4, y0 = Math.min(...ys) - .4, y1 = Math.max(...ys) + .4;
+    if (follow && tel) { const half = Math.max(3, Math.min(x1 - x0, y1 - y0) / 4); x0 = tel.x - half; x1 = tel.x + half; y0 = tel.y - half; y1 = tel.y + half; }
     const S = Math.min(w / (x1 - x0), h / (y1 - y0)), ox = (w - (x1 - x0) * S) / 2, oy = (h - (y1 - y0) * S) / 2;
     const P = (x, y) => [ox + (x - x0) * S, h - oy - (y - y0) * S];
     view = { P, inv: (u, v) => [x0 + (u - ox) / S, y0 + (h - oy - v) / S], S };
@@ -281,6 +355,7 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     // stations (tap targets)
     const st = (sd.stations || []);
     g.font = '10px system-ui';
+    g.save(); g.beginPath(); g.rect(0, 0, w, h); g.clip();
     Object.entries(nodes).forEach(([n, p]) => { const [u, v] = P(p[0], p[1]); g.fillStyle = '#2563eb'; g.fillRect(u - 2.5, v - 2.5, 5, 5); });
     st.forEach(s => { const [u, v] = P(s.x, s.y); g.fillStyle = '#f59e0b'; g.beginPath(); g.arc(u, v, 5, 0, 2 * Math.PI); g.fill(); });
     // trail + plan path
@@ -302,6 +377,7 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     g.beginPath(); footprint().forEach((p, k) => { const [u, v] = P(tel.x + c * p[0] - s * p[1], tel.y + s * p[0] + c * p[1]); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.closePath();
     g.fillStyle = '#38bdf833'; g.fill(); g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.stroke();
     const [u, v] = P(tel.x, tel.y), [p, q] = P(tel.x + c * .7, tel.y + s * .7); g.beginPath(); g.moveTo(u, v); g.lineTo(p, q); g.stroke();
+    g.restore();
   }
   // tap a station / node → navigate there
   $('map').addEventListener('click', async e => {
@@ -311,24 +387,43 @@ label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px
     const cands = (sd.stations || []).map(s => ({ name: s.name || s.id, x: s.x, y: s.y, yaw: s.dock_yaw || 0 }))
       .concat(Object.entries(sd.nodes || {}).map(([n, p]) => ({ name: n, x: p[0], y: p[1], yaw: null })));
     let best = null, bd = 1e9; cands.forEach(cn => { const d = Math.hypot(cn.x - mx, cn.y - my); if (d < bd) { bd = d; best = cn; } });
-    if (!best || bd * view.S > 28) return;
-    if (!confirm(`让 AMR 前往 “${best.name}” ?`)) return;
+    if (!best || bd * view.S > 32) { toast('点站点 (橙色) 或路线节点 (蓝色) 让 AMR 前往'); return; }
+    if (!await ask(`让 AMR 前往 “${best.name}” ?`, '前往')) return;
     const yaw = best.yaw ?? (tel ? Math.atan2(best.y - tel.y, best.x - tel.x) : 0);
     try { await api(IB() + '/api/navigate_to_pose', { method: 'POST', body: JSON.stringify({ x: best.x, y: best.y, yaw }) }, 8000); goalName = best.name; toast('已下发目标: ' + best.name); }
     catch (err) { toast('下发失败: ' + err.message, 4000); }
   });
   $('navCancel').onclick = async () => { try { await api(IB() + '/api/cancel_navigation', { method: 'POST', body: '{}' }); toast('已取消导航'); } catch (e) { toast(e.message); } };
   $('simPause').onclick = async () => { const p = !(tel && tel.is_paused); try { await api(IB() + (p ? '/api/sim_pause' : '/api/sim_resume'), { method: 'POST', body: JSON.stringify({ paused: p }) }); } catch (e) { toast(e.message); } };
+  $('planner').onclick = async () => {
+    const cur = tel && tel.planner_type, next = cur === 'nav2' ? 'dijkstra' : 'nav2';
+    if (!await ask(`切换路径规划器到 ${next === 'nav2' ? 'Nav2 (ROS 2)' : '内置 (Dijkstra)'}? 当前导航会被取消。`, '切换')) return;
+    try { await api(IB() + '/api/cancel_navigation', { method: 'POST', body: '{}' }); await api(IB() + '/api/planner_type', { method: 'POST', body: JSON.stringify({ type: next }) }); toast('规划器: ' + next); } catch (e) { toast(e.message); }
+  };
   $('openWeb').onclick = () => { location.href = HUB + IB() + '/'; };
-  window.onBack = () => { if (location.protocol !== 'file:') { history.back(); return true; } return false; };
+  window.onBack = () => { if ($('modal').style.display === 'flex') { $('mNo').click(); return true; } if (location.protocol !== 'file:') { history.back(); return true; } return false; };
 
   // ------------------------------------------------------------ settings
-  $('btnSet').onclick = () => { const c = $('setCard'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; $('hubUrl').value = HUB; $('keep').checked = hasNative ? Native.keepOn() : false; };
-  $('saveSet').onclick = () => { HUB = ($('hubUrl').value.trim() || 'http://127.0.0.1:8082').replace(/\/$/, ''); LS.set('hub', HUB); if (hasNative) Native.keepAwake($('keep').checked); $('setCard').style.display = 'none'; world = model = null; refresh(); };
+  $('btnSet').onclick = () => { const c = $('setCard'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; $('hubUrl').value = HUB; $('keep').checked = hasNative ? Native.keepOn() : false; $('screenOn').checked = hasNative && Native.screenOn ? Native.screenOn() : false; };
+  $('saveSet').onclick = () => { HUB = ($('hubUrl').value.trim() || 'http://127.0.0.1:8082').replace(/\/$/, ''); LS.set('hub', HUB); if (hasNative) { Native.keepAwake($('keep').checked); Native.setScreenOn && Native.setScreenOn($('screenOn').checked); } $('setCard').style.display = 'none'; world = model = null; refresh(); toast('已保存'); };
+  let rootOk = null;
+  async function checkRoot() {
+    if (!hasNative) { $('rootInfo').textContent = '浏览器模式: 平台启停需要在手机 App 里操作'; return; }
+    const r = await root('id -u', 15); rootOk = r.rc === 0 && r.out.trim() === '0';
+    $('rootInfo').textContent = rootOk ? 'root 权限: 已授权 ✓' : 'root 权限: 未授权 (平台启停不可用, 实例启停仍可用) — ' + r.out.trim().slice(0, 80);
+  }
+  // Flex Window / cover screen (~352x308 dp) or any short screen → compact layout
+  const mqCompact = matchMedia('(max-height: 480px), (min-aspect-ratio: 1/1) and (max-width: 900px)');
+  function layout() { document.body.classList.toggle('compact', mqCompact.matches); if (tel || world) drawMap(); }
+  mqCompact.addEventListener && mqCompact.addEventListener('change', layout);
+  addEventListener('resize', layout); layout();
   $('platStart').onclick = platStart; $('platStop').onclick = platStop; $('refresh').onclick = refresh;
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 
-  refresh(); setInterval(refresh, 5000); pollTel();
+  // poll fast while something is starting, slowly otherwise
+  (function loop() { const fast = busy.plat || insts.some(i => ['deploying', 'starting'].includes(i.status)) || Object.keys(busy).some(k => busy[k]);
+    setTimeout(() => refresh().finally(loop), fast ? 1500 : 5000); })();
+  refresh(); pollTel(); checkRoot();
 })();
 </script>
 </body>

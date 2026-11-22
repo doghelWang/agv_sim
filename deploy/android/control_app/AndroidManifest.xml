@@ -4,7 +4,7 @@
      平台进程 (hub/agent) 的启停用 root (Magisk su) 执行 /data/local/ubuntu22 里的 start22.sh。
      "保持在线" 用前台服务持有 Wi-Fi 高性能锁 + CPU 唤醒锁, 让手机在局域网里一直可访问。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.agvsim.control" android:versionCode="1" android:versionName="1.0">
+    package="com.agvsim.control" android:versionCode="6" android:versionName="1.5">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -13,7 +13,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application android:label="AMR 仿真控制" android:icon="@mipmap/ic_launcher" android:hardwareAccelerated="true" android:usesCleartextTraffic="true">
-        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+        <!-- Galaxy Z Flip 外屏 (Flex Window) 允许显示 -->
+        <meta-data android:name="com.samsung.android.foldable.support.cover" android:value="true" />
+        <meta-data android:name="android.max_aspect" android:value="2.5" />
+        <activity android:name=".MainActivity" android:resizeableActivity="true" android:exported="true" android:launchMode="singleTask"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>

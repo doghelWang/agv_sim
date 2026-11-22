@@ -35,17 +35,28 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient());
         web.setWebChromeClient(new WebChromeClient());
         web.addJavascriptInterface(new Bridge(this), "Native");
+        WebView.setWebContentsDebuggingEnabled(true);   // chrome://inspect over adb, for on-device testing
         setContentView(web);
+        applyScreenOn();
         web.loadUrl("file:///android_asset/index.html");
         if (prefs().getBoolean("keep", true)) startKeep(true);
     }
 
     @Override
     public void onBackPressed() {
+        // inside the full workbench (a hub page loaded into this WebView): go back to the app page
+        if (web.canGoBack()) { web.goBack(); return; }
         web.evaluateJavascript("window.onBack && window.onBack()", new android.webkit.ValueCallback<String>() {
             @Override public void onReceiveValue(String v) { if (!"true".equals(v)) moveTaskToBack(true); }
         });
     }
+
+    void applyScreenOn() {
+        if (prefs().getBoolean("screenOn", false)) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    @Override protected void onResume() { super.onResume(); if (web != null) web.evaluateJavascript("window.dispatchEvent(new Event('focus'))", null); }
 
     private SharedPreferences prefs() { return getSharedPreferences("agv", MODE_PRIVATE); }
 
@@ -75,7 +86,7 @@ public class MainActivity extends Activity {
     private void runRoot(String id, String cmd, int timeoutS) {
         int rc = -1; StringBuilder out = new StringBuilder();
         try {
-            final Process p = new ProcessBuilder("su").redirectErrorStream(true).start();
+            final Process p = new ProcessBuilder("su", "-mm").redirectErrorStream(true).start();
             OutputStream o = p.getOutputStream();
             o.write((cmd + "\nexit $?\n").getBytes("UTF-8")); o.flush(); o.close();
             final long ms = Math.max(5, timeoutS) * 1000L;
@@ -99,6 +110,8 @@ public class MainActivity extends Activity {
         }
         @JavascriptInterface public void keepAwake(final boolean on) { a.prefs().edit().putBoolean("keep", on).apply(); a.ui.post(new Runnable() { @Override public void run() { a.startKeep(on); } }); }
         @JavascriptInterface public boolean keepOn() { return a.prefs().getBoolean("keep", true); }
-        @JavascriptInterface public String version() { return "1.0"; }
+        @JavascriptInterface public String version() { return "1.5"; }
+        @JavascriptInterface public boolean screenOn() { return a.prefs().getBoolean("screenOn", false); }
+        @JavascriptInterface public void setScreenOn(final boolean on) { a.prefs().edit().putBoolean("screenOn", on).apply(); a.ui.post(new Runnable() { @Override public void run() { a.applyScreenOn(); } }); }
     }
 }
