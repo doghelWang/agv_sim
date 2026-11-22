@@ -123,7 +123,9 @@ th{color:var(--mut);font-weight:500}
 <script>
 (() => {
   // works at /live.html on the instance gateway and at /inst/<id>/live.html through the hub
-  const BASE = location.pathname.replace(/[^/]*$/, '');
+  // ?base=http://<phone>:8101/ reads another gateway (the APIs allow cross-origin), e.g. when this file is opened locally
+  const qb = new URLSearchParams(location.search).get('base');
+  const BASE = qb ? qb.replace(/\/?$/, '/') : location.pathname.replace(/[^/]*$/, '');
   const SIM = BASE + 'sim/api/v1';
   const $ = id => document.getElementById(id);
   const COLORS = ['#f43f5e', '#22d3ee', '#a3e635', '#fbbf24', '#c084fc', '#fb923c'];
@@ -184,7 +186,7 @@ th{color:var(--mut);font-weight:500}
   function setConn(ok, msg) {
     $('conn').classList.toggle('on', ok);
     $('connTxt').textContent = ok ? '在线' : '断开';
-    if (!ok) { $('err').hidden = false; $('err').textContent = `无法读取仿真数据: ${msg}。请确认实例在运行 (地址 ${location.host}${SIM})。`; }
+    if (!ok) { $('err').hidden = false; $('err').textContent = `无法读取仿真数据: ${msg}。请确认实例在运行 (地址 ${qb ? SIM : location.host + SIM})。`; }
   }
 
   function record(s) {
