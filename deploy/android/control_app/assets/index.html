@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>AMR 仿真控制</title>
+<style>
+:root{--bg:#0b1020;--panel:#121a2e;--line:#22304f;--text:#e2e8f5;--mut:#8291b0;--acc:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,"PingFang SC",sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 14px 8px;border-bottom:1px solid var(--line)}
+header .row{display:flex;align-items:center;gap:8px}
+h1{font-size:17px;margin:0;flex:1}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--bad);display:inline-block;margin-right:6px;vertical-align:0}
+.dot.on{background:var(--ok)}.dot.mid{background:var(--warn)}
+.sub{color:var(--mut);font-size:12px;margin-top:4px}
+main{padding:10px 12px 90px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+.card h2{font-size:13px;color:var(--mut);margin:0 0 8px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+button{font:inherit;color:var(--text);background:#1b2742;border:1px solid var(--line);border-radius:9px;padding:9px 12px;min-height:40px}
+button:active{transform:scale(.98)}
+button.go{background:#14532d;border-color:#22c55e}
+button.stop{background:#7f1d1d;border-color:#ef4444}
+button.ghost{background:transparent}
+button:disabled{opacity:.45}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btns button{flex:1}
+.inst{border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px}
+.inst.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset}
+.inst .t{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.inst .n{font-weight:600}
+.pill{font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
+.pill.running{color:#bbf7d0;border-color:#22c55e;background:#14532d}
+.pill.deploying,.pill.starting{color:#fde68a;border-color:#f59e0b;background:#78350f}
+.pill.failed,.pill.degraded{color:#fecaca;border-color:#ef4444;background:#7f1d1d}
+.kv{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+.kv div{background:#0d1528;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.kv b{display:block;font-size:15px;font-variant-numeric:tabular-nums}
+.kv span{font-size:11px;color:var(--mut)}
+canvas{width:100%;display:block;border-radius:10px;background:#070b16;touch-action:none}
+.legend{display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--mut);margin-top:6px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:3px}
+.log{font:12px/1.4 ui-monospace,monospace;white-space:pre-wrap;color:#cbd5e1;max-height:160px;overflow:auto;background:#070b16;border-radius:8px;padding:8px;margin-top:8px}
+.toast{position:fixed;left:12px;right:12px;bottom:16px;background:#1e293b;border:1px solid var(--line);border-radius:10px;padding:10px 12px;z-index:20;display:none}
+.mut{color:var(--mut)}
+input{font:inherit;background:#0d1528;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;width:100%}
+label.sw{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px}
+.empty{color:var(--mut);padding:8px 0}
+.task{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mut);margin-top:6px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><h1>AMR 仿真控制</h1><button class="ghost" id="btnSet" style="min-height:32px;padding:4px 10px">设置</button></div>
+  <div class="sub"><span class="dot" id="hubDot"></span><span id="hubTxt">检查平台…</span></div>
+</header>
+<main>
+  <section class="card" id="setCard" style="display:none">
+    <h2>设置</h2>
+    <div class="mut" style="font-size:12px;margin-bottom:4px">平台地址 (本机用 http://127.0.0.1:8082)</div>
+    <input id="hubUrl">
+    <div style="height:8px"></div>
+    <label class="sw"><input type="checkbox" id="keep" style="width:auto"> 保持在线 (Wi-Fi 与 CPU 不休眠, 局域网可随时访问)</label>
+    <div class="btns" style="margin-top:10px"><button id="saveSet">保存</button></div>
+  </section>
+
+  <section class="card">
+    <h2>仿真平台 <span class="mut" id="platInfo"></span></h2>
+    <div class="btns">
+      <button class="go" id="platStart">启动平台</button>
+      <button class="stop" id="platStop">停止平台</button>
+    </div>
+    <div class="log" id="platLog" style="display:none"></div>
+  </section>
+
+  <section class="card">
+    <h2>仿真实例 <button class="ghost" id="refresh" style="min-height:28px;padding:2px 10px">刷新</button></h2>
+    <div id="insts"><div class="empty">平台未运行</div></div>
+  </section>
+
+  <section id="view" style="display:none">
+    <section class="card">
+      <h2><span id="vName">-</span><span class="pill" id="vNav">-</span></h2>
+      <div class="kv">
+        <div><span>导航状态</span><b id="kNav">-</b></div>
+        <div><span>剩余距离</span><b id="kRem">-</b></div>
+        <div><span>速度 v / ω</span><b id="kVel">-</b></div>
+        <div><span>位置 x, y, θ</span><b id="kPose">-</b></div>
+        <div><span>仿真时间 · 实时率</span><b id="kSim">-</b></div>
+        <div><span>最近障碍 · 防撞</span><b id="kSafe">-</b></div>
+      </div>
+      <div class="task" id="kTask"></div>
+    </section>
+    <section class="card">
+      <h2>地图 · 路径 <span class="mut" id="mapHint">点站点 → 前往</span></h2>
+      <canvas id="map" height="360"></canvas>
+      <div class="legend"><span><i style="background:#64748b"></i>墙/工位</span><span><i style="background:#1d4ed8"></i>路线</span><span><i style="background:#22c55e"></i>规划路径</span><span><i style="background:#38bdf8"></i>AMR</span><span><i style="background:#f43f5e"></i>激光</span><span><i style="background:#a16207"></i>货物</span></div>
+      <div class="btns" style="margin-top:8px">
+        <button id="navCancel">取消导航</button>
+        <button id="simPause">暂停仿真</button>
+        <button id="openWeb">完整工作台</button>
+      </div>
+    </section>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const hasNative = typeof window.Native !== 'undefined';
+  const LS = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (_) { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} } };
+  let HUB = LS.get('hub', 'http://127.0.0.1:8082').replace(/\/$/, '');
+  let goalName = '', insts = [], sel = LS.get('sel', ''), world = null, model = null, tel = null, hubOk = false, busy = {}, trail = [];
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const f = (v, n = 2) => (v === null || v === undefined || Number.isNaN(+v)) ? '-' : (+v).toFixed(n);
+  function toast(msg, ms = 2500) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', ms); }
+  async function api(path, opt = {}, timeout = 6000) {
+    const c = new AbortController(), h = setTimeout(() => c.abort(), timeout);
+    try {
+      const r = await fetch(HUB + path, { ...opt, signal: c.signal, headers: { 'content-type': 'application/json', 'X-User': 'app', ...(opt.headers || {}) } });
+      const txt = await r.text(); let j; try { j = JSON.parse(txt); } catch (_) { j = { raw: txt }; }
+      if (!r.ok) throw new Error(j?.error?.message || j?.message || j?.detail || `HTTP ${r.status}`);
+      return j;
+    } finally { clearTimeout(h); }
+  }
+
+  // ------------------------------------------------------------ root shell (platform processes)
+  const pend = {};
+  window.__rootDone = (id, rc, out) => { const p = pend[id]; delete pend[id]; p && p({ rc, out }); };
+  function root(cmd, timeoutS = 120) {
+    if (!hasNative) return Promise.resolve({ rc: -1, out: '只能在手机 App 里执行 (需要 root)' });
+    const id = 'r' + Date.now() + Math.random().toString(36).slice(2, 6);
+    return new Promise(res => { pend[id] = res; Native.root(id, cmd, timeoutS); });
+  }
+  const R = '/data/local/ubuntu22';
+  const START = `if [ -f ${R}/enter22.sh ]; then nohup sh ${R}/enter22.sh bash /root/start22.sh > /data/local/tmp/agv_app_start.log 2>&1 & echo started; else echo "未找到 ${R}/enter22.sh"; exit 3; fi`;
+  const STOP = `for p in hub agent; do pkill -x $p && echo "stopped $p"; done; sleep 1; for p in sim-server nav-runtime web-gateway; do pkill -x $p && echo "stopped $p"; done; echo done`;
+
+  function platLog(s) { const l = $('platLog'); l.style.display = 'block'; l.textContent = s.trim(); }
+  async function platStart() {
+    if (busy.plat) return; busy.plat = true; $('platStart').disabled = true;
+    platLog('启动平台… (hub / agent，约 10–40 秒)');
+    const r = await root(START, 30);
+    platLog(r.out || ('rc=' + r.rc));
+    for (let i = 0; i < 40; i++) { await new Promise(s => setTimeout(s, 1500)); if (await checkHub()) { platLog((r.out || '') + '\n平台已启动 ✓'); break; } }
+    busy.plat = false; $('platStart').disabled = false; refresh();
+  }
+  async function platStop() {
+    if (busy.plat) return;
+    if (!confirm('停止平台? 所有正在运行的仿真实例都会被停止。')) return;
+    busy.plat = true; $('platStop').disabled = true;
+    let msg = '';
+    for (const i of insts.filter(i => isLive(i.status))) { try { await api(`/api/hub/instances/${i.id}/stop`, { method: 'POST', body: '{}' }, 20000); msg += `实例 ${i.id} 已停止\n`; } catch (e) { msg += `实例 ${i.id}: ${e.message}\n`; } }
+    platLog(msg + '停止 hub / agent…');
+    const r = await root(STOP, 30);
+    platLog(msg + (r.out || 'rc=' + r.rc));
+    busy.plat = false; $('platStop').disabled = false; setTimeout(refresh, 1000);
+  }
+
+  // ------------------------------------------------------------ hub / instances
+  const isLive = s => ['running', 'deploying', 'starting', 'degraded'].includes(s);
+  async function checkHub() {
+    try { const h = await api('/api/hub/health', {}, 3000); hubOk = !!h.ok; } catch (_) { hubOk = false; }
+    $('hubDot').className = 'dot ' + (hubOk ? 'on' : '');
+    $('hubTxt').textContent = hubOk ? `平台运行中 · ${HUB.replace(/^https?:\/\//, '')}` : `平台未运行或无法连接 (${HUB.replace(/^https?:\/\//, '')})`;
+    $('platStart').disabled = hubOk || busy.plat; $('platStop').disabled = !hubOk || busy.plat;
+    return hubOk;
+  }
+  async function refresh() {
+    if (!await checkHub()) { insts = []; renderInsts(); return; }
+    try { insts = (await api('/api/hub/instances')).instances || []; } catch (e) { toast('读取实例失败: ' + e.message); }
+    insts.sort((a, b) => (isLive(b.status) - isLive(a.status)) || String(b.id).localeCompare(String(a.id), undefined, { numeric: true }));
+    if (!insts.find(i => i.id === sel)) { const r = insts.find(i => i.status === 'running'); sel = r ? r.id : ''; }
+    $('platInfo').textContent = `${insts.filter(i => i.status === 'running').length} 个实例运行中`;
+    renderInsts(); loadView();
+  }
+  const ST = { running: '运行中', stopped: '已停止', deploying: '启动中', starting: '启动中', failed: '失败', degraded: '异常' };
+  function renderInsts() {
+    const el = $('insts');
+    if (!hubOk) { el.innerHTML = '<div class="empty">平台未运行 — 点 “启动平台”</div>'; return; }
+    if (!insts.length) { el.innerHTML = '<div class="empty">还没有实例 (在电脑上的平台页面部署一个)</div>'; return; }
+    const shown = insts.slice(0, 8);
+    el.innerHTML = shown.map(i => `<div class="inst ${i.id === sel ? 'sel' : ''}" data-id="${esc(i.id)}">
+      <div class="t"><span class="n">${esc(i.id)} · ${esc(i.model_name || '')}</span><span class="pill ${esc(i.status)}">${esc(ST[i.status] || i.status)}</span></div>
+      <div class="mut" style="font-size:12px;margin:2px 0 8px">${esc(i.scene_name || i.scene_id || '')}</div>
+      <div class="btns">${isLive(i.status)
+        ? `<button class="stop" data-act="stop">停止仿真</button><button data-act="restart">重启</button>`
+        : `<button class="go" data-act="restart">启动仿真</button>`}</div></div>`).join('') + (insts.length > shown.length ? `<div class="mut" style="font-size:12px;margin-top:6px">另有 ${insts.length - shown.length} 个旧实例未显示</div>` : '');
+  }
+  $('insts').addEventListener('click', async e => {
+    const card = e.target.closest('.inst'); if (!card) return;
+    const id = card.dataset.id, act = e.target.dataset.act;
+    if (!act) { if (sel !== id) { sel = id; LS.set('sel', id); world = model = tel = null; trail = []; renderInsts(); loadView(); } return; }
+    if (busy[id]) return;
+    if (act === 'restart' && insts.some(i => i.id !== id && isLive(i.status)) && !confirm('已有实例在运行。手机性能有限, 同时运行多个实例会变慢。继续?')) return;
+    busy[id] = true; e.target.disabled = true; e.target.textContent = act === 'stop' ? '停止中…' : '启动中…';
+    try {
+      await api(`/api/hub/instances/${id}/${act}`, { method: 'POST', body: '{}' }, 60000);
+      toast(act === 'stop' ? `${id} 已停止` : `${id} 正在启动, 约 20–60 秒`);
+      if (act !== 'stop') { sel = id; LS.set('sel', id); world = model = null; trail = []; }
+    } catch (err) { toast(`${id}: ${err.message}`, 4000); }
+    busy[id] = false; setTimeout(refresh, 800);
+  });
+
+  // ------------------------------------------------------------ instance view
+  const inst = () => insts.find(i => i.id === sel);
+  const IB = () => `/inst/${sel}`;
+  async function loadView() {
+    const i = inst();
+    $('view').style.display = i && i.status === 'running' ? 'block' : 'none';
+    if (!i || i.status !== 'running') return;
+    $('vName').textContent = `${i.id} · ${i.model_name || ''} @ ${i.scene_name || ''}`;
+    if (!world) { try { world = await api(IB() + '/sim/api/v1/world', {}, 8000); } catch (_) {} }
+    if (!model) { try { model = await api(IB() + '/sim/api/v1/model', {}, 8000); } catch (_) {} }
+  }
+  async function pollTel() {
+    const i = inst();
+    if (hubOk && i && i.status === 'running' && !document.hidden) {
+      try {
+        tel = await api(IB() + '/api/telemetry?scans=0', {}, 4000);
+        const last = trail[trail.length - 1];
+        if (!last || Math.hypot(last[0] - tel.x, last[1] - tel.y) > 0.05) { trail.push([tel.x, tel.y]); if (trail.length > 500) trail.shift(); }
+        renderTel(); drawMap();
+      } catch (_) { $('vNav').textContent = '无数据'; }
+    }
+    setTimeout(pollTel, 300);
+  }
+  const NAVS = { IDLE: '空闲', NAVIGATING: '行驶中', MOVING: '行驶中', SUCCEEDED: '已到达', ARRIVED: '已到达', FAILED: '失败', CANCELED: '已取消', CANCELLED: '已取消', BLOCKED: '受阻', PAUSED: '暂停', OFFLINE: '执行进程离线' };
+  function renderTel() {
+    const t = tel, ns = String(t.nav_status || 'IDLE').toUpperCase(), sim = t.sim_status || {};
+    const v = Math.hypot(t.vx || 0, t.vy || 0);
+    $('vNav').textContent = NAVS[ns] || ns; $('vNav').className = 'pill ' + (/NAVIG|MOV/.test(ns) ? 'running' : /FAIL|BLOCK/.test(ns) ? 'failed' : '');
+    $('kNav').textContent = NAVS[ns] || ns;
+    $('kRem').textContent = t.nav_dist_rem ? f(t.nav_dist_rem, 1) + ' m' : '-';
+    $('kVel').textContent = `${f(v, 2)} m/s · ${f(t.wz, 2)}`;
+    $('kPose').textContent = `${f(t.x, 1)}, ${f(t.y, 1)}, ${f((t.yaw || 0) * 180 / Math.PI, 0)}°`;
+    const rtf = (sim.rtf ?? sim.real_time_factor);
+    $('kSim').textContent = `${f(sim.sim_time, 0)} s${rtf !== undefined ? ' · ' + f(rtf, 2) : ''}`;
+    const bump = t.bumpers?.any_pressed;
+    $('kSafe').innerHTML = `${f(t.scan_min_dist, 2)} m · ${bump ? '<span style="color:var(--bad)">触发</span>' : '正常'}`;
+    const goal = t.target_goal, tf = t.taskflow;
+    $('kTask').innerHTML = (goal ? `目标 <b style="color:var(--text)">${esc(goal.name || goal.id || (goalName ? goalName + ` (${f(goal.x, 1)}, ${f(goal.y, 1)})` : `${f(goal.x, 1)}, ${f(goal.y, 1)}`))}</b>` : '') + (tf && tf.name ? ` · 任务流 ${esc(tf.name)} ${esc(tf.status || '')}` : '') + (t.is_paused ? ' · <span style="color:var(--warn)">仿真已暂停</span>' : '');
+    $('simPause').textContent = t.is_paused ? '继续仿真' : '暂停仿真';
+  }
+
+  // ------------------------------------------------------------ map
+  let view = null; // {P, inv}
+  function footprint() {
+    const fp = model?.chassis?.footprint; if (fp && fp.length > 2) return fp;
+    const c = model?.chassis || {}; const h = c.head_offset_m ?? 0.5, t = c.tail_offset_m ?? 0.5, l = c.left_offset_m ?? 0.4, r = c.right_offset_m ?? 0.4;
+    return [[h, l], [h, -r], [-t, -r], [-t, l]];
+  }
+  function drawMap() {
+    const cv = $('map'), dpr = devicePixelRatio || 1, w = cv.clientWidth, h = +(cv.dataset.h || (cv.dataset.h = cv.getAttribute('height')));
+    if (!w) return;
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.height = h + 'px'; }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+    const sd = world?.scenario_def || {}, walls = (sd.walls || []).filter(Array.isArray);
+    const segs = [], rects = [];
+    (sd.shelves || []).forEach(s => Array.isArray(s) ? segs.push(s) : (s && s.x1 !== undefined && rects.push(s)));
+    const xs = [], ys = [];
+    walls.concat(segs).forEach(s => { xs.push(s[0], s[2]); ys.push(s[1], s[3]); });
+    rects.forEach(r => { xs.push(r.x1, r.x2); ys.push(r.y1, r.y2); });
+    const b = world?.bounds; if (b && b.min_x !== undefined) { xs.push(b.min_x, b.max_x); ys.push(b.min_y, b.max_y); }
+    if (!xs.length && tel) { xs.push(tel.x - 6, tel.x + 6); ys.push(tel.y - 6, tel.y + 6); }
+    if (!xs.length) return;
+    const x0 = Math.min(...xs) - .4, x1 = Math.max(...xs) + .4, y0 = Math.min(...ys) - .4, y1 = Math.max(...ys) + .4;
+    const S = Math.min(w / (x1 - x0), h / (y1 - y0)), ox = (w - (x1 - x0) * S) / 2, oy = (h - (y1 - y0) * S) / 2;
+    const P = (x, y) => [ox + (x - x0) * S, h - oy - (y - y0) * S];
+    view = { P, inv: (u, v) => [x0 + (u - ox) / S, y0 + (h - oy - v) / S], S };
+    rects.forEach(r => { const [u, v] = P(Math.min(r.x1, r.x2), Math.max(r.y1, r.y2)), [p, q] = P(Math.max(r.x1, r.x2), Math.min(r.y1, r.y2)); g.fillStyle = '#1e293b'; g.fillRect(u, v, p - u, q - v); g.strokeStyle = '#475569'; g.strokeRect(u, v, p - u, q - v); });
+    const line = (s, c, lw) => { g.strokeStyle = c; g.lineWidth = lw; g.beginPath(); const [u, v] = P(s[0], s[1]), [p, q] = P(s[2], s[3]); g.moveTo(u, v); g.lineTo(p, q); g.stroke(); };
+    // lanes + nodes
+    const nodes = sd.nodes || {};
+    (sd.connections || []).forEach(([a, bb]) => nodes[a] && nodes[bb] && line([nodes[a][0], nodes[a][1], nodes[bb][0], nodes[bb][1]], '#1e3a8a', 2));
+    walls.forEach(s => line(s, '#64748b', 3)); segs.forEach(s => line(s, '#475569', 2));
+    // cargo / props
+    const rect = (o, col) => { const c = Math.cos(o.yaw || 0), s = Math.sin(o.yaw || 0), hw = (o.w || .5) / 2, hh = (o.h || .5) / 2; g.beginPath(); [[hw, hh], [hw, -hh], [-hw, -hh], [-hw, hh]].forEach(([a, bb], k) => { const [u, v] = P(o.x + c * a - s * bb, o.y + s * a + c * bb); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.closePath(); g.fillStyle = col; g.fill(); };
+    (world?.props || []).forEach(o => rect(o, '#334155'));
+    (tel?.cargo || world?.obstacles || []).forEach(o => o && o.x !== undefined && rect(o, o.carried ? '#16a34aaa' : '#a1620799'));
+    // stations (tap targets)
+    const st = (sd.stations || []);
+    g.font = '10px system-ui';
+    Object.entries(nodes).forEach(([n, p]) => { const [u, v] = P(p[0], p[1]); g.fillStyle = '#2563eb'; g.fillRect(u - 2.5, v - 2.5, 5, 5); });
+    st.forEach(s => { const [u, v] = P(s.x, s.y); g.fillStyle = '#f59e0b'; g.beginPath(); g.arc(u, v, 5, 0, 2 * Math.PI); g.fill(); });
+    // trail + plan path
+    g.strokeStyle = '#0ea5e955'; g.lineWidth = 2; g.beginPath(); trail.forEach(([x, y], k) => { const [u, v] = P(x, y); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke();
+    const path = (tel?.plan_path || []).map(p => Array.isArray(p) ? p : [p.x, p.y]);
+    if (path.length > 1) {
+      g.strokeStyle = '#22c55e'; g.lineWidth = 3; g.setLineDash([7, 5]); g.beginPath(); path.forEach(([x, y], k) => { const [u, v] = P(x, y); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke(); g.setLineDash([]);
+      const [ex, ey] = path[path.length - 1], [u, v] = P(ex, ey); g.strokeStyle = '#22c55e'; g.lineWidth = 2; g.beginPath(); g.arc(u, v, 9, 0, 2 * Math.PI); g.stroke();
+    }
+    if (!tel) return;
+    // laser
+    const rs = tel.scan_ranges, sp = tel.scan_pose || tel;
+    if (rs && rs.length) {
+      g.fillStyle = '#f43f5e'; const am = tel.scan_angle_min || 0, inc = tel.scan_angle_inc || 0, rmax = tel.scan_range_max || 30;
+      for (let k = 0; k < rs.length; k += 2) { const r = rs[k]; if (!(r > 0) || r >= rmax) continue; const a = (sp.yaw || 0) + am + k * inc; const [u, v] = P(sp.x + r * Math.cos(a), sp.y + r * Math.sin(a)); g.fillRect(u - 1, v - 1, 2, 2); }
+    }
+    // robot
+    const c = Math.cos(tel.yaw || 0), s = Math.sin(tel.yaw || 0);
+    g.beginPath(); footprint().forEach((p, k) => { const [u, v] = P(tel.x + c * p[0] - s * p[1], tel.y + s * p[0] + c * p[1]); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.closePath();
+    g.fillStyle = '#38bdf833'; g.fill(); g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.stroke();
+    const [u, v] = P(tel.x, tel.y), [p, q] = P(tel.x + c * .7, tel.y + s * .7); g.beginPath(); g.moveTo(u, v); g.lineTo(p, q); g.stroke();
+  }
+  // tap a station / node → navigate there
+  $('map').addEventListener('click', async e => {
+    if (!view || !world) return;
+    const r = $('map').getBoundingClientRect(), [mx, my] = view.inv(e.clientX - r.left, e.clientY - r.top);
+    const sd = world.scenario_def || {};
+    const cands = (sd.stations || []).map(s => ({ name: s.name || s.id, x: s.x, y: s.y, yaw: s.dock_yaw || 0 }))
+      .concat(Object.entries(sd.nodes || {}).map(([n, p]) => ({ name: n, x: p[0], y: p[1], yaw: null })));
+    let best = null, bd = 1e9; cands.forEach(cn => { const d = Math.hypot(cn.x - mx, cn.y - my); if (d < bd) { bd = d; best = cn; } });
+    if (!best || bd * view.S > 28) return;
+    if (!confirm(`让 AMR 前往 “${best.name}” ?`)) return;
+    const yaw = best.yaw ?? (tel ? Math.atan2(best.y - tel.y, best.x - tel.x) : 0);
+    try { await api(IB() + '/api/navigate_to_pose', { method: 'POST', body: JSON.stringify({ x: best.x, y: best.y, yaw }) }, 8000); goalName = best.name; toast('已下发目标: ' + best.name); }
+    catch (err) { toast('下发失败: ' + err.message, 4000); }
+  });
+  $('navCancel').onclick = async () => { try { await api(IB() + '/api/cancel_navigation', { method: 'POST', body: '{}' }); toast('已取消导航'); } catch (e) { toast(e.message); } };
+  $('simPause').onclick = async () => { const p = !(tel && tel.is_paused); try { await api(IB() + (p ? '/api/sim_pause' : '/api/sim_resume'), { method: 'POST', body: JSON.stringify({ paused: p }) }); } catch (e) { toast(e.message); } };
+  $('openWeb').onclick = () => { location.href = HUB + IB() + '/'; };
+  window.onBack = () => { if (location.protocol !== 'file:') { history.back(); return true; } return false; };
+
+  // ------------------------------------------------------------ settings
+  $('btnSet').onclick = () => { const c = $('setCard'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; $('hubUrl').value = HUB; $('keep').checked = hasNative ? Native.keepOn() : false; };
+  $('saveSet').onclick = () => { HUB = ($('hubUrl').value.trim() || 'http://127.0.0.1:8082').replace(/\/$/, ''); LS.set('hub', HUB); if (hasNative) Native.keepAwake($('keep').checked); $('setCard').style.display = 'none'; world = model = null; refresh(); };
+  $('platStart').onclick = platStart; $('platStop').onclick = platStop; $('refresh').onclick = refresh;
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+
+  refresh(); setInterval(refresh, 5000); pollTel();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AMR 仿真控制: 启动/停止本机仿真平台和仿真实例, 查看运行状态、地图、路径与车辆行驶状态。
+     界面在 assets/index.html (WebView), 通过本机 hub (默认 http://127.0.0.1:8082) 的 REST 接口工作;
+     平台进程 (hub/agent) 的启停用 root (Magisk su) 执行 /data/local/ubuntu22 里的 start22.sh。
+     "保持在线" 用前台服务持有 Wi-Fi 高性能锁 + CPU 唤醒锁, 让手机在局域网里一直可访问。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.agvsim.control" android:versionCode="1" android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application android:label="AMR 仿真控制" android:icon="@mipmap/ic_launcher" android:hardwareAccelerated="true" android:usesCleartextTraffic="true">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".KeepService" android:exported="false" />
+    </application>
+</manifest>

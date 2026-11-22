@@ -201,7 +201,7 @@ th{color:var(--mut);font-weight:500}
 
   // ---------------------------------------------------------------- canvas helpers
   function fit(cv) {
-    const r = devicePixelRatio || 1, w = cv.clientWidth, h = +cv.getAttribute('height');
+    const r = devicePixelRatio || 1, w = cv.clientWidth, h = +(cv.dataset.h || (cv.dataset.h = cv.getAttribute('height')));
     if (cv.width !== Math.round(w * r) || cv.height !== Math.round(h * r)) { cv.width = Math.round(w * r); cv.height = Math.round(h * r); cv.style.height = h + 'px'; }
     const g = cv.getContext('2d'); g.setTransform(r, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
     return [g, w, h];
