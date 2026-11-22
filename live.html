@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AMR 实时数据</title>
+<style>
+:root{--bg:#0b1020;--panel:#121a2e;--line:#22304f;--text:#dbe4f5;--mut:#7d8bab;--acc:#38bdf8;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+header h1{font-size:15px;margin:0;font-weight:600}
+.pill{padding:2px 8px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--mut);white-space:nowrap}
+.pill b{color:var(--text);font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--bad)}
+.dot.on{background:var(--ok)}
+button,select{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 9px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}
+main{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;padding:12px 16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.card h2{font-size:13px;margin:0 0 8px;color:var(--mut);font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.c6{grid-column:span 6}.c4{grid-column:span 4}.c8{grid-column:span 8}.c12{grid-column:span 12}.c3{grid-column:span 3}
+@media (max-width:1100px){.c6,.c4,.c8,.c3{grid-column:span 12}}
+canvas{width:100%;display:block;border-radius:8px;background:#070b16}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:3px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--mut);font-weight:500}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-variant-numeric:tabular-nums}
+.kv span:nth-child(odd){color:var(--mut)}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+.chip{padding:1px 7px;border-radius:5px;border:1px solid var(--line);color:var(--mut);font-size:12px}
+.chip.on{background:#14532d;border-color:#22c55e;color:#bbf7d0}
+.chip.alarm{background:#7f1d1d;border-color:#ef4444;color:#fecaca}
+.legend{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--mut);margin-top:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.log{max-height:220px;overflow:auto;font-size:12px}
+.log div{padding:2px 0;border-bottom:1px solid var(--line)}
+.lv-danger,.lv-error{color:#fca5a5}.lv-warning{color:#fcd34d}.lv-success{color:#86efac}
+.mut{color:var(--mut)}
+.err{color:#fca5a5;padding:8px 16px}
+</style>
+</head>
+<body>
+<header>
+  <h1>AMR 实时数据</h1>
+  <span class="pill"><span class="dot" id="conn"></span><b id="connTxt">连接中…</b></span>
+  <span class="pill">实例 <b id="inst">-</b></span>
+  <span class="pill">车型 <b id="model">-</b></span>
+  <span class="pill">场景 <b id="scene">-</b></span>
+  <span class="pill">仿真时间 <b id="simt">-</b></span>
+  <span class="pill">实时率 <b id="rtf">-</b></span>
+  <span class="pill">刷新 <b id="hz">-</b></span>
+  <span style="flex:1"></span>
+  <label class="mut">刷新率 <select id="rate"><option value="100">10 Hz</option><option value="200" selected>5 Hz</option><option value="500">2 Hz</option><option value="1000">1 Hz</option></select></label>
+  <button id="pause">暂停显示</button>
+</header>
+<div class="err" id="err" hidden></div>
+<main>
+  <section class="card c6">
+    <h2>激光雷达 (车体坐标系, 前方朝上) <span><button data-z="-">−</button> <button data-z="+">+</button></span></h2>
+    <canvas id="laser" height="460"></canvas>
+    <div class="legend" id="lidLegend"></div>
+  </section>
+  <section class="card c6">
+    <h2>地图 (map) <span class="mut" id="pose">-</span></h2>
+    <canvas id="map" height="460"></canvas>
+    <div class="legend"><span><i style="background:#64748b"></i>墙/货架</span><span><i style="background:#a16207"></i>障碍/货物</span><span><i style="background:#1e3a8a"></i>路线</span><span><i style="background:#f43f5e"></i>激光点</span><span><i style="background:#38bdf8"></i>车体 (真值)</span><span><i style="background:#facc15"></i>里程计</span></div>
+  </section>
+
+  <section class="card c8">
+    <h2>底盘轮系 <span class="mut" id="chassisType">-</span></h2>
+    <div style="display:grid;grid-template-columns:minmax(200px,260px) 1fr;gap:12px;align-items:start">
+      <canvas id="wheels" height="260"></canvas>
+      <table id="wheelTbl"><thead><tr><th>轮子</th><th>类型</th><th>位置 x,y (m)</th><th>转向 (°)</th><th>转角 (rad)</th><th>转速 (rad/s)</th><th>线速度 (m/s)</th><th>力矩 (N·m)</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+  <section class="card c4">
+    <h2>运动 / 速度指令</h2>
+    <div class="kv" id="motion"></div>
+  </section>
+
+  <section class="card c6">
+    <h2>速度曲线 (近 30 s) <span class="legend" style="margin:0"><span><i style="background:#38bdf8"></i>vx 真值</span><span><i style="background:#a78bfa"></i>vx 指令</span><span><i style="background:#22c55e"></i>wz 真值</span><span><i style="background:#f97316"></i>wz 指令</span></span></h2>
+    <canvas id="velChart" height="170"></canvas>
+  </section>
+  <section class="card c6">
+    <h2>IMU (近 30 s) <span class="legend" style="margin:0"><span><i style="background:#22c55e"></i>wz</span><span><i style="background:#38bdf8"></i>ax</span><span><i style="background:#f472b6"></i>ay</span></span></h2>
+    <canvas id="imuChart" height="170"></canvas>
+    <div class="kv" id="imu" style="margin-top:6px"></div>
+  </section>
+
+  <section class="card c4">
+    <h2>上装执行机构</h2>
+    <div class="kv" id="act"></div>
+  </section>
+  <section class="card c4">
+    <h2>安全: 急停 / 防撞 / 光电</h2>
+    <div class="kv" id="safety"></div>
+    <div class="chips" id="photo" style="margin-top:6px"></div>
+  </section>
+  <section class="card c4">
+    <h2>导航 / 二维码</h2>
+    <div class="kv" id="nav"></div>
+  </section>
+
+  <section class="card c6">
+    <h2>IO 输入 (DI)</h2>
+    <div class="chips" id="di"></div>
+    <h2 style="margin-top:10px">IO 输出 (DO)</h2>
+    <div class="chips" id="do"></div>
+  </section>
+  <section class="card c6">
+    <h2>事件 <span class="mut" id="evCount"></span></h2>
+    <div class="log" id="events"></div>
+  </section>
+
+  <section class="card c12">
+    <h2>激光雷达明细</h2>
+    <table id="lidTbl"><thead><tr><th>名称</th><th>型号</th><th>安装 x, y, z (m)</th><th>朝向 (°)</th><th>视场 (°)</th><th>线束</th><th>量程 (m)</th><th>频率 (Hz)</th><th>帧序号</th><th>有效点</th><th>最近 (m)</th><th>最近方位 (°)</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<script>
+(() => {
+  // works at /live.html on the instance gateway and at /inst/<id>/live.html through the hub
+  const BASE = location.pathname.replace(/[^/]*$/, '');
+  const SIM = BASE + 'sim/api/v1';
+  const $ = id => document.getElementById(id);
+  const COLORS = ['#f43f5e', '#22d3ee', '#a3e635', '#fbbf24', '#c084fc', '#fb923c'];
+  const deg = r => r * 180 / Math.PI;
+  const f = (v, n = 3) => (v === null || v === undefined || Number.isNaN(v)) ? '-' : (+v).toFixed(n);
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const kv = (el, rows) => { el.innerHTML = rows.map(([k, v]) => `<span>${esc(k)}</span><span>${v}</span>`).join(''); };
+
+  let model = null, sensors = null, world = null, snap = null, paused = false, laserScale = 40;
+  let interval = 200, lastOk = 0, frames = [], eventsSince = 0, evList = [];
+  const hist = []; // {t, vx, cvx, wz, cwz, ax, ay, iwz}
+  const trail = [];
+
+  async function get(path) {
+    const r = await fetch(path, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
+    return r.json();
+  }
+
+  // ---------------------------------------------------------------- static info (model / sensors / world)
+  async function loadStatic() {
+    const [m, s, w, info] = await Promise.all([get(SIM + '/model'), get(SIM + '/sensors'), get(SIM + '/world').catch(() => null), get(BASE + 'api/v2/info').catch(() => null)]);
+    model = m; sensors = s; world = w;
+    $('model').textContent = m.robot_name || m.model_file || '-';
+    $('inst').textContent = info?.instance_name || info?.instance_id || '-';
+    $('scene').textContent = w?.name || w?.id || '-';
+    const arch = m.assembly?.archetype_label || m.assembly?.archetype || '';
+    $('chassisType').textContent = `${m.active_chassis || m.chassis?.type || ''}${arch ? ' · ' + arch : ''}`;
+    $('lidLegend').innerHTML = (s.lidars || []).map((l, i) => `<span><i style="background:${COLORS[i % COLORS.length]}"></i>${esc(l.name)}</span>`).join('') + '<span><i style="background:#475569"></i>合并扫描</span>';
+  }
+
+  // ---------------------------------------------------------------- polling loop (no overlap: next request after the previous one finished)
+  async function tick() {
+    const t0 = performance.now();
+    try {
+      const s = await get(SIM + '/snapshot?scans=1');
+      snap = s; lastOk = Date.now();
+      frames.push(Date.now()); while (frames.length && frames[0] < Date.now() - 3000) frames.shift();
+      record(s);
+      if (!paused) render();
+      setConn(true);
+      $('err').hidden = true;
+    } catch (e) {
+      setConn(false, e.message);
+    }
+    setTimeout(tick, Math.max(0, interval - (performance.now() - t0)));
+  }
+  async function pollEvents() {
+    try {
+      const r = await get(SIM + '/events' + (eventsSince ? `?since_id=${eventsSince}` : ''));
+      const list = Array.isArray(r) ? r : (r.events || []);
+      for (const e of list) { if ((e.id || 0) > eventsSince) eventsSince = e.id || eventsSince; evList.push(e); }
+      evList = evList.slice(-200);
+      if (!paused) renderEvents();
+    } catch (_) {}
+    setTimeout(pollEvents, 1500);
+  }
+  function setConn(ok, msg) {
+    $('conn').classList.toggle('on', ok);
+    $('connTxt').textContent = ok ? '在线' : '断开';
+    if (!ok) { $('err').hidden = false; $('err').textContent = `无法读取仿真数据: ${msg}。请确认实例在运行 (地址 ${location.host}${SIM})。`; }
+  }
+
+  function record(s) {
+    const st = s.state || {}, tr = st.truth || {}, c = s.control || {}, im = st.imu || {};
+    const v = Math.hypot(tr.vx || 0, tr.vy || 0) * Math.sign(tr.vx || 1);
+    hist.push({ t: st.t || 0, vx: tr.vx || 0, cvx: c.vx || 0, wz: tr.wz || 0, cwz: c.wz || 0, ax: im.ax || 0, ay: im.ay || 0, iwz: im.wz || 0, v });
+    while (hist.length && hist[hist.length - 1].t - hist[0].t > 30) hist.shift();
+    if (hist.length > 1 && hist[hist.length - 1].t < hist[hist.length - 2].t) hist.splice(0, hist.length - 1); // sim reset
+    const last = trail[trail.length - 1];
+    if (!last || Math.hypot(last[0] - tr.x, last[1] - tr.y) > 0.05) { trail.push([tr.x, tr.y]); if (trail.length > 600) trail.shift(); }
+  }
+
+  // ---------------------------------------------------------------- canvas helpers
+  function fit(cv) {
+    const r = devicePixelRatio || 1, w = cv.clientWidth, h = +cv.getAttribute('height');
+    if (cv.width !== Math.round(w * r) || cv.height !== Math.round(h * r)) { cv.width = Math.round(w * r); cv.height = Math.round(h * r); cv.style.height = h + 'px'; }
+    const g = cv.getContext('2d'); g.setTransform(r, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
+    return [g, w, h];
+  }
+  function footprint() {
+    const fp = model?.chassis?.footprint;
+    if (fp && fp.length > 2) return fp;
+    const c = model?.chassis || {}, h = c.head_offset_m ?? 0.5, t = c.tail_offset_m ?? 0.5, l = c.left_offset_m ?? 0.4, r = c.right_offset_m ?? 0.4;
+    return [[h, l], [h, -r], [-t, -r], [-t, l]];
+  }
+  // lidar ranges → points in the robot frame (x forward, y left)
+  function scanPoints(sc, mount) {
+    const out = [], n = sc.ranges?.length || 0;
+    const am = sc.angle_min ?? -Math.PI, inc = sc.angle_inc ?? sc.angle_increment ?? (2 * Math.PI / Math.max(n, 1));
+    const mx = mount?.x || 0, my = mount?.y || 0, my_ = mount?.yaw || 0, cs = Math.cos(my_), sn = Math.sin(my_);
+    // upside-down mounted lidar (roll = π): the scan turns the other way round
+    const flip = mount && Math.abs(Math.abs(mount.roll || 0) - Math.PI) < 0.1 ? -1 : 1;
+    for (let i = 0; i < n; i++) {
+      const r = sc.ranges[i];
+      if (!(r > 0) || !Number.isFinite(r)) continue;
+      const a = am + i * inc, lx = r * Math.cos(a), ly = flip * r * Math.sin(a);
+      out.push([mx + cs * lx - sn * ly, my + sn * lx + cs * ly, r, a]);
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- laser view (robot frame, forward = up)
+  function drawLaser() {
+    const [g, w, h] = fit($('laser'));
+    const cx = w / 2, cy = h * 0.55, S = laserScale;
+    const P = (x, y) => [cx - y * S, cy - x * S];
+    g.strokeStyle = '#1e293b'; g.fillStyle = '#475569'; g.font = '11px system-ui'; g.lineWidth = 1;
+    for (let r = 1; r <= 30; r++) {
+      if (r * S > Math.max(w, h)) break;
+      if (S < 25 && r % 5) continue;
+      g.beginPath(); g.arc(cx, cy, r * S, 0, 2 * Math.PI); g.stroke(); g.fillText(r + ' m', cx + 3, cy - r * S - 2);
+    }
+    g.beginPath(); g.moveTo(0, cy); g.lineTo(w, cy); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke();
+    // merged scan (base frame)
+    const ms = snap?.merged_scan;
+    if (ms?.ranges) {
+      g.fillStyle = '#475569';
+      for (const p of scanPoints(ms, null)) { const [u, v] = P(p[0], p[1]); g.fillRect(u - 1, v - 1, 2, 2); }
+    }
+    const lids = sensors?.lidars || [];
+    const scans = snap?.lidar_scans || {};
+    lids.forEach((l, i) => {
+      const sc = scans[l.name]; if (!sc || sc.type !== '2d') return;
+      g.fillStyle = COLORS[i % COLORS.length];
+      for (const p of scanPoints(sc, l.mount)) { const [u, v] = P(p[0], p[1]); g.fillRect(u - 1.5, v - 1.5, 3, 3); }
+      const [u, v] = P(l.mount?.x || 0, l.mount?.y || 0);
+      g.beginPath(); g.arc(u, v, 4, 0, 2 * Math.PI); g.fill();
+    });
+    Object.entries(scans).filter(([, s]) => s.type === '3d').forEach(([n, s], k) => {
+      g.fillStyle = COLORS[(lids.length + k) % COLORS.length];
+      const pts = s.points3d || [];
+      for (let i = 0; i + 2 < pts.length; i += 3) { const [u, v] = P(pts[i], pts[i + 1]); g.fillRect(u - 1, v - 1, 2, 2); }
+    });
+    // robot outline
+    const fp = footprint();
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.beginPath();
+    fp.forEach((p, k) => { const [u, v] = P(p[0], p[1]); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.closePath(); g.stroke();
+    const [ax, ay] = P(Math.max(...fp.map(p => p[0])) + 0.3, 0); const [bx, by] = P(0, 0);
+    g.beginPath(); g.moveTo(bx, by); g.lineTo(ax, ay); g.stroke();
+  }
+
+  // ---------------------------------------------------------------- map view
+  function drawMap() {
+    const [g, w, h] = fit($('map'));
+    const sd = world?.scenario_def || {}, walls = (sd.walls || []).filter(Array.isArray);
+    // shelves are either segments [x0,y0,x1,y1] or rectangles {x1,y1,x2,y2}
+    const shelfSegs = [], shelfRects = [];
+    (sd.shelves || []).forEach(s => Array.isArray(s) ? shelfSegs.push(s) : (s && s.x1 !== undefined && shelfRects.push(s)));
+    const xs = [], ys = [];
+    walls.concat(shelfSegs).forEach(s => { xs.push(s[0], s[2]); ys.push(s[1], s[3]); });
+    shelfRects.forEach(r => { xs.push(r.x1, r.x2); ys.push(r.y1, r.y2); });
+    const b = world?.bounds; if (b && b.min_x !== undefined) { xs.push(b.min_x, b.max_x); ys.push(b.min_y, b.max_y); }
+    const tr = snap?.state?.truth || { x: 0, y: 0, yaw: 0 };
+    if (!xs.length) { xs.push(tr.x - 8, tr.x + 8); ys.push(tr.y - 8, tr.y + 8); }
+    const x0 = Math.min(...xs) - 0.5, x1 = Math.max(...xs) + 0.5, y0 = Math.min(...ys) - 0.5, y1 = Math.max(...ys) + 0.5;
+    const S = Math.min(w / (x1 - x0), h / (y1 - y0)), ox = (w - (x1 - x0) * S) / 2, oy = (h - (y1 - y0) * S) / 2;
+    const P = (x, y) => [ox + (x - x0) * S, h - oy - (y - y0) * S];
+    // topology
+    const nodes = sd.nodes || {};
+    g.strokeStyle = '#1e3a8a'; g.lineWidth = 2;
+    (sd.connections || []).forEach(([a, b]) => { const pa = nodes[a], pb = nodes[b]; if (!pa || !pb) return; const [u, v] = P(pa[0], pa[1]), [p, q] = P(pb[0], pb[1]); g.beginPath(); g.moveTo(u, v); g.lineTo(p, q); g.stroke(); });
+    g.fillStyle = '#1d4ed8'; Object.values(nodes).forEach(p => { const [u, v] = P(p[0], p[1]); g.fillRect(u - 2, v - 2, 4, 4); });
+    // walls / shelves
+    const seg = (list, col, lw) => { g.strokeStyle = col; g.lineWidth = lw; list.forEach(s => { const [u, v] = P(s[0], s[1]), [p, q] = P(s[2], s[3]); g.beginPath(); g.moveTo(u, v); g.lineTo(p, q); g.stroke(); }); };
+    shelfRects.forEach(r => { const [u, v] = P(Math.min(r.x1, r.x2), Math.max(r.y1, r.y2)), [p, q] = P(Math.max(r.x1, r.x2), Math.min(r.y1, r.y2));
+      g.fillStyle = '#1e293b'; g.fillRect(u, v, p - u, q - v); g.strokeStyle = r.border || '#475569'; g.lineWidth = 1.5; g.strokeRect(u, v, p - u, q - v);
+      if (r.name && p - u > 60) { g.fillStyle = '#64748b'; g.font = '11px system-ui'; g.fillText(r.name, u + 4, v + 14); } });
+    seg(walls, '#64748b', 3); seg(shelfSegs, '#475569', 2);
+    // obstacles / cargo / props (rectangles)
+    const rect = (o, col) => {
+      const c = Math.cos(o.yaw || 0), s = Math.sin(o.yaw || 0), hw = (o.w || 0.5) / 2, hh = (o.h || 0.5) / 2;
+      g.beginPath(); [[hw, hh], [hw, -hh], [-hw, -hh], [-hw, hh]].forEach(([a, b], k) => { const [u, v] = P(o.x + c * a - s * b, o.y + s * a + c * b); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.closePath();
+      g.fillStyle = col; g.fill();
+    };
+    (world?.props || []).forEach(o => rect(o, '#334155'));
+    (snap?.cargo || world?.obstacles || []).forEach(o => o && o.x !== undefined && rect(o, o.carried ? '#16a34a88' : '#a1620788'));
+    // trail
+    g.strokeStyle = '#0ea5e955'; g.lineWidth = 2; g.beginPath(); trail.forEach(([x, y], k) => { const [u, v] = P(x, y); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.stroke();
+    // scan points in the map frame
+    const c = Math.cos(tr.yaw), s = Math.sin(tr.yaw);
+    const toMap = p => P(tr.x + c * p[0] - s * p[1], tr.y + s * p[0] + c * p[1]);
+    g.fillStyle = '#f43f5e';
+    const lids = sensors?.lidars || [], scans = snap?.lidar_scans || {};
+    lids.forEach(l => { const sc = scans[l.name]; if (sc?.type === '2d') scanPoints(sc, l.mount).forEach(p => { const [u, v] = toMap(p); g.fillRect(u - 1, v - 1, 2, 2); }); });
+    // robot (truth) + odom ghost
+    const drawRobot = (pose, col, dash) => {
+      const cc = Math.cos(pose.yaw), ss = Math.sin(pose.yaw);
+      g.strokeStyle = col; g.lineWidth = 2; g.setLineDash(dash ? [4, 3] : []); g.beginPath();
+      footprint().forEach((p, k) => { const [u, v] = P(pose.x + cc * p[0] - ss * p[1], pose.y + ss * p[0] + cc * p[1]); k ? g.lineTo(u, v) : g.moveTo(u, v); });
+      g.closePath(); g.stroke();
+      const [u, v] = P(pose.x, pose.y), [p, q] = P(pose.x + cc * 0.6, pose.y + ss * 0.6);
+      g.beginPath(); g.moveTo(u, v); g.lineTo(p, q); g.stroke(); g.setLineDash([]);
+    };
+    const od = snap?.state?.odom, m2o = snap?.state?.map_to_odom;
+    if (od && m2o) { const cm = Math.cos(m2o.yaw), sm = Math.sin(m2o.yaw); drawRobot({ x: m2o.x + cm * od.x - sm * od.y, y: m2o.y + sm * od.x + cm * od.y, yaw: m2o.yaw + od.yaw }, '#facc15', true); }
+    drawRobot(tr, '#38bdf8');
+    $('pose').textContent = `x ${f(tr.x, 2)}  y ${f(tr.y, 2)}  θ ${f(deg(tr.yaw), 1)}°`;
+  }
+
+  // ---------------------------------------------------------------- wheels
+  function wheelRows() {
+    const js = snap?.state?.joints || {}, idx = {};
+    (js.names || []).forEach((n, i) => idx[n] = i);
+    const P = (n, k) => idx[n] !== undefined ? js[k][idx[n]] : undefined;
+    const ws = (model?.active_wheels?.length ? model.active_wheels : model?.wheels) || [];
+    return ws.map(w => {
+      const n = w.name, r = w.radius_m || w.radius || 0.1;
+      const steer = P(n + '_steer_joint', 'position') ?? P(n + '_swivel_joint', 'position');
+      const drv = [n + '_drive_joint', n + '_wheel_joint', n + '_joint'].find(k => idx[k] !== undefined);
+      const ang = drv ? P(drv, 'position') : undefined, om = drv ? P(drv, 'velocity') : undefined, tq = drv ? P(drv, 'effort') : undefined;
+      return { n, kind: w.kind || w.type || '', x: w.x, y: w.y, r, steer, ang, om, v: om !== undefined ? om * r : undefined, tq };
+    });
+  }
+  function drawWheels(rows) {
+    const [g, w, h] = fit($('wheels'));
+    const fp = footprint(), xs = fp.map(p => p[0]), ys = fp.map(p => p[1]);
+    const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) + 0.4;
+    const S = Math.min(w, h) / span, cx = w / 2 - ((Math.max(...ys) + Math.min(...ys)) / 2) * -S, cy = h / 2 + ((Math.max(...xs) + Math.min(...xs)) / 2) * S;
+    const P = (x, y) => [cx - y * S, cy - x * S];
+    g.strokeStyle = '#334155'; g.lineWidth = 2; g.beginPath();
+    fp.forEach((p, k) => { const [u, v] = P(p[0], p[1]); k ? g.lineTo(u, v) : g.moveTo(u, v); }); g.closePath(); g.stroke();
+    g.fillStyle = '#475569'; g.font = '10px system-ui'; const [fu, fv] = P(Math.max(...xs), 0); g.fillText('前', fu - 5, fv - 4);
+    rows.forEach(r => {
+      if (r.x === undefined) return;
+      const [u, v] = P(r.x, r.y), a = r.steer || 0, L = Math.max(r.r * 2 * S, 10), W = Math.max(5, 0.06 * S);
+      g.save(); g.translate(u, v); g.rotate(-a);
+      g.fillStyle = /steer|caster/.test(r.kind) ? '#0ea5e9' : '#94a3b8'; g.fillRect(-W / 2, -L / 2, W, L);
+      // speed arrow along the rolling direction
+      const sp = r.v || 0;
+      if (Math.abs(sp) > 1e-3) {
+        const len = Math.min(60, Math.abs(sp) * 50) * Math.sign(sp);
+        g.strokeStyle = sp > 0 ? '#22c55e' : '#f97316'; g.lineWidth = 2; g.beginPath(); g.moveTo(0, 0); g.lineTo(0, -len); g.stroke();
+        g.beginPath(); g.moveTo(-4, -len + 6 * Math.sign(len)); g.lineTo(0, -len); g.lineTo(4, -len + 6 * Math.sign(len)); g.stroke();
+      }
+      g.restore();
+      g.fillStyle = '#cbd5e1'; g.fillText(r.n, u + 8, v + 3);
+    });
+  }
+
+  // ---------------------------------------------------------------- charts
+  function chart(id, series, unitLabel) {
+    const [g, w, h] = fit($(id));
+    if (hist.length < 2) return;
+    const t1 = hist[hist.length - 1].t, t0 = t1 - 30;
+    let lo = Infinity, hi = -Infinity;
+    series.forEach(([k]) => hist.forEach(p => { lo = Math.min(lo, p[k]); hi = Math.max(hi, p[k]); }));
+    if (hi - lo < 0.2) { const m = (hi + lo) / 2; lo = m - 0.1; hi = m + 0.1; }
+    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const X = t => 34 + (t - t0) / 30 * (w - 40), Y = v => 6 + (hi - v) / (hi - lo) * (h - 20);
+    g.strokeStyle = '#1e293b'; g.fillStyle = '#64748b'; g.font = '10px system-ui'; g.lineWidth = 1;
+    for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = Y(v); g.beginPath(); g.moveTo(34, y); g.lineTo(w, y); g.stroke(); g.fillText(v.toFixed(2), 0, y + 3); }
+    if (lo < 0 && hi > 0) { g.strokeStyle = '#334155'; g.beginPath(); g.moveTo(34, Y(0)); g.lineTo(w, Y(0)); g.stroke(); }
+    g.fillText(unitLabel, w - 60, h - 3);
+    series.forEach(([k, col, dash]) => {
+      g.strokeStyle = col; g.lineWidth = 1.6; g.setLineDash(dash ? [4, 3] : []); g.beginPath();
+      hist.forEach((p, i) => { const x = X(p.t), y = Y(p[k]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke();
+    });
+    g.setLineDash([]);
+  }
+
+  // ---------------------------------------------------------------- panels
+  function chips(el, obj, alarmRe) {
+    const ks = Object.keys(obj || {});
+    el.innerHTML = ks.length ? ks.map(k => `<span class="chip ${obj[k] ? (alarmRe && alarmRe.test(k) ? 'alarm' : 'on') : ''}">${esc(k)}</span>`).join('') : '<span class="mut">无</span>';
+  }
+  function render() {
+    const s = snap, st = s.state || {}, tr = st.truth || {}, od = st.odom || {}, c = s.control || {}, im = st.imu || {}, sim = s.sim || {};
+    $('simt').textContent = f(st.t, 1) + ' s' + (st.paused || sim.paused ? ' (暂停)' : '');
+    const rtf = sim.rtf ?? sim.real_time_factor ?? sim.rtf_actual;
+    $('rtf').textContent = rtf !== undefined ? f(rtf, 2) : (sim.rtf_target !== undefined ? '目标 ' + sim.rtf_target : '-');
+    $('hz').textContent = (frames.length / 3).toFixed(1) + ' Hz';
+    drawLaser(); drawMap();
+    const rows = wheelRows(); drawWheels(rows);
+    $('wheelTbl').tBodies[0].innerHTML = rows.map(r => `<tr><td>${esc(r.n)}</td><td>${esc(r.kind)}</td><td>${f(r.x, 3)}, ${f(r.y, 3)}</td><td>${r.steer === undefined ? '-' : f(deg(r.steer), 1)}</td><td>${f(r.ang, 2)}</td><td>${f(r.om, 2)}</td><td>${f(r.v, 3)}</td><td>${f(r.tq, 2)}</td></tr>`).join('') || '<tr><td colspan="8" class="mut">模型里没有轮子信息</td></tr>';
+    kv($('motion'), [
+      ['真值 vx / vy', `${f(tr.vx)} / ${f(tr.vy)} m/s`], ['真值 wz', `${f(tr.wz)} rad/s`],
+      ['里程计 x, y, θ', `${f(od.x, 2)}, ${f(od.y, 2)}, ${f(deg(od.yaw || 0), 1)}°`], ['里程计 vx / wz', `${f(od.vx)} / ${f(od.wz)}`],
+      ['指令 vx / vy / wz', `${f(c.vx)} / ${f(c.vy)} / ${f(c.wz)}`], ['指令来源', `${esc(c.source || '-')} · ${f(c.age_s, 2)} s 前`],
+      ['看门狗', c.watchdog_active ? '<span style="color:var(--warn)">超时停车</span>' : '正常'], ['急停', c.estop ? '<span style="color:var(--bad)">按下</span>' : '未按下'],
+      ['碰撞次数', st.collision?.count ?? '-'],
+    ]);
+    chart('velChart', [['vx', '#38bdf8'], ['cvx', '#a78bfa', 1], ['wz', '#22c55e'], ['cwz', '#f97316', 1]], 'm/s · rad/s');
+    chart('imuChart', [['iwz', '#22c55e'], ['ax', '#38bdf8'], ['ay', '#f472b6']], 'rad/s · m/s²');
+    kv($('imu'), [['wz', f(im.wz, 4)], ['ax / ay / az', `${f(im.ax)} / ${f(im.ay)} / ${f(im.az)}`], ['yaw', f(deg(im.yaw || 0), 2) + '°']]);
+    // actuator / fork
+    const a = s.actuator || {}, fk = s.fork || st.fork || {};
+    const ar = [];
+    if (a && Object.keys(a).length) Object.entries(a).forEach(([k, v]) => { if (v !== null && typeof v !== 'object') ar.push([k, typeof v === 'number' ? f(v) : esc(v)]); });
+    if (fk && Object.keys(fk).length) Object.entries(fk).forEach(([k, v]) => { if (v !== null && typeof v !== 'object') ar.push(['fork.' + k, typeof v === 'number' ? f(v) : esc(v)]); });
+    kv($('act'), ar.length ? ar.slice(0, 24) : [['', '<span class="mut">无上装或无数据</span>']]);
+    // safety
+    const b = s.bumpers || {}, io = s.io || {};
+    kv($('safety'), [['急停', io.is_emergency_stop ? '<span style="color:var(--bad)">急停 (抱闸)</span>' : '正常'], ['防撞条', b.any_pressed ? '<span style="color:var(--bad)">触发</span>' : '未触发'],
+      ['前/后防撞', `${b.bumper_front ? '●' : '○'} / ${b.bumper_rear ? '●' : '○'}`], ['碰撞计数', b.count ?? '-'], ['最后接触点', b.last_contact ? b.last_contact.map(v => f(v, 2)).join(', ') : '-']]);
+    const ph = Array.isArray(s.photoelectric) ? s.photoelectric : [];
+    $('photo').innerHTML = ph.map(p => `<span class="chip ${p.triggered || p.state || p.on ? 'on' : ''}">${esc(p.name || p.id)}${p.distance !== undefined ? ' ' + f(p.distance, 2) + 'm' : ''}</span>`).join('');
+    // nav + codes
+    const nv = s.nav || {}, codes = Array.isArray(s.codes) ? s.codes : [];
+    kv($('nav'), [['状态', esc(nv.status || '-')], ['目标', esc(nv.goal_id || nv.target || nv.goal || '-')], ['剩余距离', nv.distance_remaining !== undefined ? f(nv.distance_remaining, 2) + ' m' : '-'],
+      ['二维码', codes.length ? codes.map(c => `${esc(c.payload)} <span class="mut">(${f(c.dx ?? c.x, 3)}, ${f(c.dy ?? c.y, 3)}, ${f(deg(c.dyaw ?? c.yaw ?? 0), 1)}°)</span>`).join('<br>') : '<span class="mut">未读到</span>']]);
+    chips($('di'), io.inputs, /estop|bumper|alarm|fault/i); chips($('do'), io.outputs);
+    // lidar table
+    const lids = sensors?.lidars || [], scans = s.lidar_scans || {};
+    $('lidTbl').tBodies[0].innerHTML = lids.map((l, i) => {
+      const sc = scans[l.name] || {}, pts = sc.ranges ? scanPoints(sc, null) : [];
+      const near = pts.reduce((m, p) => p[2] < m[2] ? p : m, [0, 0, Infinity, 0]);
+      const mt = l.mount || {};
+      return `<tr><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${COLORS[i % COLORS.length]};margin-right:5px"></i>${esc(l.name)}</td><td>${esc(l.model || '-')}</td><td>${f(mt.x, 3)}, ${f(mt.y, 3)}, ${f(mt.z, 3)}</td><td>${f(deg(mt.yaw || 0), 1)}</td><td>${f(l.fov_deg, 0)}</td><td>${l.beams ?? '-'}</td><td>${f(l.range_max, 1)}</td><td>${f(l.freq_hz, 0)}</td><td>${sc.seq ?? '-'}</td><td>${pts.length}/${sc.ranges?.length ?? 0}</td><td>${Number.isFinite(near[2]) ? f(near[2], 2) : '-'}</td><td>${Number.isFinite(near[2]) ? f(deg(near[3]), 1) : '-'}</td></tr>`;
+    }).join('') || '<tr><td colspan="12" class="mut">无激光雷达</td></tr>';
+  }
+  function renderEvents() {
+    $('evCount').textContent = evList.length ? `${evList.length} 条` : '';
+    $('events').innerHTML = evList.slice().reverse().slice(0, 80).map(e => {
+      const t = e.wall || e.wall_time || e.time || e.t; const ts = t > 1e9 ? new Date(t * 1000).toLocaleTimeString() : (t !== undefined ? f(t, 1) + 's' : '');
+      return `<div class="lv-${esc(e.level || e.severity || '')}"><span class="mut">${esc(ts)}</span> <b>${esc(e.kind || e.type || e.category || '')}</b> ${esc(e.msg || e.message || '')}</div>`;
+    }).join('') || '<div class="mut">暂无事件</div>';
+  }
+
+  // ---------------------------------------------------------------- controls
+  $('rate').onchange = e => interval = +e.target.value;
+  $('pause').onclick = () => { paused = !paused; $('pause').textContent = paused ? '继续显示' : '暂停显示'; if (!paused && snap) render(); };
+  document.querySelectorAll('[data-z]').forEach(b => b.onclick = () => { laserScale = Math.max(5, Math.min(200, laserScale * (b.dataset.z === '+' ? 1.4 : 1 / 1.4))); if (snap) drawLaser(); });
+  $('laser').addEventListener('wheel', e => { e.preventDefault(); laserScale = Math.max(5, Math.min(200, laserScale * (e.deltaY < 0 ? 1.15 : 1 / 1.15))); if (snap) drawLaser(); }, { passive: false });
+  addEventListener('resize', () => snap && render());
+  setInterval(() => { if (Date.now() - lastOk > 3000 && lastOk) setConn(false, '超过 3 秒没有新数据'); }, 1000);
+  setInterval(() => loadStatic().catch(() => {}), 15000); // model / scene may be switched in the workbench
+
+  loadStatic().catch(e => setConn(false, e.message)).finally(() => { tick(); pollEvents(); });
+})();
+</script>
+</body>
+</html>
