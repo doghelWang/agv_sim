@@ -48,6 +48,7 @@ bash install.sh --repo https://github.com/doghelWang/agv_sim.git --name phone1 -
 | [docs/NAVIGATION.md](docs/NAVIGATION.md) | **导航说明**：执行进程规划器与 Nav2 的区别、Nav2 线路跟随中断根因、中断恢复流程 (位姿调整/重新规划)、快速验证 |
 | [docs/ASSEMBLY.md](docs/ASSEMBLY.md) | **cmodel → 装配模型**：上装类型判定 (顶升/前移叉车/堆垛/托盘搬运/辊筒/牵引)、cmodel 缺失项、URDF/MJCF/3D、执行机构、仓储布景 (真二维码/货架/输送线/PCD) |
 | [docs/MODEL_FIT.md](docs/MODEL_FIT.md) | **车型 × 场景适配矩阵**：沿全部路线扫掠车体+货叉包络、节点原地旋转检查；`fit_check` 工具用法与结论 |
+| [docs/DATA_AND_WORKFLOW.md](docs/DATA_AND_WORKFLOW.md) | **数据定义与工作流程**：cmodel→RobotSpec→RobotAssembly、场景/世界/平台/运行时/遥测/更新包/App 数据字段；车型导入、适配检查、实例部署、平台启停、导航、上装作业、发布部署流程 |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | 平台与工作台功能、路径规划与精确跟踪、保护空间 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 进程架构与设计取舍 |
 | [docs/CODEBASE.md](docs/CODEBASE.md) | 代码框架：每个文件的职责、依赖库、调用链 |
